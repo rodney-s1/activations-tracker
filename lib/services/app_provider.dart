@@ -228,6 +228,18 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> addStandardRate(StandardPlanRate rate) async {
+    await StandardPlanRateService.add(rate);
+    _standardRates = StandardPlanRateService.getAll();
+    notifyListeners();
+  }
+
+  Future<void> deleteStandardRate(StandardPlanRate rate) async {
+    await StandardPlanRateService.delete(rate);
+    _standardRates = StandardPlanRateService.getAll();
+    notifyListeners();
+  }
+
   Future<void> resetStandardRates() async {
     await StandardPlanRateService.resetToDefaults();
     _standardRates = StandardPlanRateService.getAll();

@@ -79,9 +79,14 @@ class _CustomerPricingScreenState extends State<CustomerPricingScreen>
 // TAB 1 — Standard Plan Rates
 // ════════════════════════════════════════════════════════════════════════════
 
-class _StandardPlanRatesTab extends StatelessWidget {
+class _StandardPlanRatesTab extends StatefulWidget {
   const _StandardPlanRatesTab();
 
+  @override
+  State<_StandardPlanRatesTab> createState() => _StandardPlanRatesTabState();
+}
+
+class _StandardPlanRatesTabState extends State<_StandardPlanRatesTab> {
   @override
   Widget build(BuildContext context) {
     return Consumer<AppProvider>(
@@ -89,7 +94,7 @@ class _StandardPlanRatesTab extends StatelessWidget {
         final rates = provider.standardRates;
         return Column(
           children: [
-            // ── Info banner ────────────────────────────────────────
+            // ── Info / action banner ───────────────────────────────
             Container(
               color: AppTheme.navyMid,
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
@@ -100,8 +105,7 @@ class _StandardPlanRatesTab extends StatelessWidget {
                   const Expanded(
                     child: Text(
                       'These are what Geotab charges YOU. '
-                      'Tap a row to edit your cost. '
-                      'Customer-specific prices go in the "Customer Codes" tab.',
+                      'Tap a row to edit. Swipe left or tap the trash icon to delete.',
                       style: TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                   ),
@@ -113,20 +117,89 @@ class _StandardPlanRatesTab extends StatelessWidget {
                 ],
               ),
             ),
+            // ── Count + Add button row ─────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+              child: Row(
+                children: [
+                  Text(
+                    '${rates.length} plan${rates.length == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                  const Spacer(),
+                  ElevatedButton.icon(
+                    onPressed: () => _addRate(context, provider),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Add Plan',
+                        style: TextStyle(fontSize: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.teal,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             // ── Rates list ─────────────────────────────────────────
             Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: rates.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemBuilder: (context, i) {
-                  final rate = rates[i];
-                  return _StandardRateTile(
-                    rate: rate,
-                    onTap: () => _editRate(context, provider, rate),
-                  );
-                },
-              ),
+              child: rates.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.list_alt,
+                              size: 48,
+                              color: AppTheme.textSecondary
+                                  .withValues(alpha: 0.4)),
+                          const SizedBox(height: 16),
+                          const Text('No plan rates yet.\nTap "Add Plan" to create one.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: AppTheme.textSecondary)),
+                        ],
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                      itemCount: rates.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) {
+                        final rate = rates[i];
+                        return Dismissible(
+                          key: ValueKey(rate.key),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 20),
+                            decoration: BoxDecoration(
+                              color: AppTheme.red.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(Icons.delete_outline,
+                                color: AppTheme.red),
+                          ),
+                          confirmDismiss: (_) =>
+                              _confirmDelete(context, rate),
+                          onDismissed: (_) =>
+                              provider.deleteStandardRate(rate),
+                          child: _StandardRateTile(
+                            rate: rate,
+                            onTap: () =>
+                                _editRate(context, provider, rate),
+                            onDelete: () async {
+                              final ok =
+                                  await _confirmDelete(context, rate);
+                              if (ok == true && context.mounted) {
+                                provider.deleteStandardRate(rate);
+                              }
+                            },
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         );
@@ -134,40 +207,97 @@ class _StandardPlanRatesTab extends StatelessWidget {
     );
   }
 
+  Future<bool?> _confirmDelete(
+      BuildContext context, StandardPlanRate rate) async {
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Plan Rate?'),
+        content: Text(
+            'Remove "${rate.planKey}" (keyword: "${rate.keyword}") from the pricing engine?\n\n'
+            'This cannot be undone unless you tap Reset.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addRate(BuildContext context, AppProvider provider) async {
+    await _showRateDialog(context, provider, null);
+  }
+
   Future<void> _editRate(
       BuildContext context, AppProvider provider, StandardPlanRate rate) async {
+    await _showRateDialog(context, provider, rate);
+  }
+
+  Future<void> _showRateDialog(BuildContext context, AppProvider provider,
+      StandardPlanRate? existing) async {
+    final isNew = existing == null;
+    final keyCtrl =
+        TextEditingController(text: existing?.planKey ?? '');
+    final kwCtrl =
+        TextEditingController(text: existing?.keyword ?? '');
     final costCtrl = TextEditingController(
-        text: rate.yourCost.toStringAsFixed(2));
-    final kwCtrl = TextEditingController(text: rate.keyword);
+        text: existing != null
+            ? existing.yourCost.toStringAsFixed(2)
+            : '');
 
     await showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('Edit "${rate.planKey}" Plan Rate'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: kwCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Match Keyword',
-                hintText: 'substring matched in rate plan column (case-insensitive)',
-                helperText: 'e.g. "go" matches "GO Bundle Plan [1450]"',
+        title: Text(isNew ? 'Add Plan Rate' : 'Edit "${existing?.planKey}"'),
+        content: SizedBox(
+          width: 340,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: keyCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Plan Name *',
+                  hintText: 'e.g. Ford OEM',
+                  helperText: 'Short display name shown in the UI',
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: costCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,5}')),
-              ],
-              decoration: const InputDecoration(
-                labelText: 'Your Cost (what Geotab charges you)',
-                prefixText: r'$ ',
+              const SizedBox(height: 12),
+              TextField(
+                controller: kwCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Match Keyword *',
+                  hintText: 'e.g. ford  or  geotab gm',
+                  helperText:
+                      'Case-insensitive substring matched against the Rate Plan column in your activation CSV',
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: costCtrl,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(
+                      RegExp(r'^\d*\.?\d{0,5}')),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Your Cost (what Geotab charges you)',
+                  prefixText: r'$ ',
+                  hintText: '0.00',
+                  helperText:
+                      'Enter 0.00 if this is an add-on with no fixed Geotab cost',
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -175,16 +305,28 @@ class _StandardPlanRatesTab extends StatelessWidget {
               child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () async {
-              final cost = double.tryParse(costCtrl.text.trim());
-              if (cost == null) return;
-              rate.yourCost = cost;
-              rate.keyword = kwCtrl.text.trim().toLowerCase();
-              if (context.mounted) {
-                await provider.saveStandardRate(rate);
-                Navigator.pop(context);
+              final key  = keyCtrl.text.trim();
+              final kw   = kwCtrl.text.trim().toLowerCase();
+              final cost = double.tryParse(costCtrl.text.trim()) ?? 0.0;
+              if (key.isEmpty || kw.isEmpty) return;
+
+              if (isNew) {
+                await provider.addStandardRate(StandardPlanRate(
+                  planKey:  key,
+                  keyword:  kw,
+                  yourCost: cost,
+                ));
+              } else {
+                final e = existing;
+                if (e == null) return;
+                e.planKey  = key;
+                e.keyword  = kw;
+                e.yourCost = cost;
+                await provider.saveStandardRate(e);
               }
+              if (context.mounted) Navigator.pop(context);
             },
-            child: const Text('Save'),
+            child: Text(isNew ? 'Add' : 'Save'),
           ),
         ],
       ),
@@ -197,9 +339,9 @@ class _StandardPlanRatesTab extends StatelessWidget {
       builder: (_) => AlertDialog(
         title: const Text('Reset to Defaults?'),
         content: const Text(
-            'This will restore the original plan rates:\n'
-            'GO \$18.40, ProPlus \$19.00, Pro \$16.00,\n'
-            'Regulatory \$11.50, Base \$7.00, Suspend \$5.00'),
+            'This will REPLACE all current plan rates with the built-in defaults '
+            '(GO, ProPlus, Pro, Regulatory, Base, Suspend + OEM plans).\n\n'
+            'Any custom plans you added will be removed.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
@@ -209,7 +351,8 @@ class _StandardPlanRatesTab extends StatelessWidget {
               Navigator.pop(context);
               await provider.resetStandardRates();
             },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.amber),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppTheme.amber),
             child: const Text('Reset'),
           ),
         ],
@@ -221,8 +364,13 @@ class _StandardPlanRatesTab extends StatelessWidget {
 class _StandardRateTile extends StatelessWidget {
   final StandardPlanRate rate;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
-  const _StandardRateTile({required this.rate, required this.onTap});
+  const _StandardRateTile({
+    required this.rate,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   static const _planIcons = {
     'go': Icons.gps_fixed,
@@ -231,42 +379,90 @@ class _StandardRateTile extends StatelessWidget {
     'regulatory': Icons.policy,
     'base': Icons.radio_button_unchecked,
     'suspend': Icons.pause_circle_outline,
+    'ford oem': Icons.directions_car,
+    'gm oem': Icons.directions_car,
+    'mack oem': Icons.local_shipping,
+    'mercedes oem': Icons.directions_car,
+    'navistar oem': Icons.local_shipping,
+    'volvo oem': Icons.local_shipping,
+    'freightliner oem': Icons.local_shipping,
+    'stellantis oem': Icons.directions_car,
+    'sw3': Icons.verified,
+    'aemp': Icons.sensors,
+    'cat aemp': Icons.construction,
+    'jd aemp': Icons.agriculture,
+    'komatsu aemp': Icons.construction,
   };
 
   @override
   Widget build(BuildContext context) {
-    final icon = _planIcons[rate.planKey.toLowerCase()] ?? Icons.devices;
+    final iconKey = rate.planKey.toLowerCase();
+    final icon = _planIcons[iconKey] ?? Icons.devices;
+    final isOem = iconKey.contains('oem') ||
+        iconKey.contains('aemp') ||
+        iconKey == 'sw3';
+
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
         onTap: onTap,
         leading: CircleAvatar(
-          backgroundColor: AppTheme.navyAccent.withValues(alpha: 0.12),
-          child: Icon(icon, color: AppTheme.navyAccent, size: 20),
+          backgroundColor: (isOem
+                  ? AppTheme.amber
+                  : AppTheme.navyAccent)
+              .withValues(alpha: 0.12),
+          child: Icon(icon,
+              color: isOem ? AppTheme.amber : AppTheme.navyAccent,
+              size: 20),
         ),
         title: Text(rate.planKey,
             style: const TextStyle(
                 fontWeight: FontWeight.w700, fontSize: 14)),
         subtitle: Text(
           'keyword: "${rate.keyword}"',
-          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          style: const TextStyle(
+              fontSize: 11, color: AppTheme.textSecondary),
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              Formatters.currency(rate.yourCost),
-              style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.green),
+            if (rate.yourCost > 0) ...[
+              Text(
+                Formatters.currency(rate.yourCost),
+                style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.green),
+              ),
+              const SizedBox(width: 2),
+              const Text('/mo',
+                  style: TextStyle(
+                      fontSize: 11, color: AppTheme.textSecondary)),
+            ] else
+              const Text('— set cost',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.amber,
+                      fontStyle: FontStyle.italic)),
+            const SizedBox(width: 6),
+            InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(6),
+              child: const Padding(
+                padding: EdgeInsets.all(5),
+                child: Icon(Icons.edit_outlined,
+                    size: 16, color: AppTheme.teal),
+              ),
             ),
-            const SizedBox(width: 4),
-            const Text('/mo',
-                style: TextStyle(
-                    fontSize: 11, color: AppTheme.textSecondary)),
-            const SizedBox(width: 8),
-            const Icon(Icons.edit_outlined, size: 16, color: AppTheme.teal),
+            InkWell(
+              onTap: onDelete,
+              borderRadius: BorderRadius.circular(6),
+              child: const Padding(
+                padding: EdgeInsets.all(5),
+                child: Icon(Icons.delete_outline,
+                    size: 16, color: AppTheme.red),
+              ),
+            ),
           ],
         ),
       ),
@@ -618,8 +814,14 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
 
     // Plan type suggestions for the code field
     final planCodeHints = [
+      // Bracket codes
       '[0250]', '[1250]', '[1450]', '[1550]', '[2000]', '[2250]', '[2450]',
+      // Named plan substrings
       'GO Bundle Plan', 'ProPlus Bundle', 'Pro Bundle',
+      // Special rate codes
+      'BUNDLE', 'OFFROAD', 'NEXTLINK', 'RS78-R1', 'BUNDLE-RS78-R1',
+      // HOS
+      'HOS',
     ];
 
     await showDialog(

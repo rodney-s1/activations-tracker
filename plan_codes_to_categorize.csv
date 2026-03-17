@@ -1,0 +1,26 @@
+#,QB Item Description,Prices Seen in CSV,Your Category (fill in),Suggested Plan Code / Keyword,Notes
+1,Geotab Ford (Premium OEM),"$15.95 - $22.95",,Ford OEM,OEM add-on per customer
+2,Geotab Ford (Premium OEM) SW3,"$10.14 - $17.75",,Ford OEM SW3,Sourcewell variant
+3,Geotab GM (Premium OEM),"$11.35 - $24.95",,GM OEM,OEM add-on per customer
+4,Geotab Mack (Premium OEM),$24.95,,Mack OEM,OEM add-on per customer
+5,Geotab Mercedes (MBCON Premium),$25.50,,Mercedes OEM,OEM add-on per customer
+6,Geotab Navistar (Premium OEM),$24.95,,Navistar OEM,OEM add-on per customer
+7,Geotab Volvo (Premium OEM),"$22.95 - $24.95",,Volvo OEM,OEM add-on per customer
+8,Freightliner (OEM),"$22.95 - $24.95",,Freightliner OEM,OEM add-on per customer
+9,Stellantis Premium (OEM),$24.95,,Stellantis OEM,OEM add-on per customer
+10,AEMP Service (Premium),"$5.00 - $7.50",,AEMP,Add-on telematics standard
+11,CAT AEMP (OEM),$7.50,,CAT AEMP,OEM AEMP per customer
+12,John Deere AEMP (OEM),"$5.00 - $7.50",,JD AEMP,OEM AEMP per customer
+13,Komatsu AEMP (OEM),$5.00,,Komatsu AEMP,OEM AEMP per customer
+14,Predictive Coach,"$6.00 - $10.00",,Predictive Coach,Driver coaching add-on
+15,SS Service Fee (Surfsight camera),"$18.00 - $23.00",,SS Camera,Camera service per customer
+16,SS Service Fee (Ohio),$20.00,,SS Camera Ohio,Ohio variant
+17,SS Service Fee BUNDLE,"$20.00 - $30.95",,SS Camera Bundle,Bundle variant
+18,SS Service Fee SW (Sourcewell),$16.00,,SS Camera SW,Sourcewell variant
+19,E9 Puck Tag Service (Link Labs),$3.95,,Puck Tag,Asset tag add-on
+20,Super Tag Monthly Subscription,$13.00,,Super Tag,Asset tag add-on
+21,Service Fee Geotab (Asset),$12.00,,Asset,Low-data asset tracker plan
+22,Sourcewell Early Termination,$135.00,,,(One-time fee - likely ignore)
+23,MKT-FEE-CITIZENS1 (Citizen Insights),$487.50,,,(Flat account fee - likely ignore)
+24,Geotab Shipping,$15.00,,,(Shipping cost - likely ignore)
+25,Phillips Connect (Geotab Only),$15.95,,,(3rd-party add-on - likely ignore)
