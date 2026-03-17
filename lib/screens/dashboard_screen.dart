@@ -450,9 +450,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return AppBar(
       title: const Row(
         children: [
-          Icon(Icons.bolt, size: 22, color: AppTheme.tealLight),
+          Icon(Icons.upload_file, size: 22, color: AppTheme.tealLight),
           SizedBox(width: 8),
-          Text('Activation Tracker'),
+          Text('Activations'),
         ],
       ),
       actions: [

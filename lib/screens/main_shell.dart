@@ -36,9 +36,9 @@ class _MainShellState extends State<MainShell> {
 
   static const _navItems = [
     BottomNavigationBarItem(
-      icon: Icon(Icons.dashboard_outlined),
-      activeIcon: Icon(Icons.dashboard),
-      label: 'Dashboard',
+      icon: Icon(Icons.upload_file_outlined),
+      activeIcon: Icon(Icons.upload_file),
+      label: 'Activations',
     ),
     BottomNavigationBarItem(
       icon: Icon(Icons.history_outlined),

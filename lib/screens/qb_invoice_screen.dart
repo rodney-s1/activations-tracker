@@ -1,6 +1,7 @@
 // QB Verify Screen
-// Import a QuickBooks "Sales by Customer Detail" CSV and cross-reference
-// against the loaded activation CSV to surface billing discrepancies.
+// Import a MyAdmin "Device Management - Full Report" CSV as the "Active" side
+// and a QuickBooks "Sales by Customer Detail" CSV as the "Billed" side.
+// Cross-references both to surface billing discrepancies before invoices are sent.
 
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -11,10 +12,32 @@ import '../services/app_provider.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
-// ── Data models ──────────────────────────────────────────────────────────────
+// ── Enums & Models ────────────────────────────────────────────────────────────
 
-enum VerifyStatus { match, overbilled, underbilled, qbOnly, activationOnly }
+enum VerifyStatus { match, overbilled, underbilled, qbOnly, activeOnly }
 
+/// A single device row parsed from the MyAdmin Full Report
+class MyAdminDevice {
+  final String serialNumber;
+  final String customer;
+  final String billingPlan;   // "Active billing plan" column
+  final String ratePlanCode;  // "Rate Plan Code" column
+  final String billingStatus; // "Billing status" column  (Active / Suspended / Never billed)
+  final String account;
+
+  const MyAdminDevice({
+    required this.serialNumber,
+    required this.customer,
+    required this.billingPlan,
+    required this.ratePlanCode,
+    required this.billingStatus,
+    required this.account,
+  });
+
+  bool get isActive => billingStatus.toLowerCase() == 'active';
+}
+
+/// A single line item from the QB Sales by Customer Detail CSV
 class QbInvoiceLine {
   final String invoiceNumber;
   final String date;
@@ -33,67 +56,142 @@ class QbInvoiceLine {
   });
 }
 
+/// Per-customer combined summary used for display
 class QbCustomerSummary {
   final String customerName;
+
+  // QB (Billed) side
   final int billedCount;
   final double totalBilled;
-  final List<QbInvoiceLine> lines;
-  final int activatedCount;
-  final List<String> activationSerials;
+  final List<QbInvoiceLine> qbLines;
+
+  // MyAdmin (Active) side
+  final int activeCount;
+  final List<MyAdminDevice> activeDevices;
 
   const QbCustomerSummary({
     required this.customerName,
     required this.billedCount,
     required this.totalBilled,
-    required this.lines,
-    required this.activatedCount,
-    required this.activationSerials,
+    required this.qbLines,
+    required this.activeCount,
+    required this.activeDevices,
   });
 
   VerifyStatus get status {
-    if (activatedCount == 0 && billedCount == 0) return VerifyStatus.match;
-    if (billedCount > 0 && activatedCount == 0) return VerifyStatus.qbOnly;
-    if (billedCount == 0 && activatedCount > 0) return VerifyStatus.activationOnly;
-    if (billedCount > activatedCount) return VerifyStatus.overbilled;
-    if (billedCount < activatedCount) return VerifyStatus.underbilled;
+    if (billedCount == 0 && activeCount == 0) return VerifyStatus.match;
+    if (billedCount > 0 && activeCount == 0) return VerifyStatus.qbOnly;
+    if (billedCount == 0 && activeCount > 0) return VerifyStatus.activeOnly;
+    if (billedCount > activeCount) return VerifyStatus.overbilled;
+    if (billedCount < activeCount) return VerifyStatus.underbilled;
     return VerifyStatus.match;
   }
+
+  int get diff => billedCount - activeCount; // positive = over, negative = under
 }
 
-// ── Parser ────────────────────────────────────────────────────────────────────
+// ── MyAdmin CSV Parser ────────────────────────────────────────────────────────
+
+/// Parse a MyAdmin "Device Management - Full Report" CSV.
+/// The file has a 2-line header (report name + date), a blank line, then
+/// the column header row, then data rows.
+/// Returns only ACTIVE billing-status devices, grouped by normalised customer name.
+Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
+  final lines = content.split(RegExp(r'\r?\n'));
+  if (lines.length < 5) return {};
+
+  // Find the header row — it contains "Serial number" and "Customer"
+  int headerIdx = -1;
+  List<String> headers = [];
+  for (int i = 0; i < lines.length && i < 10; i++) {
+    final cells = _splitCsv(lines[i]);
+    final lower = cells.map((c) => c.toLowerCase().trim()).toList();
+    if (lower.contains('serial number') && lower.contains('customer')) {
+      headerIdx = i;
+      headers = cells.map((c) => c.toLowerCase().trim()).toList();
+      break;
+    }
+  }
+  if (headerIdx < 0) return {};
+
+  final serialIdx  = headers.indexOf('serial number');
+  final custIdx    = headers.indexOf('customer');
+  final planIdx    = headers.indexOf('active billing plan');
+  final rpcIdx     = headers.indexOf('rate plan code');
+  final statusIdx  = headers.indexOf('billing status');
+  final accountIdx = headers.indexOf('account');
+
+  if (serialIdx < 0 || custIdx < 0) return {};
+
+  final Map<String, List<MyAdminDevice>> result = {};
+
+  for (int i = headerIdx + 1; i < lines.length; i++) {
+    final raw = lines[i].trim();
+    if (raw.isEmpty) continue;
+    final cells = _splitCsv(raw);
+    if (cells.length <= custIdx) continue;
+
+    String g(int idx) =>
+        (idx >= 0 && idx < cells.length) ? cells[idx].trim() : '';
+
+    final serial  = g(serialIdx);
+    final customer = g(custIdx);
+    final status  = g(statusIdx);
+
+    if (serial.isEmpty || customer.isEmpty) continue;
+
+    // Only include Active devices — skip Never billed, Suspended, Unknown
+    if (status.toLowerCase() != 'active') continue;
+
+    final normKey = _normKey(customer);
+    result.putIfAbsent(normKey, () => []);
+    result[normKey]!.add(MyAdminDevice(
+      serialNumber: serial,
+      customer: customer,
+      billingPlan: g(planIdx),
+      ratePlanCode: g(rpcIdx),
+      billingStatus: status,
+      account: g(accountIdx),
+    ));
+  }
+
+  return result;
+}
+
+// ── QB Sales CSV Parser ───────────────────────────────────────────────────────
 
 /// Parse a QuickBooks "Sales by Customer Detail" CSV export.
-/// Returns a map of normalised customer name → list of invoice lines.
-Map<String, List<QbInvoiceLine>> _parseQbSalesCsv(String content) {
+/// Returns a map of normalised customer name → list of billable invoice lines.
+Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
   final lines = content.split(RegExp(r'\r?\n'));
   if (lines.isEmpty) return {};
 
-  // Find the header row (contains "Name" and "Item")
+  // Find the header row (contains "Name" and "Item" or "Product")
   int headerIdx = -1;
   List<String> headers = [];
   for (int i = 0; i < lines.length; i++) {
-    final row = _splitCsvRow(lines[i]);
-    final lower = row.map((c) => c.toLowerCase()).toList();
-    if (lower.any((c) => c.contains('name')) &&
-        lower.any((c) => c.contains('item') || c.contains('product'))) {
+    final row = _splitCsv(lines[i]);
+    final lower = row.map((c) => c.toLowerCase().trim()).toList();
+    if (lower.any((c) => c == 'name' || c == 'customer') &&
+        lower.any((c) => c.contains('item') || c.contains('product') || c.contains('description'))) {
       headerIdx = i;
       headers = row.map((c) => c.trim().toLowerCase()).toList();
       break;
     }
   }
-
   if (headerIdx < 0) return {};
 
   int nameIdx = headers.indexWhere((h) => h == 'name' || h == 'customer');
   int typeIdx = headers.indexWhere((h) => h == 'type');
-  int numIdx  = headers.indexWhere((h) => h.contains('num') || h.contains('invoice'));
+  int numIdx  = headers.indexWhere((h) => h.contains('num') || h == 'invoice #');
   int dateIdx = headers.indexWhere((h) => h == 'date');
-  int itemIdx = headers.indexWhere((h) => h.contains('item') || h.contains('product') || h.contains('description'));
+  int itemIdx = headers.indexWhere((h) =>
+      h.contains('item') || h.contains('product') || h == 'description' || h == 'service');
   int qtyIdx  = headers.indexWhere((h) => h == 'qty' || h == 'quantity');
-  int rateIdx = headers.indexWhere((h) => h == 'rate' || h.contains('unit') || h.contains('price'));
+  int rateIdx = headers.indexWhere(
+      (h) => h == 'rate' || h.contains('unit price') || h == 'sales price');
   int amtIdx  = headers.indexWhere((h) => h == 'amount' || h == 'total');
 
-  // Fallback column indices
   if (nameIdx < 0) nameIdx = 3;
   if (itemIdx < 0) itemIdx = 5;
   if (amtIdx < 0)  amtIdx  = headers.length > 7 ? 7 : headers.length - 1;
@@ -106,79 +204,60 @@ Map<String, List<QbInvoiceLine>> _parseQbSalesCsv(String content) {
   for (int i = headerIdx + 1; i < lines.length; i++) {
     final raw = lines[i].trim();
     if (raw.isEmpty) continue;
-    final cells = _splitCsvRow(raw);
+    final cells = _splitCsv(raw);
     if (cells.length < 3) continue;
 
-    String getCell(int idx) =>
+    String gc(int idx) =>
         (idx >= 0 && idx < cells.length) ? cells[idx].trim() : '';
 
-    final rowType = typeIdx >= 0 ? getCell(typeIdx).toLowerCase() : '';
-    final nameCell = getCell(nameIdx);
+    final rowType  = typeIdx >= 0 ? gc(typeIdx).toLowerCase() : '';
+    final nameCell = gc(nameIdx);
 
-    // Customer/Invoice header rows
-    if (rowType.contains('invoice') || rowType.contains('total')) {
+    // Track customer/invoice context from Invoice header rows
+    if (rowType.contains('invoice')) {
       if (nameCell.isNotEmpty) currentCustomer = nameCell;
-      if (numIdx >= 0 && getCell(numIdx).isNotEmpty) {
-        currentInvoice = getCell(numIdx);
-      }
-      if (dateIdx >= 0 && getCell(dateIdx).isNotEmpty) {
-        currentDate = getCell(dateIdx);
-      }
-      // Some exports put line items on the same row as "Invoice"
-      final item = getCell(itemIdx);
-      if (item.isNotEmpty && !item.toLowerCase().contains('total')) {
-        final customer =
-            currentCustomer.isEmpty ? nameCell : currentCustomer;
-        if (customer.isEmpty) continue;
-        final normKey = customer.toLowerCase().trim();
-        result.putIfAbsent(normKey, () => []);
-        result[normKey]!.add(QbInvoiceLine(
-          invoiceNumber: currentInvoice,
-          date: currentDate,
-          description: item,
-          qty: double.tryParse(getCell(qtyIdx).replaceAll(',', '')) ?? 1.0,
-          unitPrice:
-              double.tryParse(getCell(rateIdx).replaceAll(RegExp(r'[,\$]'), '')) ??
-                  0.0,
-          amount:
-              double.tryParse(getCell(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ??
-                  0.0,
-        ));
-      }
-      continue;
+      if (numIdx >= 0 && gc(numIdx).isNotEmpty) currentInvoice = gc(numIdx);
+      if (dateIdx >= 0 && gc(dateIdx).isNotEmpty) currentDate   = gc(dateIdx);
     }
 
-    // Line item rows — use the "current" customer context
     final customer = nameCell.isNotEmpty ? nameCell : currentCustomer;
     if (customer.isEmpty) continue;
-
-    final item = getCell(itemIdx);
-    if (item.isEmpty || item.toLowerCase().contains('total')) continue;
-    // Skip non-product rows like shipping or flat fees
-    if (item.toLowerCase().contains('shipping')) continue;
-
     if (nameCell.isNotEmpty) currentCustomer = nameCell;
 
-    final normKey = customer.toLowerCase().trim();
+    final item = gc(itemIdx);
+    if (item.isEmpty) continue;
+
+    // Skip totals, shipping, one-time fees, flat account fees
+    final itemLower = item.toLowerCase();
+    if (itemLower.contains('total')) continue;
+    if (itemLower.contains('shipping')) continue;
+    if (itemLower.contains('early term')) continue;
+    if (itemLower.contains('mkt-fee')) continue;
+
+    final amount = double.tryParse(gc(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0;
+    if (amount <= 0) continue;
+
+    final normKey = _normKey(customer);
     result.putIfAbsent(normKey, () => []);
     result[normKey]!.add(QbInvoiceLine(
       invoiceNumber: currentInvoice,
       date: currentDate,
       description: item,
-      qty: double.tryParse(getCell(qtyIdx).replaceAll(',', '')) ?? 1.0,
+      qty: double.tryParse(gc(qtyIdx).replaceAll(',', '')) ?? 1.0,
       unitPrice:
-          double.tryParse(getCell(rateIdx).replaceAll(RegExp(r'[,\$]'), '')) ??
-              0.0,
-      amount:
-          double.tryParse(getCell(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ??
-              0.0,
+          double.tryParse(gc(rateIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0,
+      amount: amount,
     ));
   }
 
   return result;
 }
 
-List<String> _splitCsvRow(String row) {
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+String _normKey(String name) => name.toLowerCase().trim();
+
+List<String> _splitCsv(String row) {
   final cells = <String>[];
   bool inQuotes = false;
   final buf = StringBuffer();
@@ -211,14 +290,18 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   late final TabController _tabCtrl;
   final _searchCtrl = TextEditingController();
 
-  /// Raw QB data: normKey → lines
+  // MyAdmin data
+  Map<String, List<MyAdminDevice>> _myAdminData = {};
+  bool _myAdminLoaded = false;
+  String? _myAdminFileName;
+  String? _myAdminReportDate;
+
+  // QB data
   Map<String, List<QbInvoiceLine>> _qbData = {};
   bool _qbLoaded = false;
   String? _qbFileName;
 
   String _search = '';
-
-  /// Expanded customer keys
   final Set<String> _expanded = {};
 
   @override
@@ -237,9 +320,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     super.dispose();
   }
 
-  // ── Import ────────────────────────────────────────────────────────────────
+  // ── Import MyAdmin ────────────────────────────────────────────────────────
 
-  Future<void> _importQbCsv() async {
+  Future<void> _importMyAdmin() async {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -258,7 +341,84 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         return;
       }
 
-      final parsed = _parseQbSalesCsv(content);
+      // Extract report date from line 2
+      String? reportDate;
+      final firstLines = content.split(RegExp(r'\r?\n'));
+      if (firstLines.length > 1) {
+        final dateLine = firstLines[1].trim();
+        if (dateLine.startsWith('Report Date:')) {
+          reportDate = dateLine.replaceFirst('Report Date:', '').trim();
+        }
+      }
+
+      final parsed = parseMyAdminCsv(content);
+      if (!mounted) return;
+
+      if (parsed.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Could not parse MyAdmin report. Make sure this is the '
+                '"Device Management - Full Report" CSV from MyAdmin.'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+        return;
+      }
+
+      final totalDevices =
+          parsed.values.fold(0, (s, list) => s + list.length);
+
+      setState(() {
+        _myAdminData    = parsed;
+        _myAdminLoaded  = true;
+        _myAdminFileName = file.name;
+        _myAdminReportDate = reportDate;
+        _expanded.clear();
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'MyAdmin: $totalDevices active devices across ${parsed.length} customers'),
+            backgroundColor: AppTheme.teal,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Import error: $e'),
+          backgroundColor: AppTheme.red,
+        ),
+      );
+    }
+  }
+
+  // ── Import QB ─────────────────────────────────────────────────────────────
+
+  Future<void> _importQb() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'txt'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      String content;
+      if (file.bytes != null) {
+        content = String.fromCharCodes(file.bytes!);
+      } else if (file.path != null) {
+        content = await File(file.path!).readAsString();
+      } else {
+        return;
+      }
+
+      final parsed = parseQbSalesCsv(content);
       if (!mounted) return;
 
       if (parsed.isEmpty) {
@@ -274,19 +434,23 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
 
       setState(() {
-        _qbData = parsed;
-        _qbLoaded = true;
+        _qbData    = parsed;
+        _qbLoaded  = true;
         _qbFileName = file.name;
         _expanded.clear();
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              'Imported ${parsed.length} customers from "${file.name}"'),
-          backgroundColor: AppTheme.teal,
-        ),
-      );
+      final totalLines =
+          parsed.values.fold(0, (s, list) => s + list.length);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'QB: $totalLines line items across ${parsed.length} customers'),
+            backgroundColor: AppTheme.teal,
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -298,86 +462,79 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     }
   }
 
-  // ── Build summaries ───────────────────────────────────────────────────────
+  // ── Build Summaries ───────────────────────────────────────────────────────
 
-  List<QbCustomerSummary> _buildSummaries(AppProvider provider) {
-    // Activation data: normalised name → serial list
-    final Map<String, List<String>> activationMap = {};
-    for (final group in provider.customerGroups) {
-      final key = group.customerName.toLowerCase().trim();
-      activationMap.putIfAbsent(key, () => []);
-      for (final d in group.devices) {
-        activationMap[key]!.add(d.serialNumber);
-      }
-    }
-
+  List<QbCustomerSummary> _buildSummaries() {
+    // Collect all customer keys from both sides
     final allKeys = {
-      ...activationMap.keys,
+      ..._myAdminData.keys,
       ..._qbData.keys,
     };
 
-    return allKeys.map((key) {
-      final qbLines  = _qbData[key] ?? [];
-      final serials  = activationMap[key] ?? [];
+    // For QB-only side, try to find a better display name from MyAdmin
+    final List<QbCustomerSummary> summaries = allKeys.map((key) {
+      final devices = _myAdminData[key] ?? [];
+      final qbLines = _qbData[key] ?? [];
 
-      // Count only Geotab service line items (skip shipping, flat fees, etc.)
-      final billedLines = qbLines.where((l) {
-        final d = l.description.toLowerCase();
-        return !d.contains('shipping') &&
-               !d.contains('early term') &&
-               !d.contains('mkt-fee') &&
-               l.amount > 0;
-      }).toList();
-
-      // Find the display name (prefer QB name, then activation name)
+      // Build display name: prefer MyAdmin full customer name
       String displayName = key;
-      if (_qbData.containsKey(key) && qbLines.isNotEmpty) {
-        // Try to find original casing from QB data
-        displayName = key; // Already normalised; we keep it as-is for now
+      if (devices.isNotEmpty) {
+        // MyAdmin customer column includes location in parens — strip it for display
+        displayName = _stripLocation(devices.first.customer);
+      } else if (qbLines.isNotEmpty) {
+        // Use QB name as-is (already a clean name)
+        displayName = key;
+        // Try to find the original casing from QB data by scanning
+        // (the key is lowercased so we preserve the display version separately)
       }
-      // Try to restore proper casing from activation groups
-      final actGroup = provider.customerGroups
-          .where((g) => g.customerName.toLowerCase().trim() == key)
-          .firstOrNull;
-      if (actGroup != null) displayName = actGroup.customerName;
 
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
-        billedCount: billedLines.length,
-        totalBilled: billedLines.fold(0.0, (s, l) => s + l.amount),
-        lines: qbLines,
-        activatedCount: serials.length,
-        activationSerials: serials,
+        billedCount: qbLines.length,
+        totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
+        qbLines: qbLines,
+        activeCount: devices.length,
+        activeDevices: devices,
       );
-    }).toList()
-      ..sort((a, b) {
-        // Sort: issues first, then by customer name
-        final aIssue = a.status != VerifyStatus.match ? 0 : 1;
-        final bIssue = b.status != VerifyStatus.match ? 0 : 1;
-        if (aIssue != bIssue) return aIssue - bIssue;
-        return a.customerName.compareTo(b.customerName);
-      });
+    }).toList();
+
+    // Sort: issues first, then alphabetically
+    summaries.sort((a, b) {
+      final aOk = a.status == VerifyStatus.match ? 1 : 0;
+      final bOk = b.status == VerifyStatus.match ? 1 : 0;
+      if (aOk != bOk) return aOk - bOk;
+      return a.customerName.compareTo(b.customerName);
+    });
+
+    return summaries;
+  }
+
+  /// Strip the location/contact suffix from MyAdmin customer names.
+  /// e.g. "Baker Roofing (Seth Hagen  Raleigh  North Carolina)" → "Baker Roofing"
+  String _stripLocation(String name) {
+    final idx = name.indexOf('(');
+    return idx > 0 ? name.substring(0, idx).trim() : name.trim();
   }
 
   // ── Filter for tab ────────────────────────────────────────────────────────
 
-  List<QbCustomerSummary> _filter(
+  List<QbCustomerSummary> _filterForTab(
       List<QbCustomerSummary> all, int tabIndex) {
     List<QbCustomerSummary> list;
     switch (tabIndex) {
-      case 1: // Issues
+      case 1: // Issues: overbilled + underbilled
         list = all
             .where((s) =>
                 s.status == VerifyStatus.overbilled ||
                 s.status == VerifyStatus.underbilled)
             .toList();
         break;
-      case 2: // Missing (Activation Only)
+      case 2: // Active Only — in MyAdmin but not in QB (not invoiced!)
         list = all
-            .where((s) => s.status == VerifyStatus.activationOnly)
+            .where((s) => s.status == VerifyStatus.activeOnly)
             .toList();
         break;
-      case 3: // QB Only
+      case 3: // QB Only — in QB but not in MyAdmin
         list = all
             .where((s) => s.status == VerifyStatus.qbOnly)
             .toList();
@@ -391,27 +548,23 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .toList();
   }
 
-  // ── UI ─────────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<AppProvider>();
-    final hasActivations = provider.hasData;
+    // We still watch AppProvider for any future integration
+    context.watch<AppProvider>();
 
-    final summaries = (_qbLoaded || hasActivations)
-        ? _buildSummaries(provider)
-        : <QbCustomerSummary>[];
+    final hasAnyData = _myAdminLoaded || _qbLoaded;
+    final summaries  = hasAnyData ? _buildSummaries() : <QbCustomerSummary>[];
 
-    final issueCount = summaries
-        .where((s) =>
-            s.status == VerifyStatus.overbilled ||
-            s.status == VerifyStatus.underbilled)
-        .length;
-    final missingCount = summaries
-        .where((s) => s.status == VerifyStatus.activationOnly)
-        .length;
-    final qbOnlyCount =
-        summaries.where((s) => s.status == VerifyStatus.qbOnly).length;
+    final issueCount   = summaries.where((s) =>
+        s.status == VerifyStatus.overbilled ||
+        s.status == VerifyStatus.underbilled).length;
+    final activeOnlyCount = summaries
+        .where((s) => s.status == VerifyStatus.activeOnly).length;
+    final qbOnlyCount = summaries
+        .where((s) => s.status == VerifyStatus.qbOnly).length;
 
     return Scaffold(
       appBar: AppBar(
@@ -422,17 +575,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             Text('QB Verify'),
           ],
         ),
-        actions: [
-          TextButton.icon(
-            onPressed: _importQbCsv,
-            icon: const Icon(Icons.upload_file, size: 18, color: AppTheme.tealLight),
-            label: const Text('Import QB Sales CSV',
-                style: TextStyle(color: AppTheme.tealLight, fontSize: 12)),
-          ),
-        ],
         bottom: TabBar(
           controller: _tabCtrl,
-          labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+          labelStyle:
+              const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
           unselectedLabelStyle: const TextStyle(fontSize: 11),
           tabs: [
             const Tab(text: 'All'),
@@ -447,10 +593,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             ),
             Tab(
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Text('Missing'),
-                if (missingCount > 0) ...[
+                const Text('Not Billed'),
+                if (activeOnlyCount > 0) ...[
                   const SizedBox(width: 4),
-                  _CountBadge(missingCount, AppTheme.red),
+                  _CountBadge(activeOnlyCount, AppTheme.red),
                 ],
               ]),
             ),
@@ -468,13 +614,24 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       ),
       body: Column(
         children: [
-          // ── Status / info bar ───────────────────────────────────────────
-          if (!_qbLoaded && !hasActivations)
-            _EmptyState(onImport: _importQbCsv)
+          // ── Import action bar ───────────────────────────────────────────
+          _ImportBar(
+            myAdminLoaded:   _myAdminLoaded,
+            myAdminFileName: _myAdminFileName,
+            myAdminDate:     _myAdminReportDate,
+            qbLoaded:        _qbLoaded,
+            qbFileName:      _qbFileName,
+            onImportMyAdmin: _importMyAdmin,
+            onImportQb:      _importQb,
+          ),
+
+          if (!hasAnyData)
+            _EmptyState(
+                onImportMyAdmin: _importMyAdmin, onImportQb: _importQb)
           else ...[
             // Search bar
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
               child: TextField(
                 controller: _searchCtrl,
                 decoration: InputDecoration(
@@ -495,22 +652,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               ),
             ),
 
-            // Status pills
-            _StatusBar(
-              qbLoaded: _qbLoaded,
-              qbFileName: _qbFileName,
-              hasActivations: hasActivations,
-              totalCustomers: summaries.length,
-              issueCount: issueCount,
-              missingCount: missingCount,
-            ),
-
-            // Tab content
+            // Tab views
             Expanded(
               child: TabBarView(
                 controller: _tabCtrl,
                 children: List.generate(4, (tabIdx) {
-                  final filtered = _filter(summaries, tabIdx);
+                  final filtered = _filterForTab(summaries, tabIdx);
                   if (filtered.isEmpty) {
                     return Center(
                       child: Column(
@@ -518,7 +665,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                         children: [
                           Icon(
                             tabIdx == 0
-                                ? Icons.verified
+                                ? Icons.inbox
                                 : Icons.check_circle_outline,
                             size: 48,
                             color: AppTheme.green.withValues(alpha: 0.4),
@@ -526,8 +673,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                           const SizedBox(height: 12),
                           Text(
                             tabIdx == 0
-                                ? 'No customers found'
-                                : 'No issues in this category',
+                                ? 'No customers to display'
+                                : 'No issues in this category ✓',
                             style: const TextStyle(
                                 color: AppTheme.textSecondary),
                           ),
@@ -538,21 +685,21 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                   return ListView.builder(
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 80),
                     itemCount: filtered.length,
-                    itemBuilder: (ctx, i) => _CustomerVerifyCard(
-                      summary: filtered[i],
-                      expanded: _expanded.contains(
-                          filtered[i].customerName.toLowerCase()),
-                      onToggle: () {
-                        final k = filtered[i].customerName.toLowerCase();
-                        setState(() {
-                          if (_expanded.contains(k)) {
-                            _expanded.remove(k);
+                    itemBuilder: (ctx, i) {
+                      final s = filtered[i];
+                      final key = s.customerName.toLowerCase();
+                      return _CustomerVerifyCard(
+                        summary: s,
+                        expanded: _expanded.contains(key),
+                        onToggle: () => setState(() {
+                          if (_expanded.contains(key)) {
+                            _expanded.remove(key);
                           } else {
-                            _expanded.add(k);
+                            _expanded.add(key);
                           }
-                        });
-                      },
-                    ),
+                        }),
+                      );
+                    },
                   );
                 }),
               ),
@@ -568,168 +715,385 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
+// ── Import Bar ────────────────────────────────────────────────────────────────
 
-class _EmptyState extends StatelessWidget {
-  final VoidCallback onImport;
-  const _EmptyState({required this.onImport});
+class _ImportBar extends StatelessWidget {
+  final bool myAdminLoaded;
+  final String? myAdminFileName;
+  final String? myAdminDate;
+  final bool qbLoaded;
+  final String? qbFileName;
+  final VoidCallback onImportMyAdmin;
+  final VoidCallback onImportQb;
+
+  const _ImportBar({
+    required this.myAdminLoaded,
+    required this.myAdminFileName,
+    required this.myAdminDate,
+    required this.qbLoaded,
+    required this.qbFileName,
+    required this.onImportMyAdmin,
+    required this.onImportQb,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+    return Container(
+      color: AppTheme.navyDark,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Row(
+        children: [
+          // MyAdmin side
+          Expanded(
+            child: _ImportSlot(
+              icon: Icons.devices,
+              label: 'MyAdmin Report',
+              sublabel: myAdminLoaded
+                  ? (myAdminDate ?? myAdminFileName ?? 'Loaded')
+                  : 'Device Management Full Report',
+              loaded: myAdminLoaded,
+              color: AppTheme.teal,
+              onTap: onImportMyAdmin,
+            ),
+          ),
+          const SizedBox(width: 8),
+          // VS divider
+          Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.receipt_long,
-                  size: 72,
-                  color: AppTheme.navyAccent.withValues(alpha: 0.3)),
-              const SizedBox(height: 20),
-              const Text(
-                'QB Verify',
-                style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Import a QuickBooks "Sales by Customer Detail" CSV to '
-                'verify that every active device is being invoiced correctly.',
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 13, color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'You can also load the QB report without loading an activation CSV '
-                '— customers will show as QB Only until activations are loaded.',
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 28),
-              ElevatedButton.icon(
-                onPressed: onImport,
-                icon: const Icon(Icons.upload_file),
-                label: const Text('Import QB Sales CSV'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.navyAccent,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 24, vertical: 14),
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: AppTheme.navyMid,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white12),
                 ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'QuickBooks → Reports → Sales → Sales by Customer Detail → Export as CSV',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 11,
-                    color: AppTheme.textSecondary,
-                    fontStyle: FontStyle.italic),
+                child: const Center(
+                  child: Text('VS',
+                      style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white38)),
+                ),
               ),
             ],
           ),
+          const SizedBox(width: 8),
+          // QB side
+          Expanded(
+            child: _ImportSlot(
+              icon: Icons.receipt_long,
+              label: 'QB Sales CSV',
+              sublabel: qbLoaded
+                  ? (qbFileName ?? 'Loaded')
+                  : 'Sales by Customer Detail',
+              loaded: qbLoaded,
+              color: AppTheme.navyAccent,
+              onTap: onImportQb,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ImportSlot extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String sublabel;
+  final bool loaded;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ImportSlot({
+    required this.icon,
+    required this.label,
+    required this.sublabel,
+    required this.loaded,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: loaded
+              ? color.withValues(alpha: 0.12)
+              : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: loaded
+                ? color.withValues(alpha: 0.4)
+                : Colors.white.withValues(alpha: 0.1),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              loaded ? Icons.check_circle : icon,
+              size: 18,
+              color: loaded ? color : Colors.white38,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: loaded ? color : Colors.white54,
+                    ),
+                  ),
+                  Text(
+                    sublabel,
+                    style: const TextStyle(
+                        fontSize: 10, color: Colors.white38),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.upload_file,
+              size: 14,
+              color: loaded ? color.withValues(alpha: 0.6) : Colors.white24,
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-// ── Status bar ─────────────────────────────────────────────────────────────────
+// ── Empty State ───────────────────────────────────────────────────────────────
 
-class _StatusBar extends StatelessWidget {
-  final bool qbLoaded;
-  final String? qbFileName;
-  final bool hasActivations;
-  final int totalCustomers;
-  final int issueCount;
-  final int missingCount;
+class _EmptyState extends StatelessWidget {
+  final VoidCallback onImportMyAdmin;
+  final VoidCallback onImportQb;
 
-  const _StatusBar({
-    required this.qbLoaded,
-    required this.qbFileName,
-    required this.hasActivations,
-    required this.totalCustomers,
-    required this.issueCount,
-    required this.missingCount,
+  const _EmptyState({
+    required this.onImportMyAdmin,
+    required this.onImportQb,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        children: [
-          _Pill(
-            icon: qbLoaded ? Icons.check_circle : Icons.radio_button_unchecked,
-            label: qbLoaded
-                ? (qbFileName ?? 'QB data loaded')
-                : 'No QB data — tap Import',
-            color: qbLoaded ? AppTheme.teal : Colors.grey,
-          ),
-          _Pill(
-            icon: hasActivations
-                ? Icons.check_circle
-                : Icons.radio_button_unchecked,
-            label: hasActivations ? 'Activations loaded' : 'No activations loaded',
-            color: hasActivations ? AppTheme.teal : Colors.grey,
-          ),
-          if (issueCount > 0)
-            _Pill(
-              icon: Icons.warning_amber,
-              label: '$issueCount billing issue${issueCount > 1 ? 's' : ''}',
-              color: AppTheme.amber,
+    return Expanded(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const SizedBox(height: 16),
+            Icon(Icons.compare_arrows,
+                size: 64,
+                color: AppTheme.navyAccent.withValues(alpha: 0.3)),
+            const SizedBox(height: 20),
+            const Text(
+              'Invoice Audit — Before You Send',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary),
+              textAlign: TextAlign.center,
             ),
-          if (missingCount > 0)
-            _Pill(
-              icon: Icons.error,
-              label: '$missingCount not invoiced',
-              color: AppTheme.red,
+            const SizedBox(height: 12),
+            const Text(
+              'Compare your MyAdmin active devices against QuickBooks '
+              'invoices to catch discrepancies before billing goes out.',
+              textAlign: TextAlign.center,
+              style:
+                  TextStyle(fontSize: 13, color: AppTheme.textSecondary),
             ),
-        ],
+            const SizedBox(height: 28),
+
+            // Two-card import instructions
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _StepCard(
+                    step: '1',
+                    color: AppTheme.teal,
+                    icon: Icons.devices,
+                    title: 'MyAdmin Report',
+                    body:
+                        'MyAdmin → Reports → Device Management → Full Report → Export CSV',
+                    buttonLabel: 'Import MyAdmin CSV',
+                    onTap: onImportMyAdmin,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StepCard(
+                    step: '2',
+                    color: AppTheme.navyAccent,
+                    icon: Icons.receipt_long,
+                    title: 'QB Sales Report',
+                    body:
+                        'QuickBooks → Reports → Sales → Sales by Customer Detail → Export CSV',
+                    buttonLabel: 'Import QB CSV',
+                    onTap: onImportQb,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Legend
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Status Legend',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70)),
+                  const SizedBox(height: 8),
+                  ..._legendItems.map((item) => Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Row(
+                          children: [
+                            Icon(item.$1, size: 14, color: item.$2),
+                            const SizedBox(width: 8),
+                            Text(item.$3,
+                                style: TextStyle(
+                                    fontSize: 11, color: item.$2,
+                                    fontWeight: FontWeight.w600)),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(item.$4,
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.white38)),
+                            ),
+                          ],
+                        ),
+                      )),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  static const _legendItems = [
+    (Icons.check_circle, AppTheme.green, 'Match',
+        'Billed count = Active count'),
+    (Icons.warning_amber, AppTheme.amber, 'Overbilled',
+        'More QB lines than active devices'),
+    (Icons.error, AppTheme.red, 'Underbilled',
+        'Fewer QB lines than active devices — revenue leak'),
+    (Icons.money_off, AppTheme.red, 'Not Billed',
+        'Active in MyAdmin but no QB invoice — not charged at all'),
+    (Icons.help_outline, Colors.grey, 'QB Only',
+        'In QB but not in MyAdmin — possibly a closed account'),
+  ];
 }
 
-class _Pill extends StatelessWidget {
-  final IconData icon;
-  final String label;
+class _StepCard extends StatelessWidget {
+  final String step;
   final Color color;
-  const _Pill({required this.icon, required this.label, required this.color});
+  final IconData icon;
+  final String title;
+  final String body;
+  final String buttonLabel;
+  final VoidCallback onTap;
+
+  const _StepCard({
+    required this.step,
+    required this.color,
+    required this.icon,
+    required this.title,
+    required this.body,
+    required this.buttonLabel,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(label,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: color,
-                  fontWeight: FontWeight.w600)),
+          Row(
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                    color: color, shape: BoxShape.circle),
+                child: Center(
+                  child: Text(step,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(title,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: color)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(body,
+              style: const TextStyle(
+                  fontSize: 11, color: AppTheme.textSecondary)),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onTap,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: color,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                textStyle: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+              child: Text(buttonLabel),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-// ── Customer verify card ──────────────────────────────────────────────────────
+// ── Customer Verify Card ──────────────────────────────────────────────────────
 
 class _CustomerVerifyCard extends StatelessWidget {
   final QbCustomerSummary summary;
@@ -742,33 +1106,33 @@ class _CustomerVerifyCard extends StatelessWidget {
     required this.onToggle,
   });
 
-  Color get _statusColor {
+  Color get _color {
     switch (summary.status) {
-      case VerifyStatus.match:          return AppTheme.green;
-      case VerifyStatus.overbilled:     return AppTheme.amber;
-      case VerifyStatus.underbilled:    return AppTheme.red;
-      case VerifyStatus.qbOnly:         return Colors.grey;
-      case VerifyStatus.activationOnly: return AppTheme.red;
+      case VerifyStatus.match:      return AppTheme.green;
+      case VerifyStatus.overbilled: return AppTheme.amber;
+      case VerifyStatus.underbilled:return AppTheme.red;
+      case VerifyStatus.qbOnly:     return Colors.grey;
+      case VerifyStatus.activeOnly: return AppTheme.red;
     }
   }
 
-  IconData get _statusIcon {
+  IconData get _icon {
     switch (summary.status) {
-      case VerifyStatus.match:          return Icons.check_circle;
-      case VerifyStatus.overbilled:     return Icons.warning_amber;
-      case VerifyStatus.underbilled:    return Icons.error;
-      case VerifyStatus.qbOnly:         return Icons.help_outline;
-      case VerifyStatus.activationOnly: return Icons.money_off;
+      case VerifyStatus.match:      return Icons.check_circle;
+      case VerifyStatus.overbilled: return Icons.warning_amber;
+      case VerifyStatus.underbilled:return Icons.error;
+      case VerifyStatus.qbOnly:     return Icons.help_outline;
+      case VerifyStatus.activeOnly: return Icons.money_off;
     }
   }
 
-  String get _statusLabel {
+  String get _label {
     switch (summary.status) {
-      case VerifyStatus.match:          return 'Match';
-      case VerifyStatus.overbilled:     return 'Overbilled';
-      case VerifyStatus.underbilled:    return 'Underbilled';
-      case VerifyStatus.qbOnly:         return 'QB Only';
-      case VerifyStatus.activationOnly: return 'Not Invoiced';
+      case VerifyStatus.match:      return 'Match';
+      case VerifyStatus.overbilled: return 'Overbilled +${summary.diff}';
+      case VerifyStatus.underbilled:return 'Underbilled ${summary.diff}';
+      case VerifyStatus.qbOnly:     return 'QB Only';
+      case VerifyStatus.activeOnly: return 'Not Billed';
     }
   }
 
@@ -778,18 +1142,16 @@ class _CustomerVerifyCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: Column(
         children: [
-          // Header row
+          // ── Header row ──────────────────────────────────────────────
           InkWell(
             onTap: onToggle,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
               child: Row(
                 children: [
-                  // Status icon
-                  Icon(_statusIcon, size: 20, color: _statusColor),
+                  Icon(_icon, size: 20, color: _color),
                   const SizedBox(width: 10),
-                  // Customer name + billing info
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -797,7 +1159,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                         Text(
                           summary.customerName,
                           style: const TextStyle(
-                            fontSize: 14,
+                            fontSize: 13,
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary,
                           ),
@@ -805,25 +1167,23 @@ class _CustomerVerifyCard extends StatelessWidget {
                         const SizedBox(height: 3),
                         Row(
                           children: [
-                            _CountChip(
-                              'Billed: ${summary.billedCount}',
-                              summary.billedCount > 0
-                                  ? AppTheme.navyAccent
-                                  : Colors.grey,
+                            _MiniChip(
+                              icon: Icons.devices,
+                              label: 'Active: ${summary.activeCount}',
+                              color: AppTheme.teal,
                             ),
                             const SizedBox(width: 6),
-                            _CountChip(
-                              'Activated: ${summary.activatedCount}',
-                              summary.activatedCount > 0
-                                  ? AppTheme.teal
-                                  : Colors.grey,
+                            _MiniChip(
+                              icon: Icons.receipt,
+                              label: 'Billed: ${summary.billedCount}',
+                              color: AppTheme.navyAccent,
                             ),
                             if (summary.totalBilled > 0) ...[
                               const SizedBox(width: 6),
                               Text(
                                 Formatters.currency(summary.totalBilled),
                                 style: const TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 10,
                                     color: AppTheme.textSecondary),
                               ),
                             ],
@@ -837,21 +1197,21 @@ class _CustomerVerifyCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: _statusColor.withValues(alpha: 0.1),
+                      color: _color.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                          color: _statusColor.withValues(alpha: 0.35)),
+                          color: _color.withValues(alpha: 0.35)),
                     ),
                     child: Text(
-                      _statusLabel,
+                      _label,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 10,
                         fontWeight: FontWeight.w700,
-                        color: _statusColor,
+                        color: _color,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 4),
                   Icon(
                     expanded ? Icons.expand_less : Icons.expand_more,
                     size: 18,
@@ -862,7 +1222,7 @@ class _CustomerVerifyCard extends StatelessWidget {
             ),
           ),
 
-          // Expanded detail
+          // ── Expanded detail ─────────────────────────────────────────
           if (expanded) ...[
             const Divider(height: 1, color: AppTheme.divider),
             Padding(
@@ -870,23 +1230,50 @@ class _CustomerVerifyCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // QB invoice lines
-                  if (summary.lines.isNotEmpty) ...[
-                    const Text(
-                      'QB INVOICE LINES',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textSecondary,
-                        letterSpacing: 0.8,
+                  // Side-by-side counts
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _SideHeader(
+                          icon: Icons.devices,
+                          label:
+                              'MyAdmin Active (${summary.activeCount})',
+                          color: AppTheme.teal,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _SideHeader(
+                          icon: Icons.receipt_long,
+                          label: 'QB Billed (${summary.billedCount})',
+                          color: AppTheme.navyAccent,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // MyAdmin devices list
+                  if (summary.activeDevices.isNotEmpty)
+                    _DeviceTable(devices: summary.activeDevices)
+                  else
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'No active devices in MyAdmin for this customer.',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                            fontStyle: FontStyle.italic),
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    _InvoiceTable(lines: summary.lines),
-                    const SizedBox(height: 14),
+
+                  if (summary.qbLines.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _InvoiceTable(lines: summary.qbLines),
                   ] else
                     const Padding(
-                      padding: EdgeInsets.only(bottom: 10),
+                      padding: EdgeInsets.only(top: 8),
                       child: Text(
                         'No QB invoice lines for this customer.',
                         style: TextStyle(
@@ -896,50 +1283,11 @@ class _CustomerVerifyCard extends StatelessWidget {
                       ),
                     ),
 
-                  // Activation serials
-                  if (summary.activationSerials.isNotEmpty) ...[
-                    const Text(
-                      'ACTIVATED DEVICES',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textSecondary,
-                        letterSpacing: 0.8,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: summary.activationSerials
-                          .map((s) => Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: AppTheme.teal.withValues(alpha: 0.07),
-                                  borderRadius: BorderRadius.circular(5),
-                                  border: Border.all(
-                                      color: AppTheme.teal
-                                          .withValues(alpha: 0.25)),
-                                ),
-                                child: Text(
-                                  s,
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      fontFamily: 'monospace',
-                                      color: AppTheme.textPrimary),
-                                ),
-                              ))
-                          .toList(),
-                    ),
-                  ] else
-                    const Text(
-                      'No activation records for this customer.',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: AppTheme.textSecondary,
-                          fontStyle: FontStyle.italic),
-                    ),
+                  // Diff callout
+                  if (summary.status != VerifyStatus.match) ...[
+                    const SizedBox(height: 10),
+                    _DiffCallout(summary: summary),
+                  ],
                 ],
               ),
             ),
@@ -950,7 +1298,117 @@ class _CustomerVerifyCard extends StatelessWidget {
   }
 }
 
-// ── Invoice table ─────────────────────────────────────────────────────────────
+// ── Device Table (MyAdmin) ────────────────────────────────────────────────────
+
+class _DeviceTable extends StatelessWidget {
+  final List<MyAdminDevice> devices;
+  const _DeviceTable({required this.devices});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.teal.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: const BoxDecoration(
+              color: AppTheme.navyDark,
+              borderRadius:
+                  BorderRadius.vertical(top: Radius.circular(7)),
+            ),
+            child: const Row(
+              children: [
+                Expanded(
+                    flex: 2,
+                    child: Text('Serial #',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.tealLight))),
+                Expanded(
+                    flex: 3,
+                    child: Text('Plan',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.tealLight))),
+                SizedBox(
+                    width: 50,
+                    child: Text('RPC',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.tealLight))),
+              ],
+            ),
+          ),
+          // Rows (cap at 20 for performance)
+          ...devices.take(20).toList().asMap().entries.map((e) {
+            final odd = e.key.isOdd;
+            final d   = e.value;
+            // Simplify plan name: remove " Mode: Live" suffix
+            final plan = d.billingPlan
+                .replaceAll(' Mode: Live', '')
+                .replaceAll(' Mode:', '')
+                .replaceAll(': Live', '');
+            return Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              color: odd
+                  ? Colors.transparent
+                  : AppTheme.teal.withValues(alpha: 0.03),
+              child: Row(
+                children: [
+                  Expanded(
+                      flex: 2,
+                      child: Text(d.serialNumber,
+                          style: const TextStyle(
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                              color: AppTheme.textPrimary))),
+                  Expanded(
+                      flex: 3,
+                      child: Text(plan,
+                          style: const TextStyle(
+                              fontSize: 10,
+                              color: AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis)),
+                  SizedBox(
+                    width: 50,
+                    child: Text(d.ratePlanCode,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                            fontSize: 10,
+                            color: AppTheme.textSecondary),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ],
+              ),
+            );
+          }),
+          if (devices.length > 20)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(
+                '… and ${devices.length - 20} more devices',
+                style: const TextStyle(
+                    fontSize: 11, color: AppTheme.textSecondary),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Invoice Table (QB) ────────────────────────────────────────────────────────
 
 class _InvoiceTable extends StatelessWidget {
   final List<QbInvoiceLine> lines;
@@ -960,12 +1418,12 @@ class _InvoiceTable extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.divider),
+        border: Border.all(
+            color: AppTheme.navyAccent.withValues(alpha: 0.25)),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
         children: [
-          // Header
           Container(
             padding:
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -984,7 +1442,7 @@ class _InvoiceTable extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                             color: Colors.white70))),
                 SizedBox(
-                    width: 40,
+                    width: 36,
                     child: Text('Qty',
                         textAlign: TextAlign.center,
                         style: TextStyle(
@@ -992,7 +1450,7 @@ class _InvoiceTable extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                             color: Colors.white70))),
                 SizedBox(
-                    width: 60,
+                    width: 56,
                     child: Text('Rate',
                         textAlign: TextAlign.right,
                         style: TextStyle(
@@ -1000,7 +1458,7 @@ class _InvoiceTable extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                             color: Colors.white70))),
                 SizedBox(
-                    width: 70,
+                    width: 64,
                     child: Text('Amount',
                         textAlign: TextAlign.right,
                         style: TextStyle(
@@ -1010,7 +1468,6 @@ class _InvoiceTable extends StatelessWidget {
               ],
             ),
           ),
-          // Rows
           ...lines.asMap().entries.map((e) {
             final odd = e.key.isOdd;
             final l   = e.value;
@@ -1023,41 +1480,38 @@ class _InvoiceTable extends StatelessWidget {
               child: Row(
                 children: [
                   Expanded(
-                    flex: 3,
-                    child: Text(l.description,
-                        style: const TextStyle(
-                            fontSize: 11,
-                            color: AppTheme.textPrimary)),
-                  ),
+                      flex: 3,
+                      child: Text(l.description,
+                          style: const TextStyle(
+                              fontSize: 10,
+                              color: AppTheme.textPrimary))),
                   SizedBox(
-                    width: 40,
+                    width: 36,
                     child: Text(
                       l.qty == l.qty.roundToDouble()
                           ? l.qty.toInt().toString()
                           : l.qty.toStringAsFixed(1),
                       textAlign: TextAlign.center,
                       style: const TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.textSecondary),
+                          fontSize: 10, color: AppTheme.textSecondary),
                     ),
                   ),
                   SizedBox(
-                    width: 60,
+                    width: 56,
                     child: Text(
                       Formatters.currency(l.unitPrice),
                       textAlign: TextAlign.right,
                       style: const TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.textSecondary),
+                          fontSize: 10, color: AppTheme.textSecondary),
                     ),
                   ),
                   SizedBox(
-                    width: 70,
+                    width: 64,
                     child: Text(
                       Formatters.currency(l.amount),
                       textAlign: TextAlign.right,
                       style: const TextStyle(
-                          fontSize: 11,
+                          fontSize: 10,
                           fontWeight: FontWeight.w600,
                           color: AppTheme.textPrimary),
                     ),
@@ -1072,7 +1526,76 @@ class _InvoiceTable extends StatelessWidget {
   }
 }
 
-// ── Summary footer ─────────────────────────────────────────────────────────────
+// ── Diff Callout ──────────────────────────────────────────────────────────────
+
+class _DiffCallout extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _DiffCallout({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    String msg;
+    Color color;
+    IconData icon;
+
+    switch (summary.status) {
+      case VerifyStatus.overbilled:
+        color = AppTheme.amber;
+        icon  = Icons.warning_amber;
+        msg   = '${summary.billedCount} billed vs ${summary.activeCount} active — '
+                '${summary.diff} extra line${summary.diff == 1 ? '' : 's'} in QB. '
+                'Possible duplicate invoice or closed device still being billed.';
+        break;
+      case VerifyStatus.underbilled:
+        color = AppTheme.red;
+        icon  = Icons.error;
+        msg   = '${summary.activeCount} active vs ${summary.billedCount} billed — '
+                '${-summary.diff} device${-summary.diff == 1 ? '' : 's'} not fully invoiced. '
+                'Revenue leak — add missing line items to QB invoice.';
+        break;
+      case VerifyStatus.activeOnly:
+        color = AppTheme.red;
+        icon  = Icons.money_off;
+        msg   = '${summary.activeCount} active device${summary.activeCount == 1 ? '' : 's'} '
+                'with NO QB invoice. This customer is not being billed at all.';
+        break;
+      case VerifyStatus.qbOnly:
+        color = Colors.grey;
+        icon  = Icons.help_outline;
+        msg   = '${summary.billedCount} QB line${summary.billedCount == 1 ? '' : 's'} '
+                'but no active devices in MyAdmin. '
+                'Account may be closed — verify before sending invoice.';
+        break;
+      default:
+        return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(msg,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: color,
+                    fontWeight: FontWeight.w500)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Summary Footer ────────────────────────────────────────────────────────────
 
 class _SummaryFooter extends StatelessWidget {
   final List<QbCustomerSummary> summaries;
@@ -1080,49 +1603,48 @@ class _SummaryFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final total   = summaries.length;
-    final issues  = summaries.where((s) =>
-        s.status == VerifyStatus.overbilled ||
-        s.status == VerifyStatus.underbilled).length;
-    final missing = summaries
-        .where((s) => s.status == VerifyStatus.activationOnly)
+    final total       = summaries.length;
+    final issues      = summaries
+        .where((s) =>
+            s.status == VerifyStatus.overbilled ||
+            s.status == VerifyStatus.underbilled)
+        .length;
+    final notBilled   = summaries
+        .where((s) => s.status == VerifyStatus.activeOnly)
         .length;
     final totalBilled = summaries.fold(0.0, (s, c) => s + c.totalBilled);
+    final totalActive = summaries.fold(0, (s, c) => s + c.activeCount);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: const BoxDecoration(
         color: AppTheme.navyDark,
-        border: const Border(
-            top: BorderSide(color: AppTheme.divider)),
+        border: Border(top: BorderSide(color: AppTheme.divider)),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            '$total customers',
-            style: const TextStyle(
-                fontSize: 11, color: Colors.white54),
-          ),
+          Text('$total customers',
+              style:
+                  const TextStyle(fontSize: 11, color: Colors.white54)),
+          Text('$totalActive active',
+              style:
+                  const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
           if (issues > 0)
-            Text(
-              '$issues issue${issues > 1 ? 's' : ''}',
-              style: const TextStyle(
-                  fontSize: 11,
-                  color: AppTheme.amber,
-                  fontWeight: FontWeight.w600),
-            ),
-          if (missing > 0)
-            Text(
-              '$missing not invoiced',
-              style: const TextStyle(
-                  fontSize: 11,
-                  color: AppTheme.red,
-                  fontWeight: FontWeight.w600),
-            ),
+            Text('$issues issue${issues > 1 ? 's' : ''}',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.amber,
+                    fontWeight: FontWeight.w600)),
+          if (notBilled > 0)
+            Text('$notBilled unbilled',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.red,
+                    fontWeight: FontWeight.w600)),
           Text(
             totalBilled > 0
-                ? 'Total billed: ${Formatters.currency(totalBilled)}'
+                ? 'QB: ${Formatters.currency(totalBilled)}'
                 : 'No QB data',
             style: const TextStyle(
                 fontSize: 11,
@@ -1135,12 +1657,39 @@ class _SummaryFooter extends StatelessWidget {
   }
 }
 
-// ── Small helpers ─────────────────────────────────────────────────────────────
+// ── Small Helpers ─────────────────────────────────────────────────────────────
 
-class _CountChip extends StatelessWidget {
-  final String text;
+class _SideHeader extends StatelessWidget {
+  final IconData icon;
+  final String label;
   final Color color;
-  const _CountChip(this.text, this.color);
+  const _SideHeader(
+      {required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 13, color: color),
+        const SizedBox(width: 5),
+        Expanded(
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: color)),
+        ),
+      ],
+    );
+  }
+}
+
+class _MiniChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _MiniChip(
+      {required this.icon, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -1151,11 +1700,18 @@ class _CountChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(5),
         border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
-      child: Text(text,
-          style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: color)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 10, color: color),
+          const SizedBox(width: 3),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: color)),
+        ],
+      ),
     );
   }
 }
@@ -1169,17 +1725,11 @@ class _CountBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        '$count',
-        style: const TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            color: Colors.white),
-      ),
+      decoration:
+          BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
+      child: Text('$count',
+          style: const TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
     );
   }
 }
