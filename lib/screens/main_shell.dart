@@ -9,6 +9,8 @@ import 'dashboard_screen.dart';
 import 'history_screen.dart';
 import 'serial_filter_screen.dart';
 import 'customer_pricing_screen.dart';
+import 'qb_invoice_screen.dart';
+import 'cloud_sync_screen.dart';
 import 'settings_screen.dart';
 
 class MainShell extends StatefulWidget {
@@ -27,6 +29,8 @@ class _MainShellState extends State<MainShell> {
     _KeepAlive(child: HistoryScreen()),
     _KeepAlive(child: SerialFilterScreen()),
     _KeepAlive(child: CustomerPricingScreen()),
+    _KeepAlive(child: QbInvoiceScreen()),
+    _KeepAlive(child: CloudSyncScreen()),
     _KeepAlive(child: SettingsScreen()),
   ];
 
@@ -50,6 +54,16 @@ class _MainShellState extends State<MainShell> {
       icon: Icon(Icons.price_change_outlined),
       activeIcon: Icon(Icons.price_change),
       label: 'Pricing',
+    ),
+    BottomNavigationBarItem(
+      icon: Icon(Icons.verified_outlined),
+      activeIcon: Icon(Icons.verified),
+      label: 'QB Verify',
+    ),
+    BottomNavigationBarItem(
+      icon: Icon(Icons.cloud_upload_outlined),
+      activeIcon: Icon(Icons.cloud_upload),
+      label: 'Cloud Sync',
     ),
     BottomNavigationBarItem(
       icon: Icon(Icons.settings_outlined),

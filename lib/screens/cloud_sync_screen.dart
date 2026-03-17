@@ -27,7 +27,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
   bool    _saved      = false;
   String? _statusMsg;
   bool    _statusOk   = true;
-  String? _diagMsg;   // raw diagnostic response
 
   @override
   void initState() {
@@ -123,18 +122,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
   Future<void> _toggleAutoSync(bool value) async {
     setState(() => _autoSync = value);
     await CloudSyncService.setAutoSync(value);
-  }
-
-  // ── Diagnostic ────────────────────────────────────────────────────────────
-
-  Future<void> _runDiag() async {
-    setState(() { _loading = true; _diagMsg = null; });
-    final result = await CloudSyncService.diagnosePatch();
-    if (!mounted) return;
-    setState(() {
-      _loading  = false;
-      _diagMsg  = result;
-    });
   }
 
   // ── Push ──────────────────────────────────────────────────────────────────
@@ -233,12 +220,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
           const SizedBox(height: 10),
           _buildStatusBanner(),
         ],
-        // ── Diagnostic section (always shown when configured) ────────────
-        if (_saved && _enabled) ...[
-          const SizedBox(height: 12),
-          _buildDiagSection(),
-        ],
-
         if (_saved && _enabled) ...[
           const SizedBox(height: 16),
           const Divider(color: AppTheme.divider),
@@ -580,88 +561,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildDiagSection() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.amber.withValues(alpha: 0.4)),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 4,
-              offset: const Offset(0, 2)),
-        ],
-      ),
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.bug_report, size: 18, color: AppTheme.amber),
-              SizedBox(width: 8),
-              Text(
-                'Write Diagnostic',
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textPrimary),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Sends a single test PATCH write to Firestore and shows the '
-            'exact HTTP status + response. Use this to diagnose permission '
-            'or configuration errors.',
-            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _loading ? null : _runDiag,
-              icon: const Icon(Icons.science_outlined, size: 16, color: AppTheme.amber),
-              label: const Text('Run Write Diagnostic',
-                  style: TextStyle(fontSize: 13, color: AppTheme.amber)),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: AppTheme.amber),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-              ),
-            ),
-          ),
-          if (_diagMsg != null) ...[
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E1E2E),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                _diagMsg!,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF90EE90),
-                  fontFamily: 'monospace',
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'HTTP 200 = success  ·  403 = rules blocked  ·  '
-              '401 = bad API key  ·  404 = DB not found  ·  '
-              'Failed to fetch = CORS issue',
-              style: TextStyle(fontSize: 10, color: AppTheme.textSecondary),
-            ),
-          ],
-        ],
-      ),
     );
   }
 

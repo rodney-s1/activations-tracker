@@ -11,8 +11,6 @@ import '../models/qb_customer.dart';
 import '../services/app_provider.dart';
 import '../services/settings_export_service.dart';
 import '../utils/app_theme.dart';
-import 'cloud_sync_screen.dart';
-
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -27,7 +25,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 3, vsync: this);
+    _tabs = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -59,7 +57,6 @@ class _SettingsScreenState extends State<SettingsScreen>
           tabs: const [
             Tab(icon: Icon(Icons.business, size: 18), text: 'QB Customers'),
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
-            Tab(icon: Icon(Icons.cloud_sync, size: 18), text: 'Cloud Sync'),
           ],
         ),
       ),
@@ -68,7 +65,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         children: const [
           _QbCustomersTab(),
           _BackupRestoreTab(),
-          CloudSyncScreen(),
         ],
       ),
     );
