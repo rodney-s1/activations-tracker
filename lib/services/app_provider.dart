@@ -226,24 +226,28 @@ class AppProvider extends ChangeNotifier {
     await StandardPlanRateService.update(rate);
     _standardRates = StandardPlanRateService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent(); // persist change to cloud immediately
   }
 
   Future<void> addStandardRate(StandardPlanRate rate) async {
     await StandardPlanRateService.add(rate);
     _standardRates = StandardPlanRateService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   Future<void> deleteStandardRate(StandardPlanRate rate) async {
     await StandardPlanRateService.delete(rate);
     _standardRates = StandardPlanRateService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   Future<void> resetStandardRates() async {
     await StandardPlanRateService.resetToDefaults();
     _standardRates = StandardPlanRateService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   // ── Customer Plan Codes ───────────────────────────────────────────────────
@@ -252,12 +256,14 @@ class AppProvider extends ChangeNotifier {
     await CustomerPlanCodeService.save(code);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   Future<void> deleteCustomerPlanCode(CustomerPlanCode code) async {
     await CustomerPlanCodeService.delete(code);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   List<CustomerPlanCode> getPlanCodesForCustomer(String name) =>
@@ -270,6 +276,7 @@ class AppProvider extends ChangeNotifier {
         await CustomerPlanCodeService.importFromQbSalesCsvPreserveCase(csvContent);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent(); // push updated plan codes to cloud
     return counts;
   }
 
@@ -292,6 +299,7 @@ class AppProvider extends ChangeNotifier {
 
   void refreshFilterRules() {
     notifyListeners();
+    CloudSyncService.pushSilent(); // persist filter rule changes to cloud
   }
 
   // ── Refresh ───────────────────────────────────────────────────────────────

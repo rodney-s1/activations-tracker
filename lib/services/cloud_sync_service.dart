@@ -392,6 +392,61 @@ class CloudSyncService {
 
   static void dispose() => _stopTimer();
 
+  // ── Silent push (called after every settings save) ────────────────────────
+  //
+  // Pushes all three nodes without changing the visible SyncStatus so the UI
+  // dot doesn't flicker on every keystroke. Fire-and-forget — errors are
+  // logged to debug output but not surfaced to the user.
+
+  static Future<void> pushSilent() async {
+    if (!_configured) return;
+    try {
+      final rates = StandardPlanRateService.getAll();
+      final codes = CustomerPlanCodeService.getAll();
+      final rules = FilterSettingsService.getAllRules();
+
+      await Future.wait([
+        _putNode('standard_plan_rates', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': rates.length,
+          'data': rates.map((r) => {
+            'planKey':   r.planKey,
+            'keyword':   r.keyword,
+            'yourCost':  r.yourCost,
+            'sortOrder': r.sortOrder,
+          }).toList(),
+        }),
+        _putNode('customer_plan_codes', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': codes.length,
+          'data': codes.map((c) => {
+            'customerName':  c.customerName,
+            'planCode':      c.planCode,
+            'customerPrice': c.customerPrice,
+            'notes':         c.notes,
+          }).toList(),
+        }),
+        _putNode('serial_filter_rules', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': rules.length,
+          'data': rules.map((r) => {
+            'prefix':     r.prefix,
+            'isExcluded': r.isExcluded,
+            'label':      r.label,
+            'isSystem':   r.isSystem,
+          }).toList(),
+        }),
+      ]);
+
+      await _recordLastSync();
+      _setStatus(SyncStatus.success);
+      if (kDebugMode) debugPrint('[CloudSync] Silent push succeeded');
+    } catch (e) {
+      if (kDebugMode) debugPrint('[CloudSync] Silent push error: $e');
+      // Don't change visible status — it's a background operation
+    }
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   static void _setStatus(SyncStatus s) {

@@ -24,6 +24,13 @@ void main() async {
   await QbCustomerService.init();
   await CloudSyncService.init(); // load saved Firebase config (if any)
 
+  // Auto-pull from Firebase on startup if configured.
+  // This restores all settings after a browser storage clear or first load
+  // on a new device — silently in background, no user prompt needed.
+  if (CloudSyncService.isConfigured) {
+    await CloudSyncService.pullAll();
+  }
+
   runApp(
     ChangeNotifierProvider(
       create: (_) => AppProvider()
