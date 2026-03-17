@@ -160,33 +160,47 @@ Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
 
 // ── QB Sales CSV Parser ───────────────────────────────────────────────────────
 
-/// Parse a QuickBooks "Sales by Customer Detail" CSV export.
-/// Returns a map of normalised customer name → list of billable invoice lines.
-Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
-  final lines = content.split(RegExp(r'\r?\n'));
-  if (lines.isEmpty) return {};
+/// Return type carrying both the invoice-line map and a display-name cache.
+class QbParseResult {
+  final Map<String, List<QbInvoiceLine>> lines;
+  /// normKey → original QB customer name (proper casing, no location suffix)
+  final Map<String, String> displayNames;
+  const QbParseResult({required this.lines, required this.displayNames});
+}
 
-  // Find the header row (contains "Name" and "Item" or "Product")
+/// Parse a QuickBooks "Sales by Customer Detail" CSV export.
+/// Returns a [QbParseResult] with normalised customer-key maps.
+QbParseResult parseQbSalesCsvWithNames(String content) {
+  final rawLines = content.split(RegExp(r'\r?\n'));
+  if (rawLines.isEmpty) return QbParseResult(lines: {}, displayNames: {});
+
+  // Find the header row (contains "Name" / "Customer" AND a description/item col)
   int headerIdx = -1;
   List<String> headers = [];
-  for (int i = 0; i < lines.length; i++) {
-    final row = _splitCsv(lines[i]);
+  for (int i = 0; i < rawLines.length; i++) {
+    final row = _splitCsv(rawLines[i]);
     final lower = row.map((c) => c.toLowerCase().trim()).toList();
     if (lower.any((c) => c == 'name' || c == 'customer') &&
-        lower.any((c) => c.contains('item') || c.contains('product') || c.contains('description'))) {
+        lower.any((c) =>
+            c.contains('item') ||
+            c.contains('product') ||
+            c.contains('description'))) {
       headerIdx = i;
       headers = row.map((c) => c.trim().toLowerCase()).toList();
       break;
     }
   }
-  if (headerIdx < 0) return {};
+  if (headerIdx < 0) return QbParseResult(lines: {}, displayNames: {});
 
   int nameIdx = headers.indexWhere((h) => h == 'name' || h == 'customer');
   int typeIdx = headers.indexWhere((h) => h == 'type');
   int numIdx  = headers.indexWhere((h) => h.contains('num') || h == 'invoice #');
   int dateIdx = headers.indexWhere((h) => h == 'date');
   int itemIdx = headers.indexWhere((h) =>
-      h.contains('item') || h.contains('product') || h == 'description' || h == 'service');
+      h.contains('item') ||
+      h.contains('product') ||
+      h == 'description' ||
+      h == 'service');
   int qtyIdx  = headers.indexWhere((h) => h == 'qty' || h == 'quantity');
   int rateIdx = headers.indexWhere(
       (h) => h == 'rate' || h.contains('unit price') || h == 'sales price');
@@ -196,13 +210,16 @@ Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
   if (itemIdx < 0) itemIdx = 5;
   if (amtIdx < 0)  amtIdx  = headers.length > 7 ? 7 : headers.length - 1;
 
-  final Map<String, List<QbInvoiceLine>> result = {};
-  String currentCustomer = '';
-  String currentInvoice  = '';
-  String currentDate     = '';
+  final Map<String, List<QbInvoiceLine>> result       = {};
+  final Map<String, String>              displayNames = {};
 
-  for (int i = headerIdx + 1; i < lines.length; i++) {
-    final raw = lines[i].trim();
+  String currentCustomer    = '';
+  String currentCustomerKey = '';
+  String currentInvoice     = '';
+  String currentDate        = '';
+
+  for (int i = headerIdx + 1; i < rawLines.length; i++) {
+    final raw = rawLines[i].trim();
     if (raw.isEmpty) continue;
     final cells = _splitCsv(raw);
     if (cells.length < 3) continue;
@@ -213,16 +230,28 @@ Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
     final rowType  = typeIdx >= 0 ? gc(typeIdx).toLowerCase() : '';
     final nameCell = gc(nameIdx);
 
-    // Track customer/invoice context from Invoice header rows
+    // Update customer/invoice context from Invoice header rows
     if (rowType.contains('invoice')) {
-      if (nameCell.isNotEmpty) currentCustomer = nameCell;
+      if (nameCell.isNotEmpty) {
+        currentCustomer    = nameCell;
+        currentCustomerKey = _normKey(nameCell);
+        // Store original-case display name the first time we see this key
+        displayNames.putIfAbsent(currentCustomerKey, () => nameCell);
+      }
       if (numIdx >= 0 && gc(numIdx).isNotEmpty) currentInvoice = gc(numIdx);
       if (dateIdx >= 0 && gc(dateIdx).isNotEmpty) currentDate   = gc(dateIdx);
     }
 
-    final customer = nameCell.isNotEmpty ? nameCell : currentCustomer;
+    // If non-invoice row has a name cell, update context
+    if (nameCell.isNotEmpty && !rowType.contains('invoice')) {
+      currentCustomer    = nameCell;
+      currentCustomerKey = _normKey(nameCell);
+      displayNames.putIfAbsent(currentCustomerKey, () => nameCell);
+    }
+
+    final customer    = currentCustomer;
+    final customerKey = currentCustomerKey;
     if (customer.isEmpty) continue;
-    if (nameCell.isNotEmpty) currentCustomer = nameCell;
 
     final item = gc(itemIdx);
     if (item.isEmpty) continue;
@@ -234,12 +263,12 @@ Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
     if (itemLower.contains('early term')) continue;
     if (itemLower.contains('mkt-fee')) continue;
 
-    final amount = double.tryParse(gc(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0;
+    final amount =
+        double.tryParse(gc(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0;
     if (amount <= 0) continue;
 
-    final normKey = _normKey(customer);
-    result.putIfAbsent(normKey, () => []);
-    result[normKey]!.add(QbInvoiceLine(
+    result.putIfAbsent(customerKey, () => []);
+    result[customerKey]!.add(QbInvoiceLine(
       invoiceNumber: currentInvoice,
       date: currentDate,
       description: item,
@@ -250,12 +279,29 @@ Map<String, List<QbInvoiceLine>> parseQbSalesCsv(String content) {
     ));
   }
 
-  return result;
+  return QbParseResult(lines: result, displayNames: displayNames);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-String _normKey(String name) => name.toLowerCase().trim();
+/// Normalise a customer name for cross-source matching.
+/// MyAdmin appends a location/contact suffix in parentheses:
+///   "Baker Roofing (Seth Hagen  Raleigh  North Carolina)" → "baker roofing"
+/// QB names have no such suffix, so stripping makes both sides match.
+String _normKey(String name) {
+  final stripped = _stripParenSuffix(name);
+  // Also collapse internal double-spaces and punctuation differences
+  return stripped
+      .toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
+/// Remove a trailing parenthetical suffix, e.g. " (City  State  Country)".
+String _stripParenSuffix(String name) {
+  final idx = name.indexOf('(');
+  return idx > 0 ? name.substring(0, idx).trim() : name.trim();
+}
 
 List<String> _splitCsv(String row) {
   final cells = <String>[];
@@ -298,6 +344,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   // QB data
   Map<String, List<QbInvoiceLine>> _qbData = {};
+  // Cache of normKey → original QB display name (for QB-only rows)
+  Map<String, String> _qbDisplayNameCache = {};
   bool _qbLoaded = false;
   String? _qbFileName;
 
@@ -418,10 +466,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         return;
       }
 
-      final parsed = parseQbSalesCsv(content);
+      final qbParsed = parseQbSalesCsvWithNames(content);
       if (!mounted) return;
 
-      if (parsed.isEmpty) {
+      if (qbParsed.lines.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -434,19 +482,20 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
 
       setState(() {
-        _qbData    = parsed;
-        _qbLoaded  = true;
-        _qbFileName = file.name;
+        _qbData              = qbParsed.lines;
+        _qbDisplayNameCache  = qbParsed.displayNames;
+        _qbLoaded            = true;
+        _qbFileName          = file.name;
         _expanded.clear();
       });
 
       final totalLines =
-          parsed.values.fold(0, (s, list) => s + list.length);
+          qbParsed.lines.values.fold(0, (s, list) => s + list.length);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                'QB: $totalLines line items across ${parsed.length} customers'),
+                'QB: $totalLines line items across ${qbParsed.lines.length} customers'),
             backgroundColor: AppTheme.teal,
           ),
         );
@@ -471,21 +520,19 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       ..._qbData.keys,
     };
 
-    // For QB-only side, try to find a better display name from MyAdmin
     final List<QbCustomerSummary> summaries = allKeys.map((key) {
       final devices = _myAdminData[key] ?? [];
       final qbLines = _qbData[key] ?? [];
 
-      // Build display name: prefer MyAdmin full customer name
-      String displayName = key;
+      // Build display name:
+      //  1. Prefer stripped MyAdmin name (proper casing, no location suffix)
+      //  2. Fall back to QB display-name cache (preserves QB casing)
+      //  3. Last resort: the normalised key itself
+      String displayName;
       if (devices.isNotEmpty) {
-        // MyAdmin customer column includes location in parens — strip it for display
         displayName = _stripLocation(devices.first.customer);
-      } else if (qbLines.isNotEmpty) {
-        // Use QB name as-is (already a clean name)
-        displayName = key;
-        // Try to find the original casing from QB data by scanning
-        // (the key is lowercased so we preserve the display version separately)
+      } else {
+        displayName = _qbDisplayNameCache[key] ?? key;
       }
 
       return QbCustomerSummary(
@@ -511,10 +558,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   /// Strip the location/contact suffix from MyAdmin customer names.
   /// e.g. "Baker Roofing (Seth Hagen  Raleigh  North Carolina)" → "Baker Roofing"
-  String _stripLocation(String name) {
-    final idx = name.indexOf('(');
-    return idx > 0 ? name.substring(0, idx).trim() : name.trim();
-  }
+  String _stripLocation(String name) => _stripParenSuffix(name);
 
   // ── Filter for tab ────────────────────────────────────────────────────────
 
