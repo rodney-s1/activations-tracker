@@ -37,12 +37,9 @@ class MyAdminDevice {
     required this.account,
   });
 
-  /// True for devices that are billed: Active OR Never Activated.
-  /// Suspended / Unknown are excluded.
-  bool get isBillable {
-    final s = billingStatus.toLowerCase();
-    return s == 'active' || s == 'never activated';
-  }
+  /// True for the most common billed statuses.
+  /// All statuses are shown in the UI; this getter is kept for legacy use.
+  bool get isBillable => billingStatus.toLowerCase() != 'unknown';
 }
 
 /// A single line item from the QB Sales by Customer Detail CSV.
@@ -123,15 +120,37 @@ class QbCustomerSummary {
   }
 }
 
+// ── Status badge helper ───────────────────────────────────────────────────────
+
+/// Short label + colour for a MyAdmin billing status.
+/// Active → no badge (normal).  All others get a coloured chip.
+({String label, Color color})? statusBadge(String billingStatus) {
+  switch (billingStatus.toLowerCase()) {
+    case 'active':
+      return null; // no badge needed
+    case 'never activated':
+      return (label: 'N/A', color: AppTheme.amber);
+    case 'suspended':
+      return (label: 'SUSP', color: Colors.orange);
+    case 'unknown':
+      return (label: '???', color: Colors.grey);
+    default:
+      // Catch any other unexpected status
+      return (label: billingStatus.toUpperCase().substring(0,
+          billingStatus.length > 4 ? 4 : billingStatus.length), color: Colors.grey);
+  }
+}
+
 // ── MyAdmin CSV Parser ────────────────────────────────────────────────────────
 
 /// Parse a MyAdmin "Device Management - Full Report" CSV.
 /// The file has a 2-line header (report name + date), a blank line, then
 /// the column header row, then data rows.
-/// Returns ACTIVE and NEVER ACTIVATED devices (both are billed),
-/// grouped by normalised customer name (strips parenthetical location
-/// suffixes AND curly-brace device-type suffixes so that sub-groups like
-/// "Customer {Cameras}" and "Customer {OEM}" all merge under "Customer").
+/// Returns ALL devices regardless of billing status — Active, Never Activated,
+/// Suspended, Unknown, etc. — so nothing is hidden from billing review.
+/// Grouped by normalised customer name (strips parenthetical location suffixes
+/// AND curly-brace device-type suffixes so sub-groups like "Customer {Cameras}"
+/// and "Customer {OEM}" all merge under "Customer").
 Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
   final lines = content.split(RegExp(r'\r?\n'));
   if (lines.length < 5) return {};
@@ -175,11 +194,8 @@ Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
     final status  = g(statusIdx);
 
     if (serial.isEmpty || customer.isEmpty) continue;
-
-    // Include Active AND Never Activated — both are billed.
-    // Skip Suspended, Unknown, Never Billed, etc.
-    final statusLower = status.toLowerCase();
-    if (statusLower != 'active' && statusLower != 'never activated') continue;
+    // Include ALL statuses — Active, Suspended, Never Activated, Unknown, etc.
+    // Nothing is filtered out; status badges in the UI distinguish each type.
 
     final normKey = _normKey(customer);
     result.putIfAbsent(normKey, () => []);
@@ -539,7 +555,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                'MyAdmin: $totalDevices active devices across ${parsed.length} customers'),
+                'MyAdmin: $totalDevices devices across ${parsed.length} customers'),
             backgroundColor: AppTheme.teal,
           ),
         );
@@ -1159,13 +1175,13 @@ class _EmptyState extends StatelessWidget {
 
   static const _legendItems = [
     (Icons.check_circle, AppTheme.green, 'Match',
-        'Billed count = Billable count'),
+        'Billed count = MyAdmin device count'),
     (Icons.warning_amber, AppTheme.amber, 'Overbilled',
-        'More QB lines than billable devices'),
+        'More QB lines than MyAdmin devices'),
     (Icons.error, AppTheme.red, 'Underbilled',
-        'Fewer QB lines than billable devices — revenue leak'),
+        'Fewer QB lines than MyAdmin devices — revenue leak'),
     (Icons.money_off, AppTheme.red, 'Not Billed',
-        'Billable in MyAdmin (Active or Never Activated) but no QB invoice'),
+        'Devices in MyAdmin (Active/Suspended/Never Activated/Unknown) but no QB invoice'),
     (Icons.help_outline, Colors.grey, 'QB Only',
         'In QB but not in MyAdmin — possibly a closed account'),
   ];
@@ -1330,7 +1346,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                           children: [
                             _MiniChip(
                               icon: Icons.devices,
-                              label: 'Active: ${summary.activeCount}',
+                              label: 'MyAdmin: ${summary.activeCount}',
                               color: AppTheme.teal,
                             ),
                             const SizedBox(width: 6),
@@ -1394,7 +1410,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // ── MyAdmin active devices section ─────────────────
                   _SideHeader(
                     icon: Icons.devices,
-                    label: 'MyAdmin Billable (${summary.activeCount})',
+                    label: 'MyAdmin Devices (${summary.activeCount})',
                     color: AppTheme.teal,
                   ),
                   const SizedBox(height: 6),
@@ -1423,7 +1439,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                     const Padding(
                       padding: EdgeInsets.only(bottom: 8),
                       child: Text(
-                        'No billable devices in MyAdmin for this customer.',
+                        'No MyAdmin devices for this customer.',
                         style: TextStyle(
                             fontSize: 12,
                             color: AppTheme.textSecondary,
@@ -1559,8 +1575,7 @@ class _SerialListDialog extends StatelessWidget {
                       .replaceAll(' Mode: Live', '')
                       .replaceAll(' Mode:', '')
                       .replaceAll(': Live', '');
-                  final isNeverActivated =
-                      d.billingStatus.toLowerCase() == 'never activated';
+                  final badge = statusBadge(d.billingStatus);
                   return Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 6),
@@ -1595,23 +1610,22 @@ class _SerialListDialog extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (isNeverActivated)
+                        if (badge != null)
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 4, vertical: 1),
                             margin: const EdgeInsets.only(right: 4),
                             decoration: BoxDecoration(
-                              color: AppTheme.amber.withValues(alpha: 0.15),
+                              color: badge.color.withValues(alpha: 0.15),
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(
-                                  color:
-                                      AppTheme.amber.withValues(alpha: 0.4)),
+                                  color: badge.color.withValues(alpha: 0.4)),
                             ),
-                            child: const Text('N/A',
+                            child: Text(badge.label,
                                 style: TextStyle(
                                     fontSize: 8,
                                     fontWeight: FontWeight.w700,
-                                    color: AppTheme.amber)),
+                                    color: badge.color)),
                           ),
                         SizedBox(
                           width: 60,
@@ -1988,7 +2002,7 @@ class _DeviceTable extends StatelessWidget {
                 .replaceAll(' Mode: Live', '')
                 .replaceAll(' Mode:', '')
                 .replaceAll(': Live', '');
-            final isNA = d.billingStatus.toLowerCase() == 'never activated';
+            final badge = statusBadge(d.billingStatus);
             return Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -2011,22 +2025,22 @@ class _DeviceTable extends StatelessWidget {
                               fontSize: 10,
                               color: AppTheme.textSecondary),
                           overflow: TextOverflow.ellipsis)),
-                  if (isNA)
+                  if (badge != null)
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 3, vertical: 1),
                       margin: const EdgeInsets.only(right: 2),
                       decoration: BoxDecoration(
-                        color: AppTheme.amber.withValues(alpha: 0.12),
+                        color: badge.color.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(3),
                         border: Border.all(
-                            color: AppTheme.amber.withValues(alpha: 0.35)),
+                            color: badge.color.withValues(alpha: 0.35)),
                       ),
-                      child: const Text('N/A',
+                      child: Text(badge.label,
                           style: TextStyle(
                               fontSize: 7,
                               fontWeight: FontWeight.w700,
-                              color: AppTheme.amber)),
+                              color: badge.color)),
                     ),
                   SizedBox(
                     width: 50,
@@ -2072,21 +2086,21 @@ class _DiffCallout extends StatelessWidget {
       case VerifyStatus.overbilled:
         color = AppTheme.amber;
         icon  = Icons.warning_amber;
-        msg   = '${summary.billedCount} billed vs ${summary.activeCount} billable — '
+        msg   = '${summary.billedCount} billed vs ${summary.activeCount} in MyAdmin — '
                 '${summary.diff} extra line${summary.diff == 1 ? '' : 's'} in QB. '
                 'Possible duplicate invoice or closed device still being billed.';
         break;
       case VerifyStatus.underbilled:
         color = AppTheme.red;
         icon  = Icons.error;
-        msg   = '${summary.activeCount} billable vs ${summary.billedCount} billed — '
+        msg   = '${summary.activeCount} in MyAdmin vs ${summary.billedCount} billed — '
                 '${-summary.diff} device${-summary.diff == 1 ? '' : 's'} not fully invoiced. '
                 'Revenue leak — add missing line items to QB invoice.';
         break;
       case VerifyStatus.activeOnly:
         color = AppTheme.red;
         icon  = Icons.money_off;
-        msg   = '${summary.activeCount} billable device${summary.activeCount == 1 ? '' : 's'} '
+        msg   = '${summary.activeCount} device${summary.activeCount == 1 ? '' : 's'} in MyAdmin '
                 'with NO QB invoice. This customer is not being billed at all.';
         break;
       case VerifyStatus.qbOnly:
@@ -2157,7 +2171,7 @@ class _SummaryFooter extends StatelessWidget {
           Text('$total customers',
               style:
                   const TextStyle(fontSize: 11, color: Colors.white54)),
-          Text('$totalActive billable',
+          Text('$totalActive devices',
               style:
                   const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
           if (issues > 0)
