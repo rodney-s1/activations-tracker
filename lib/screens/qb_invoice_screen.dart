@@ -39,6 +39,13 @@ class MyAdminDevice {
     required this.account,
   });
 
+  /// True when this device is on the Hanover Insurance rate plan.
+  /// Hanover-plan devices are NOT directly billed to the customer in QB —
+  /// they are billed to Hanover Insurance Company — UNLESS there is a
+  /// matching HANOVER-CS (Cost Share) QB line, in which case the customer
+  /// pays half and Hanover pays half.
+  bool get isHanover => ratePlanCode.toLowerCase() == 'hanover';
+
   /// True for the most common billed statuses.
   /// All statuses are shown in the UI; this getter is kept for legacy use.
   bool get isBillable => billingStatus.toLowerCase() != 'unknown';
@@ -70,10 +77,13 @@ class QbInvoiceLine {
 /// Per-customer combined summary used for display.
 /// [billedCount]   = sum of Qty across all QB invoice lines (not row count).
 /// [activeCount]   = billable devices based on customer type:
-///                   • Standard: Active + Suspended + Never Activated
-///                   • CUA:      Active only (Charged Upon Activation customers
-///                               are only billed for active devices)
+///                   • Standard: Active + Suspended + Never Activated (excl. Hanover-only)
+///                   • CUA:      Active only (excl. Hanover-only)
 /// [unknownCount]  = devices with "Unknown" status (shown for review, not counted in billing diff).
+/// [hanoverCount]  = devices whose ratePlanCode == 'hanover' with NO cost-share QB line.
+///                   These are billed directly to Hanover Insurance, NOT to this customer.
+/// [hanoverCsQty]  = QB HANOVER-CS (Cost Share) line quantity — customer pays half,
+///                   Hanover Insurance pays half.  These devices ARE included in activeCount.
 class QbCustomerSummary {
   final String customerName;
 
@@ -83,9 +93,11 @@ class QbCustomerSummary {
   final List<QbInvoiceLine> qbLines;
 
   // MyAdmin side
-  final int activeCount;        // billable devices (see above — CUA vs Standard logic)
+  final int activeCount;        // billable devices (see above — CUA + Hanover logic)
   final int unknownCount;       // Unknown-status devices (shown for review, excluded from diff)
-  final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown)
+  final int hanoverCount;       // Hanover-RPC devices excluded from billing (billed to Hanover direct)
+  final int hanoverCsQty;       // HANOVER-CS QB lines qty (cost-share — customer pays half)
+  final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
   /// True = Charged Upon Activation.
   /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
@@ -98,6 +110,8 @@ class QbCustomerSummary {
     required this.qbLines,
     required this.activeCount,
     this.unknownCount = 0,
+    this.hanoverCount = 0,
+    this.hanoverCsQty = 0,
     required this.activeDevices,
     this.isCua = false,
   });
@@ -745,13 +759,36 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // CUA customers: only Active devices count toward the billing diff.
       // Standard customers: Active + Suspended + Never Activated count.
       // Unknown devices are always excluded from the billing diff (shown for review only).
+      // Hanover-RPC devices: excluded from activeCount UNLESS there is a HANOVER-CS QB line
+      //   (cost share = customer pays half, billed to Hanover direct otherwise).
+
+      // How many HANOVER-CS QB lines are there for this customer?
+      final hanoverCsQty = qbLines
+          .where((l) => l.planLabel.toLowerCase() == 'hanover')
+          .fold(0, (s, l) => s + l.qty.round());
+
+      // Hanover-RPC devices: billed to Hanover Insurance, NOT this customer
+      // (unless covered by a HANOVER-CS line — cost share)
+      final hanoverDevices = devices.where((d) => d.isHanover).toList();
+      // Non-cost-share hanover devices: exclude from activeCount
+      // Cost-share: hanoverCsQty of those devices DO count (customer pays half)
+      final hanoverExcluded = (hanoverDevices.length - hanoverCsQty).clamp(0, hanoverDevices.length);
+
       final billableDevices = devices.where((d) {
         final s = d.billingStatus.toLowerCase();
+        // Always exclude unknown
+        if (s == 'unknown') return false;
+        // Hanover-RPC devices are excluded from billing unless cost-share covers them
+        if (d.isHanover) return false; // handled separately via hanoverCsQty
         if (isCua) {
           return s == 'active';
         }
         return s == 'active' || s == 'suspended' || s == 'never activated';
       }).toList();
+
+      // For cost-share hanover devices: count up to hanoverCsQty as billable
+      final hanoverBillableCount = hanoverCsQty.clamp(0, hanoverDevices.length);
+      final totalBillable = billableDevices.length + hanoverBillableCount;
 
       final unknownDeviceCount = devices
           .where((d) => d.billingStatus.toLowerCase() == 'unknown')
@@ -763,9 +800,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         billedCount: qbLines.fold(0, (s, l) => s + l.qty.round()),
         totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
         qbLines: qbLines,
-        activeCount: billableDevices.length,
+        activeCount: totalBillable,
         unknownCount: unknownDeviceCount,
-        activeDevices: devices,               // ALL devices for display
+        hanoverCount: hanoverExcluded,   // devices billed to Hanover direct (not customer)
+        hanoverCsQty: hanoverBillableCount, // cost-share devices counted toward billing
+        activeDevices: devices,              // ALL devices for display
         isCua: isCua,
       );
     }).toList();
@@ -1281,6 +1320,9 @@ class _EmptyState extends StatelessWidget {
         'Billable devices in MyAdmin but no QB invoice'),
     (Icons.help_outline, Colors.grey, 'QB Only',
         'In QB but not in MyAdmin — possibly a closed account'),
+    (Icons.shield_outlined, Colors.teal, 'Hanover-direct',
+        'Devices on Hanover Insurance rate plan — billed direct to Hanover, not this customer. '
+        'HANOVER-CS (Cost Share) lines split billing 50/50 and are included in the billable count.'),
   ];
 }
 
@@ -1464,6 +1506,14 @@ class _CustomerVerifyCard extends StatelessWidget {
                                 color: Colors.grey,
                               ),
                             ],
+                            if (summary.hanoverCount > 0) ...[
+                              const SizedBox(width: 4),
+                              _MiniChip(
+                                icon: Icons.shield_outlined,
+                                label: 'HNV ${summary.hanoverCount}',
+                                color: Colors.teal,
+                              ),
+                            ],
                             const SizedBox(width: 6),
                             _MiniChip(
                               icon: Icons.receipt,
@@ -1525,12 +1575,12 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // ── MyAdmin active devices section ─────────────────
                   _SideHeader(
                     icon: Icons.devices,
-                    label: summary.unknownCount > 0
-                        ? 'MyAdmin Devices (${summary.activeCount} ${summary.isCua ? 'active' : 'billable'}'
-                          ' + ${summary.unknownCount} unknown)'
-                        : 'MyAdmin Devices (${summary.activeCount} ${summary.isCua ? 'active' : 'billable'})',
+                    label: _buildDeviceHeaderLabel(summary),
                     color: AppTheme.teal,
                   ),
+                  // ── Hanover callout (if applicable) ────────────────
+                  if (summary.hanoverCount > 0 || summary.hanoverCsQty > 0)
+                    _HanoverCallout(summary: summary),
                   const SizedBox(height: 6),
                   if (summary.activeDevices.isNotEmpty) ...[
                     _DeviceTable(devices: summary.activeDevices),
@@ -2074,6 +2124,95 @@ class _PlanGroupTable extends StatelessWidget {
   }
 }
 
+// ── Device header label helper ────────────────────────────────────────────────
+
+/// Build the label for the MyAdmin devices section header, including
+/// CUA, unknown, and Hanover-excluded counts where relevant.
+String _buildDeviceHeaderLabel(QbCustomerSummary s) {
+  final typeLabel = s.isCua ? 'active' : 'billable';
+  final parts = <String>['${s.activeCount} $typeLabel'];
+  if (s.hanoverCount > 0) {
+    parts.add('${s.hanoverCount} Hanover-direct');
+  }
+  if (s.hanoverCsQty > 0) {
+    parts.add('${s.hanoverCsQty} Hanover-CS');
+  }
+  if (s.unknownCount > 0) {
+    parts.add('${s.unknownCount} unknown');
+  }
+  return 'MyAdmin Devices (${parts.join(' + ')})';
+}
+
+// ── Hanover callout banner ────────────────────────────────────────────────────
+
+/// Shown whenever a customer has devices on the Hanover Insurance rate plan.
+/// Explains the direct-bill vs cost-share split.
+class _HanoverCallout extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _HanoverCallout({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = <String>[];
+
+    if (summary.hanoverCount > 0) {
+      lines.add(
+        '${summary.hanoverCount} device${summary.hanoverCount == 1 ? '' : 's'} '
+        'billed directly to Hanover Insurance — excluded from this customer\'s count.',
+      );
+    }
+    if (summary.hanoverCsQty > 0) {
+      lines.add(
+        '${summary.hanoverCsQty} HANOVER-CS (Cost Share): customer pays half, '
+        'Hanover Insurance pays half — included in billable count.',
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6, bottom: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.teal.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.teal.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.shield_outlined, size: 15, color: Colors.teal),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Hanover Insurance Rate Plan',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.teal,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                ...lines.map(
+                  (l) => Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      l,
+                      style: const TextStyle(
+                          fontSize: 10, color: AppTheme.textSecondary),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Device Table (MyAdmin side) ───────────────────────────────────────────────
 
 /// Sort rank for billing status within the device table.
@@ -2159,12 +2298,16 @@ class _DeviceTable extends StatelessWidget {
                 .replaceAll(' Mode:', '')
                 .replaceAll(': Live', '');
             final badge = statusBadge(d.billingStatus);
+            // Hanover-plan rows get a distinct teal-tinted background
+            final isHanover = d.isHanover;
             return Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              color: odd
-                  ? Colors.transparent
-                  : AppTheme.teal.withValues(alpha: 0.03),
+              color: isHanover
+                  ? Colors.teal.withValues(alpha: 0.08)
+                  : odd
+                      ? Colors.transparent
+                      : AppTheme.teal.withValues(alpha: 0.03),
               child: Row(
                 children: [
                   Expanded(
@@ -2200,12 +2343,32 @@ class _DeviceTable extends StatelessWidget {
                     ),
                   SizedBox(
                     width: 50,
-                    child: Text(d.ratePlanCode,
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(
-                            fontSize: 10,
-                            color: AppTheme.textSecondary),
-                        overflow: TextOverflow.ellipsis),
+                    child: isHanover
+                        ? Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 3, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.teal.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(3),
+                              border: Border.all(
+                                  color: Colors.teal.withValues(alpha: 0.5)),
+                            ),
+                            child: Text(
+                              d.ratePlanCode,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.teal),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          )
+                        : Text(d.ratePlanCode,
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.textSecondary),
+                            overflow: TextOverflow.ellipsis),
                   ),
                 ],
               ),
@@ -2319,8 +2482,9 @@ class _SummaryFooter extends StatelessWidget {
         .where((s) => s.status == VerifyStatus.activeOnly)
         .length;
     final totalBilled = summaries.fold(0.0, (s, c) => s + c.totalBilled);
-    final totalActive  = summaries.fold(0, (s, c) => s + c.activeCount);
-    final totalUnknown = summaries.fold(0, (s, c) => s + c.unknownCount);
+    final totalActive   = summaries.fold(0, (s, c) => s + c.activeCount);
+    final totalUnknown  = summaries.fold(0, (s, c) => s + c.unknownCount);
+    final totalHanover  = summaries.fold(0, (s, c) => s + c.hanoverCount);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -2342,6 +2506,11 @@ class _SummaryFooter extends StatelessWidget {
                 style: const TextStyle(
                     fontSize: 11,
                     color: Colors.grey)),
+          if (totalHanover > 0)
+            Text('$totalHanover Hanover-direct',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.teal)),
           if (issues > 0)
             Text('$issues issue${issues > 1 ? 's' : ''}',
                 style: const TextStyle(
