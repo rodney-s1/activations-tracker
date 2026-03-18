@@ -211,6 +211,7 @@ class QbCustomerSummary {
     case 'active':
       return null; // no badge needed
     case 'never activated':
+    case 'never billed':
       return (label: 'N/A', color: AppTheme.amber);
     case 'suspended':
       return (label: 'SUSP', color: Colors.orange);
@@ -414,11 +415,9 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         itemLower.contains('gofocus') ||
         itemLower.contains('smarter ai') ||
         itemLower.contains('smarterai');
-    // Require "geotab" in the item name for Geotab service lines.
-    // The old standalone 'service fee' passthrough was too broad and could admit
-    // non-device fees (admin fees, setup fees, etc.).  All real Geotab service
-    // items in QB contain the word "geotab" (e.g. "Geotab Service:Service Fee Geotab (Pro)").
-    if (!itemLower.contains('geotab') && !isCameraSkuItem) continue;
+    if (!itemLower.contains('geotab') &&
+        !itemLower.contains('service fee') &&
+        !isCameraSkuItem) continue;
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
@@ -900,8 +899,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           // Hollywood Feed: CUA applies to cameras → Active only
           return s == 'active';
         }
-        // All other customers (Standard or CUA): Active + Never Activated
-        return s == 'active' || s == 'never activated';
+        // All other customers (Standard or CUA): Active + Never Activated/Billed
+        return s == 'active' || s == 'never activated' || s == 'never billed';
       }).toList();
 
       // ── Geotab billable count ────────────────────────────────────────────
@@ -914,8 +913,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           // CUA: Active + Suspended (Never Activated excluded)
           return s == 'active' || s == 'suspended';
         }
-        // Standard: Active + Suspended + Never Activated
-        return s == 'active' || s == 'suspended' || s == 'never activated';
+        // Standard: Active + Suspended + Never Activated/Billed
+        return s == 'active' || s == 'suspended' || s == 'never activated' || s == 'never billed';
       }).toList();
 
       // Cost-share Hanover devices count toward billable (customer pays half)
@@ -2564,7 +2563,8 @@ int _statusSortRank(String billingStatus) {
   switch (billingStatus.toLowerCase()) {
     case 'active':          return 0;
     case 'suspended':       return 2;
-    case 'never activated': return 3;
+    case 'never activated':
+    case 'never billed': return 3;
     case 'unknown':         return 4;
     default:                return 1;
   }
