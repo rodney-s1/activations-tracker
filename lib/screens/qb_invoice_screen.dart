@@ -37,7 +37,12 @@ class MyAdminDevice {
     required this.account,
   });
 
-  bool get isActive => billingStatus.toLowerCase() == 'active';
+  /// True for devices that are billed: Active OR Never Activated.
+  /// Suspended / Unknown are excluded.
+  bool get isBillable {
+    final s = billingStatus.toLowerCase();
+    return s == 'active' || s == 'never activated';
+  }
 }
 
 /// A single line item from the QB Sales by Customer Detail CSV.
@@ -123,7 +128,10 @@ class QbCustomerSummary {
 /// Parse a MyAdmin "Device Management - Full Report" CSV.
 /// The file has a 2-line header (report name + date), a blank line, then
 /// the column header row, then data rows.
-/// Returns only ACTIVE billing-status devices, grouped by normalised customer name.
+/// Returns ACTIVE and NEVER ACTIVATED devices (both are billed),
+/// grouped by normalised customer name (strips parenthetical location
+/// suffixes AND curly-brace device-type suffixes so that sub-groups like
+/// "Customer {Cameras}" and "Customer {OEM}" all merge under "Customer").
 Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
   final lines = content.split(RegExp(r'\r?\n'));
   if (lines.length < 5) return {};
@@ -168,8 +176,10 @@ Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
 
     if (serial.isEmpty || customer.isEmpty) continue;
 
-    // Only include Active devices — skip Never billed, Suspended, Unknown
-    if (status.toLowerCase() != 'active') continue;
+    // Include Active AND Never Activated — both are billed.
+    // Skip Suspended, Unknown, Never Billed, etc.
+    final statusLower = status.toLowerCase();
+    if (statusLower != 'active' && statusLower != 'never activated') continue;
 
     final normKey = _normKey(customer);
     result.putIfAbsent(normKey, () => []);
@@ -374,16 +384,27 @@ String _extractPlanLabel(String item) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Normalise a customer name for cross-source matching.
-/// MyAdmin appends a location/contact suffix in parentheses:
-///   "Baker Roofing (Seth Hagen  Raleigh  North Carolina)" → "baker roofing"
-/// QB names have no such suffix, so stripping makes both sides match.
+///
+/// MyAdmin can append two types of suffix that QB names never have:
+///   • Parenthetical location:  "Baker Roofing (Seth Hagen Raleigh NC)" → "baker roofing"
+///   • Curly-brace device type: "Acme Corp {Cameras}" → "acme corp"
+///     (same QB customer, just different device-type sub-groups)
+///
+/// Both are stripped before lowercasing so all sub-groups merge to one key.
 String _normKey(String name) {
-  final stripped = _stripParenSuffix(name);
-  // Also collapse internal double-spaces and punctuation differences
-  return stripped
-      .toLowerCase()
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+  String s = name;
+  // 1. Strip curly-brace device-type suffix first, e.g. " {Cameras}"
+  s = _stripCurlyBraceSuffix(s);
+  // 2. Strip parenthetical location/contact suffix, e.g. " (City State)"
+  s = _stripParenSuffix(s);
+  // 3. Collapse whitespace and lowercase
+  return s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+/// Remove a trailing curly-brace suffix, e.g. " {Cameras}" or " {OEM}".
+String _stripCurlyBraceSuffix(String name) {
+  final idx = name.indexOf('{');
+  return idx > 0 ? name.substring(0, idx).trim() : name.trim();
 }
 
 /// Remove a trailing parenthetical suffix, e.g. " (City  State  Country)".
@@ -647,9 +668,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     return summaries;
   }
 
-  /// Strip the location/contact suffix from MyAdmin customer names.
-  /// e.g. "Baker Roofing (Seth Hagen  Raleigh  North Carolina)" → "Baker Roofing"
-  String _stripLocation(String name) => _stripParenSuffix(name);
+  /// Strip the location/contact suffix AND device-type suffix from MyAdmin names.
+  /// e.g. "Baker Roofing (Seth Hagen  Raleigh  NC)" → "Baker Roofing"
+  ///      "Acme Corp {Cameras}"                    → "Acme Corp"
+  String _stripLocation(String name) {
+    String s = _stripCurlyBraceSuffix(name); // strip {Cameras} etc first
+    s = _stripParenSuffix(s);                // then strip (location) suffix
+    return s;
+  }
 
   // ── Filter for tab ────────────────────────────────────────────────────────
 
@@ -1133,13 +1159,13 @@ class _EmptyState extends StatelessWidget {
 
   static const _legendItems = [
     (Icons.check_circle, AppTheme.green, 'Match',
-        'Billed count = Active count'),
+        'Billed count = Billable count'),
     (Icons.warning_amber, AppTheme.amber, 'Overbilled',
-        'More QB lines than active devices'),
+        'More QB lines than billable devices'),
     (Icons.error, AppTheme.red, 'Underbilled',
-        'Fewer QB lines than active devices — revenue leak'),
+        'Fewer QB lines than billable devices — revenue leak'),
     (Icons.money_off, AppTheme.red, 'Not Billed',
-        'Active in MyAdmin but no QB invoice — not charged at all'),
+        'Billable in MyAdmin (Active or Never Activated) but no QB invoice'),
     (Icons.help_outline, Colors.grey, 'QB Only',
         'In QB but not in MyAdmin — possibly a closed account'),
   ];
@@ -1368,7 +1394,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // ── MyAdmin active devices section ─────────────────
                   _SideHeader(
                     icon: Icons.devices,
-                    label: 'MyAdmin Active (${summary.activeCount})',
+                    label: 'MyAdmin Billable (${summary.activeCount})',
                     color: AppTheme.teal,
                   ),
                   const SizedBox(height: 6),
@@ -1397,7 +1423,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                     const Padding(
                       padding: EdgeInsets.only(bottom: 8),
                       child: Text(
-                        'No active devices in MyAdmin for this customer.',
+                        'No billable devices in MyAdmin for this customer.',
                         style: TextStyle(
                             fontSize: 12,
                             color: AppTheme.textSecondary,
@@ -1533,6 +1559,8 @@ class _SerialListDialog extends StatelessWidget {
                       .replaceAll(' Mode: Live', '')
                       .replaceAll(' Mode:', '')
                       .replaceAll(': Live', '');
+                  final isNeverActivated =
+                      d.billingStatus.toLowerCase() == 'never activated';
                   return Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 6),
@@ -1567,6 +1595,24 @@ class _SerialListDialog extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        if (isNeverActivated)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
+                            margin: const EdgeInsets.only(right: 4),
+                            decoration: BoxDecoration(
+                              color: AppTheme.amber.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                  color:
+                                      AppTheme.amber.withValues(alpha: 0.4)),
+                            ),
+                            child: const Text('N/A',
+                                style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppTheme.amber)),
+                          ),
                         SizedBox(
                           width: 60,
                           child: Text(
@@ -1647,14 +1693,17 @@ class _SerialListDialog extends StatelessWidget {
   }
 
   void _downloadCsv(BuildContext context) {
-    // Build CSV with header
+    // Build CSV with header — includes Status column so N/A devices are flagged
     final buf = StringBuffer();
-    buf.writeln('Serial Number,Plan,Rate Plan Code,Customer');
+    buf.writeln('Serial Number,Plan,Rate Plan Code,Status,Customer');
     for (final d in devices) {
       final plan = d.billingPlan
           .replaceAll(' Mode: Live', '')
           .replaceAll(': Live', '');
-      buf.writeln('"${d.serialNumber}","$plan","${d.ratePlanCode}","${_stripParenSuffix(d.customer)}"');
+      final cleanCustomer =
+          _stripParenSuffix(_stripCurlyBraceSuffix(d.customer));
+      buf.writeln(
+          '"${d.serialNumber}","$plan","${d.ratePlanCode}","${d.billingStatus}","$cleanCustomer"');
     }
     _downloadText(buf.toString(),
         '${customerName.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_')}_serials.csv');
@@ -1935,11 +1984,11 @@ class _DeviceTable extends StatelessWidget {
           ...devices.take(20).toList().asMap().entries.map((e) {
             final odd = e.key.isOdd;
             final d   = e.value;
-            // Simplify plan name: remove " Mode: Live" suffix
             final plan = d.billingPlan
                 .replaceAll(' Mode: Live', '')
                 .replaceAll(' Mode:', '')
                 .replaceAll(': Live', '');
+            final isNA = d.billingStatus.toLowerCase() == 'never activated';
             return Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -1962,6 +2011,23 @@ class _DeviceTable extends StatelessWidget {
                               fontSize: 10,
                               color: AppTheme.textSecondary),
                           overflow: TextOverflow.ellipsis)),
+                  if (isNA)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 3, vertical: 1),
+                      margin: const EdgeInsets.only(right: 2),
+                      decoration: BoxDecoration(
+                        color: AppTheme.amber.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(3),
+                        border: Border.all(
+                            color: AppTheme.amber.withValues(alpha: 0.35)),
+                      ),
+                      child: const Text('N/A',
+                          style: TextStyle(
+                              fontSize: 7,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.amber)),
+                    ),
                   SizedBox(
                     width: 50,
                     child: Text(d.ratePlanCode,
@@ -2006,21 +2072,21 @@ class _DiffCallout extends StatelessWidget {
       case VerifyStatus.overbilled:
         color = AppTheme.amber;
         icon  = Icons.warning_amber;
-        msg   = '${summary.billedCount} billed vs ${summary.activeCount} active — '
+        msg   = '${summary.billedCount} billed vs ${summary.activeCount} billable — '
                 '${summary.diff} extra line${summary.diff == 1 ? '' : 's'} in QB. '
                 'Possible duplicate invoice or closed device still being billed.';
         break;
       case VerifyStatus.underbilled:
         color = AppTheme.red;
         icon  = Icons.error;
-        msg   = '${summary.activeCount} active vs ${summary.billedCount} billed — '
+        msg   = '${summary.activeCount} billable vs ${summary.billedCount} billed — '
                 '${-summary.diff} device${-summary.diff == 1 ? '' : 's'} not fully invoiced. '
                 'Revenue leak — add missing line items to QB invoice.';
         break;
       case VerifyStatus.activeOnly:
         color = AppTheme.red;
         icon  = Icons.money_off;
-        msg   = '${summary.activeCount} active device${summary.activeCount == 1 ? '' : 's'} '
+        msg   = '${summary.activeCount} billable device${summary.activeCount == 1 ? '' : 's'} '
                 'with NO QB invoice. This customer is not being billed at all.';
         break;
       case VerifyStatus.qbOnly:
@@ -2091,7 +2157,7 @@ class _SummaryFooter extends StatelessWidget {
           Text('$total customers',
               style:
                   const TextStyle(fontSize: 11, color: Colors.white54)),
-          Text('$totalActive active',
+          Text('$totalActive billable',
               style:
                   const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
           if (issues > 0)
