@@ -6,14 +6,24 @@
 // Default keywords pre-loaded on first install:
 //   Credit Card, BlueArrow Fuel, Predictive Coach, Shipping, FedEx,
 //   Fleetio, Rosco, Xtract, Integration, TopFly, LifeSaver
+//
+// Also stores the "New Activations ignore text" — the memo/description substring
+// used to skip prorated first-month lines from Column L of the QB CSV.
+// Default: "- New Activations"  (configurable via Settings → QB Filters)
 
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/qb_ignore_keyword.dart';
 
 class QbIgnoreKeywordService {
   static const _boxName = 'qb_ignore_keywords';
   static Box<QbIgnoreKeyword>? _box;
+
+  // ── New-Activations ignore text (Column L / Memo) ──────────────────────────
+  static const String defaultNewActivationsText = '- New Activations';
+  static const String _prefKeyNewActivations = 'qb_new_activations_ignore_text';
+  static String _newActivationsText = defaultNewActivationsText;
 
   static const List<String> defaultKeywords = [
     'Credit Card',
@@ -39,6 +49,31 @@ class QbIgnoreKeywordService {
     if (_box!.isEmpty) {
       await _seedDefaults();
     }
+
+    // Load persisted new-activations ignore text
+    final prefs = await SharedPreferences.getInstance();
+    _newActivationsText =
+        prefs.getString(_prefKeyNewActivations) ?? defaultNewActivationsText;
+  }
+
+  // ── New-Activations ignore text accessors ─────────────────────────────────
+
+  /// The current memo/description substring used to skip first-month lines.
+  static String get newActivationsIgnoreText => _newActivationsText;
+
+  /// Persist a new value (empty string = disable this filter entirely).
+  static Future<void> setNewActivationsIgnoreText(String text) async {
+    _newActivationsText = text;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefKeyNewActivations, text);
+    if (kDebugMode) {
+      debugPrint('[QbIgnoreKeywordService] newActivationsIgnoreText = "$text"');
+    }
+  }
+
+  /// Reset the new-activations ignore text to the factory default.
+  static Future<void> resetNewActivationsIgnoreText() async {
+    await setNewActivationsIgnoreText(defaultNewActivationsText);
   }
 
   static Future<void> _seedDefaults() async {

@@ -49,15 +49,39 @@ class MyAdminDevice {
   });
 
   /// True when this device is on the Hanover Insurance rate plan.
-  /// Hanover-plan devices are NOT directly billed to the customer in QB —
-  /// they are billed to Hanover Insurance Company — UNLESS there is a
-  /// matching HANOVER-CS (Cost Share) QB line, in which case the customer
-  /// pays half and Hanover pays half.
   bool get isHanover => ratePlanCode.toLowerCase() == 'hanover';
 
   /// True for the most common billed statuses.
-  /// All statuses are shown in the UI; this getter is kept for legacy use.
   bool get isBillable => billingStatus.toLowerCase() != 'unknown';
+
+  /// Camera product sub-type, derived from serial number prefix (primary) or
+  /// Active Billing Plan containing "GO Expand" (fallback for active devices).
+  ///
+  ///   Serial prefix GF  →  'Go Focus'
+  ///   Serial prefix GE  →  'Go Focus Plus'
+  ///   billingPlan contains "GO Expand" + GF prefix  →  'Go Focus'
+  ///   billingPlan contains "GO Expand" + GE prefix  →  'Go Focus Plus'
+  ///   billingPlan contains "GO Expand" (no clear prefix) → 'Go Focus'  (safe default)
+  ///   Other camera  →  ''  (Surfsight, Smarter AI — no sub-type)
+  ///
+  /// Serial prefix is always checked first because Never Activated devices
+  /// may have no billing plan at all.
+  String get cameraType {
+    if (!isCamera) return '';
+    final sn = serialNumber.toUpperCase();
+    if (sn.startsWith('GF')) return 'Go Focus';
+    if (sn.startsWith('GE')) return 'Go Focus Plus';
+    // Fallback: Active Billing Plan contains "GO Expand"
+    final bp = billingPlan.toLowerCase();
+    if (bp.contains('go expand')) return 'Go Focus'; // can't distinguish without GF/GE prefix
+    return ''; // Surfsight, Smarter AI, etc.
+  }
+
+  /// Convenience: true when this is specifically a Go Focus camera.
+  bool get isGoFocus => cameraType == 'Go Focus';
+
+  /// Convenience: true when this is specifically a Go Focus Plus camera.
+  bool get isGoFocusPlus => cameraType == 'Go Focus Plus';
 }
 
 /// A single line item from the QB Sales by Customer Detail CSV.
@@ -95,8 +119,10 @@ class QbInvoiceLine {
 ///                   These are billed directly to Hanover Insurance, NOT to this customer.
 /// [hanoverCsQty]  = QB HANOVER-CS (Cost Share) line quantity — customer pays half,
 ///                   Hanover Insurance pays half.  These devices ARE included in activeCount.
-/// [cameraCount]   = billable camera devices (Active + Never Activated for most; Active only for Hollywood Feed CUA)
-/// [geotabCount]   = billable Geotab (non-camera) devices
+/// [cameraCount]     = total billable camera devices
+/// [goFocusCount]    = billable Go Focus cameras  (serial prefix GF)
+/// [goFocusPlusCount]= billable Go Focus Plus cameras (serial prefix GE)
+/// [geotabCount]     = billable Geotab (non-camera) devices
 class QbCustomerSummary {
   final String customerName;
 
@@ -110,7 +136,9 @@ class QbCustomerSummary {
   final int unknownCount;       // Unknown-status devices (shown for review, excluded from diff)
   final int hanoverCount;       // Hanover-RPC devices excluded from billing (billed to Hanover direct)
   final int hanoverCsQty;       // HANOVER-CS QB lines qty (cost-share — customer pays half)
-  final int cameraCount;        // billable camera devices
+  final int cameraCount;        // total billable camera devices
+  final int goFocusCount;       // billable Go Focus cameras (GF serial prefix)
+  final int goFocusPlusCount;   // billable Go Focus Plus cameras (GE serial prefix)
   final int geotabCount;        // billable Geotab (non-camera) devices
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
@@ -132,6 +160,8 @@ class QbCustomerSummary {
     this.hanoverCount = 0,
     this.hanoverCsQty = 0,
     this.cameraCount = 0,
+    this.goFocusCount = 0,
+    this.goFocusPlusCount = 0,
     this.geotabCount = 0,
     required this.activeDevices,
     this.isCua = false,
@@ -365,10 +395,11 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     final item = gc(itemIdx);
     if (item.isEmpty) continue;
 
-    // ── Skip lines where memo/description contains "- New Activations" ──────
-    // These are prorated first-month charges, not recurring monthly service fees.
+    // ── Skip lines where memo/description contains the configurable ignore text ─
+    // Default: "- New Activations" — these are first-month charges, not recurring fees.
     final memo = memoIdx >= 0 ? gc(memoIdx).toLowerCase() : '';
-    if (memo.contains('- new activations')) continue;
+    final ignoreText = QbIgnoreKeywordService.newActivationsIgnoreText.toLowerCase().trim();
+    if (ignoreText.isNotEmpty && memo.contains(ignoreText)) continue;
 
     // ── Skip lines where Item/SKU matches any user-configured ignore keyword ─
     final itemLower = item.toLowerCase();
@@ -893,6 +924,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           .where((d) => d.billingStatus.toLowerCase() == 'unknown')
           .length;
 
+      // ── Go Focus / Go Focus Plus sub-counts ─────────────────────────────
+      final goFocusCount     = billableCameras.where((d) => d.isGoFocus).length;
+      final goFocusPlusCount = billableCameras.where((d) => d.isGoFocusPlus).length;
+
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
         // billedCount = sum of Qty across all QB lines (devices invoiced, not row count)
@@ -903,7 +938,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         unknownCount: unknownDeviceCount,
         hanoverCount: hanoverExcluded,
         hanoverCsQty: hanoverBillableCount,
-        cameraCount:  billableCameras.length,
+        cameraCount:      billableCameras.length,
+        goFocusCount:     goFocusCount,
+        goFocusPlusCount: goFocusPlusCount,
         geotabCount:  billableGeotab.length,
         activeDevices: devices,
         isCua: isCua,
@@ -1697,18 +1734,52 @@ class _CustomerVerifyCard extends StatelessWidget {
                                 color: AppTheme.navyAccent,
                               ),
                               const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.videocam_outlined,
-                                label: 'Cam ${summary.cameraCount}',
-                                color: Colors.indigo,
-                              ),
+                              // Show GF/GE sub-type chips if available, else total cameras
+                              if (summary.goFocusCount > 0 || summary.goFocusPlusCount > 0) ...[
+                                if (summary.goFocusCount > 0) ...[
+                                  _MiniChip(
+                                    icon: Icons.videocam_outlined,
+                                    label: 'Cam-GF ${summary.goFocusCount}',
+                                    color: Colors.indigo,
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                if (summary.goFocusPlusCount > 0)
+                                  _MiniChip(
+                                    icon: Icons.videocam,
+                                    label: 'Cam-GE ${summary.goFocusPlusCount}',
+                                    color: Colors.deepPurple,
+                                  ),
+                              ] else
+                                _MiniChip(
+                                  icon: Icons.videocam_outlined,
+                                  label: 'Cam ${summary.cameraCount}',
+                                  color: Colors.indigo,
+                                ),
                             ] else if (summary.cameraCount > 0) ...[
                               const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.videocam_outlined,
-                                label: 'Cam ${summary.cameraCount}',
-                                color: Colors.indigo,
-                              ),
+                              // Camera-only customer: show GF/GE if available
+                              if (summary.goFocusCount > 0 || summary.goFocusPlusCount > 0) ...[
+                                if (summary.goFocusCount > 0) ...[
+                                  _MiniChip(
+                                    icon: Icons.videocam_outlined,
+                                    label: 'Cam-GF ${summary.goFocusCount}',
+                                    color: Colors.indigo,
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                if (summary.goFocusPlusCount > 0)
+                                  _MiniChip(
+                                    icon: Icons.videocam,
+                                    label: 'Cam-GE ${summary.goFocusPlusCount}',
+                                    color: Colors.deepPurple,
+                                  ),
+                              ] else
+                                _MiniChip(
+                                  icon: Icons.videocam_outlined,
+                                  label: 'Cam ${summary.cameraCount}',
+                                  color: Colors.indigo,
+                                ),
                             ],
                             if (summary.unknownCount > 0) ...[
                               const SizedBox(width: 4),
@@ -1990,6 +2061,36 @@ class _SerialListDialog extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        // Camera sub-type chip (Go Focus / Go Focus Plus)
+                        if (d.isCamera && d.cameraType.isNotEmpty) ...[
+                          const SizedBox(width: 3),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
+                            margin: const EdgeInsets.only(right: 2),
+                            decoration: BoxDecoration(
+                              color: d.isGoFocusPlus
+                                  ? Colors.deepPurple.withValues(alpha: 0.15)
+                                  : Colors.indigo.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: d.isGoFocusPlus
+                                    ? Colors.deepPurple.withValues(alpha: 0.45)
+                                    : Colors.indigo.withValues(alpha: 0.45),
+                              ),
+                            ),
+                            child: Text(
+                              d.isGoFocusPlus ? 'GF+' : 'GF',
+                              style: TextStyle(
+                                fontSize: 8,
+                                fontWeight: FontWeight.w700,
+                                color: d.isGoFocusPlus
+                                    ? Colors.deepPurple
+                                    : Colors.indigo,
+                              ),
+                            ),
+                          ),
+                        ],
                         if (badge != null)
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -2346,7 +2447,27 @@ String _buildDeviceHeaderLabel(QbCustomerSummary s) {
   // Show GPS + Camera split when both present; otherwise just total
   if (s.cameraCount > 0 && s.geotabCount > 0) {
     parts.add('${s.geotabCount} GPS');
-    parts.add('${s.cameraCount} cameras');
+    // Camera sub-type breakdown if GF/GE known
+    if (s.goFocusCount > 0 && s.goFocusPlusCount > 0) {
+      parts.add('${s.goFocusCount} GF + ${s.goFocusPlusCount} GF+ cameras');
+    } else if (s.goFocusCount > 0) {
+      parts.add('${s.goFocusCount} GF cameras');
+    } else if (s.goFocusPlusCount > 0) {
+      parts.add('${s.goFocusPlusCount} GF+ cameras');
+    } else {
+      parts.add('${s.cameraCount} cameras');
+    }
+  } else if (s.cameraCount > 0) {
+    // Camera-only customer
+    if (s.goFocusCount > 0 && s.goFocusPlusCount > 0) {
+      parts.add('${s.goFocusCount} GF + ${s.goFocusPlusCount} GF+ cameras');
+    } else if (s.goFocusCount > 0) {
+      parts.add('${s.goFocusCount} GF cameras');
+    } else if (s.goFocusPlusCount > 0) {
+      parts.add('${s.goFocusPlusCount} GF+ cameras');
+    } else {
+      parts.add('${s.cameraCount} cameras');
+    }
   } else {
     parts.add('${s.activeCount} billable');
   }

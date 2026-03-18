@@ -499,22 +499,68 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   final _ctrl = TextEditingController();
   List<dynamic> _keywords = [];
 
+  // ── New-Activations ignore text config ───────────────────────────────────
+  bool _editingIgnoreText = false;
+  late TextEditingController _ignoreTextCtrl;
+  String _ignoreText = QbIgnoreKeywordService.newActivationsIgnoreText;
+
   @override
   void initState() {
     super.initState();
+    _ignoreTextCtrl = TextEditingController(text: _ignoreText);
     _load();
   }
 
   void _load() {
     setState(() {
       _keywords = QbIgnoreKeywordService.getAll();
+      _ignoreText = QbIgnoreKeywordService.newActivationsIgnoreText;
     });
   }
 
   @override
   void dispose() {
     _ctrl.dispose();
+    _ignoreTextCtrl.dispose();
     super.dispose();
+  }
+
+  // ── Ignore text save/reset ────────────────────────────────────────────────
+
+  Future<void> _saveIgnoreText() async {
+    final text = _ignoreTextCtrl.text.trim();
+    await QbIgnoreKeywordService.setNewActivationsIgnoreText(text);
+    setState(() {
+      _ignoreText = text;
+      _editingIgnoreText = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(text.isEmpty
+              ? 'Memo ignore text cleared — no lines will be skipped by memo.'
+              : 'Memo ignore text updated to "$text".'),
+          backgroundColor: AppTheme.green,
+        ),
+      );
+    }
+  }
+
+  Future<void> _resetIgnoreText() async {
+    await QbIgnoreKeywordService.resetNewActivationsIgnoreText();
+    _ignoreTextCtrl.text = QbIgnoreKeywordService.defaultNewActivationsText;
+    setState(() {
+      _ignoreText = QbIgnoreKeywordService.defaultNewActivationsText;
+      _editingIgnoreText = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Memo ignore text reset to default.'),
+          backgroundColor: AppTheme.green,
+        ),
+      );
+    }
   }
 
   Future<void> _add() async {
@@ -587,22 +633,182 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
         Container(
           color: AppTheme.navyMid,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-          child: const Row(
+          child: Row(
             children: [
-              Icon(Icons.info_outline, size: 15, color: Colors.white54),
-              SizedBox(width: 8),
+              const Icon(Icons.info_outline, size: 15, color: Colors.white54),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   'Lines in your QuickBooks "Sales by Customer Detail" report '
                   'whose Item/SKU column contains any of these keywords will be '
                   'skipped during import — they are not monthly service fees. '
-                  'Also skips any line whose description contains "- New Activations".',
-                  style: TextStyle(color: Colors.white60, fontSize: 11),
+                  'Also skips any line whose memo/description contains the '
+                  '"Memo Ignore Text" configured below.',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
                 ),
               ),
             ],
           ),
         ),
+
+        // ── Memo Ignore Text config panel ─────────────────────────────
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          decoration: BoxDecoration(
+            color: AppTheme.navyMid,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.divider),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header row
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 8, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.description_outlined,
+                        size: 14, color: AppTheme.tealLight),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'Memo Ignore Text (Column L)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                    ),
+                    if (!_editingIgnoreText) ...[
+                      TextButton(
+                        onPressed: () {
+                          _ignoreTextCtrl.text = _ignoreText;
+                          setState(() => _editingIgnoreText = true);
+                        },
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.tealLight,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Edit', style: TextStyle(fontSize: 12)),
+                      ),
+                      TextButton(
+                        onPressed: _resetIgnoreText,
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.amber,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Reset', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              // Value row / edit row
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                child: _editingIgnoreText
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _ignoreTextCtrl,
+                              autofocus: true,
+                              style: const TextStyle(
+                                  fontSize: 12, color: AppTheme.textPrimary),
+                              decoration: InputDecoration(
+                                hintText: 'e.g. - New Activations',
+                                helperText:
+                                    'Leave empty to disable this filter.',
+                                helperStyle: const TextStyle(
+                                    fontSize: 10, color: AppTheme.textSecondary),
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 8),
+                                isDense: true,
+                                border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(6)),
+                              ),
+                              onSubmitted: (_) => _saveIgnoreText(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: _saveIgnoreText,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.teal,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('Save',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                          const SizedBox(width: 4),
+                          OutlinedButton(
+                            onPressed: () =>
+                                setState(() => _editingIgnoreText = false),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.textSecondary,
+                              side: const BorderSide(color: AppTheme.divider),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('Cancel',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          const Icon(Icons.block, size: 13, color: AppTheme.amber),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              _ignoreText.isEmpty
+                                  ? '(disabled — no lines skipped by memo)'
+                                  : '"$_ignoreText"',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: _ignoreText.isEmpty
+                                    ? AppTheme.textSecondary
+                                    : AppTheme.textPrimary,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                          if (_ignoreText != QbIgnoreKeywordService.defaultNewActivationsText)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: AppTheme.amber.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                    color: AppTheme.amber.withValues(alpha: 0.4)),
+                              ),
+                              child: const Text('custom',
+                                  style: TextStyle(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.amber)),
+                            ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
 
         // ── Add keyword row ───────────────────────────────────────────
         Padding(
