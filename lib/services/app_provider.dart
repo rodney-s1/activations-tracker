@@ -294,6 +294,7 @@ class AppProvider extends ChangeNotifier {
     final count = await QbCustomerService.importFromBytes(bytes);
     _qbCustomers = QbCustomerService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent(); // back up QB customer list to cloud immediately
     return count;
   }
 
@@ -301,6 +302,7 @@ class AppProvider extends ChangeNotifier {
     final count = await QbCustomerService.importFromCsv(csvContent);
     _qbCustomers = QbCustomerService.getAll();
     notifyListeners();
+    CloudSyncService.pushSilent(); // back up QB customer list to cloud immediately
     return count;
   }
 

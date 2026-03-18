@@ -7,11 +7,12 @@
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
-// Data layout (4 PUT calls per push, 4 GET calls per pull):
+// Data layout (5 PUT calls per push, 5 GET calls per pull):
 //   /activation_tracker/{userId}/standard_plan_rates.json
 //   /activation_tracker/{userId}/customer_plan_codes.json
 //   /activation_tracker/{userId}/serial_filter_rules.json
 //   /activation_tracker/{userId}/imported_csvs.json        ← CSV backup
+//   /activation_tracker/{userId}/qb_customers.json         ← QB Customer list + CUA flags
 //
 // Each node stores a plain JSON object — no encoding tricks needed.
 // The Realtime Database REST API accepts and returns native JSON directly.
@@ -29,6 +30,8 @@ import '../services/standard_plan_rate_service.dart';
 import '../services/customer_plan_code_service.dart';
 import '../services/filter_settings_service.dart';
 import '../services/csv_persist_service.dart';
+import '../services/qb_customer_service.dart';
+import '../models/qb_customer.dart';
 
 // ── Status enum ──────────────────────────────────────────────────────────────
 
@@ -279,6 +282,32 @@ class CloudSyncService {
         }
       }
 
+
+      // ── 5. QB Customer list + CUA flags ────────────────────────
+      // Non-fatal: failure does not abort the sync.
+      try {
+        final customers = QbCustomerService.getAll();
+        if (customers.isNotEmpty) {
+          final r5 = await _putNode('qb_customers', {
+            'updatedAt': DateTime.now().toIso8601String(),
+            'count': customers.length,
+            'data': customers.map((c) => {
+              'name':      c.name,
+              'accountNo': c.accountNo,
+              'email':     c.email,
+              'phone':     c.phone,
+              'address':   c.address,
+              'isCua':     c.isCua,
+            }).toList(),
+          });
+          if (r5 != null && kDebugMode) {
+            debugPrint('[CloudSync] QB customer backup warning (non-fatal): $r5');
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('[CloudSync] QB customer backup warning (non-fatal): $e');
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return null;
@@ -328,6 +357,7 @@ class CloudSyncService {
         http.get(Uri.parse(_nodeUrl('customer_plan_codes')), headers: _headers),
         http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),
         http.get(Uri.parse(_nodeUrl('imported_csvs')),      headers: _headers),
+        http.get(Uri.parse(_nodeUrl('qb_customers')),       headers: _headers),
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -393,6 +423,30 @@ class CloudSyncService {
         }
       }
 
+
+      // ── QB Customer list restore ─────────────────────────────
+      if (responses[4].statusCode == 200 && responses[4].body != 'null') {
+        try {
+          final node = jsonDecode(responses[4].body) as Map<String, dynamic>;
+          final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
+          if (list.isNotEmpty) {
+            await QbCustomerService.clear();
+            for (final item in list) {
+              await QbCustomerService.box.add(QbCustomer(
+                name:      item['name']?.toString()      ?? '',
+                accountNo: item['accountNo']?.toString() ?? '',
+                email:     item['email']?.toString()     ?? '',
+                phone:     item['phone']?.toString()     ?? '',
+                address:   item['address']?.toString()   ?? '',
+              )..isCua = item['isCua'] as bool? ?? false);
+            }
+            counts['qbCustomers'] = list.length;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] QB customer restore warning: $e');
+          // Non-fatal
+        }
+      }
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return {'counts': counts};
@@ -431,9 +485,10 @@ class CloudSyncService {
   static Future<void> pushSilent() async {
     if (!_configured) return;
     try {
-      final rates = StandardPlanRateService.getAll();
-      final codes = CustomerPlanCodeService.getAll();
-      final rules = FilterSettingsService.getAllRules();
+      final rates     = StandardPlanRateService.getAll();
+      final codes     = CustomerPlanCodeService.getAll();
+      final rules     = FilterSettingsService.getAllRules();
+      final customers = QbCustomerService.getAll();
 
       await Future.wait([
         _putNode('standard_plan_rates', {
@@ -466,6 +521,19 @@ class CloudSyncService {
             'isSystem':   r.isSystem,
           }).toList(),
         }),
+        if (customers.isNotEmpty)
+          _putNode('qb_customers', {
+            'updatedAt': DateTime.now().toIso8601String(),
+            'count': customers.length,
+            'data': customers.map((c) => {
+              'name':      c.name,
+              'accountNo': c.accountNo,
+              'email':     c.email,
+              'phone':     c.phone,
+              'address':   c.address,
+              'isCua':     c.isCua,
+            }).toList(),
+          }),
       ]);
 
       await _recordLastSync();

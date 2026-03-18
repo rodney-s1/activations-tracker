@@ -186,7 +186,9 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
     final result = await CloudSyncService.pullAll();
     if (!mounted) return;
 
-    context.read<AppProvider>().loadPricingData();
+    final provider = context.read<AppProvider>();
+    provider.loadPricingData();
+    provider.notifyQbCustomersChanged(); // refresh QB customer list from Hive
 
     if (result.containsKey('error')) {
       setState(() {
@@ -196,14 +198,16 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       });
     } else {
       final counts = result['counts'] as Map<String, int>? ?? {};
-      final csvRestored = (counts['importedCsvs'] ?? 0) > 0;
+      final csvRestored  = (counts['importedCsvs']  ?? 0) > 0;
+      final qbRestored   = (counts['qbCustomers']   ?? 0) > 0;
       setState(() {
         _loading   = false;
         _statusMsg =
             'Pulled: ${counts['standardPlanRates'] ?? 0} plan rates, '
             '${counts['customerPlanCodes'] ?? 0} customer codes, '
             '${counts['serialFilterRules'] ?? 0} filter rules'
-            '${csvRestored ? ', + CSV files restored' : ''}.';
+            '${csvRestored ? ', + CSV files' : ''}'
+            '${qbRestored ? ', ${counts['qbCustomers']} QB customers' : ''}.';
         _statusOk = true;
       });
     }
