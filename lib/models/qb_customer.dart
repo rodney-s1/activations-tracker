@@ -21,10 +21,16 @@ class QbCustomer extends HiveObject {
 
   /// True = "Charged Upon Activation" customer.
   /// CUA customers are only billed for Active (not Suspended / Never Activated)
-  /// devices, so the billing comparison in QB Verify uses only active devices
-  /// for these customers instead of the full billable set.
+  /// devices. Auto-set from Column AK on CSV import (contains "Charge Upon Activation").
+  /// Can also be toggled manually.
   @HiveField(5, defaultValue: false)
   bool isCua;
+
+  /// Raw value from Column AK (Job Type) in the QB Customer List CSV.
+  /// Examples: "Standard", "Charge Upon Activation", "Charge Upon Activation:Hanover",
+  ///           "Standard:TCS", "Reseller", "In Collections", ""
+  @HiveField(6, defaultValue: '')
+  String jobType;
 
   QbCustomer({
     required this.name,
@@ -33,5 +39,6 @@ class QbCustomer extends HiveObject {
     this.phone = '',
     this.address = '',
     this.isCua = false,
+    this.jobType = '',
   });
 }

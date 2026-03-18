@@ -104,6 +104,10 @@ class QbCustomerSummary {
   /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
   final bool isCua;
 
+  /// Raw jobType from Column AK of the QB Customer List (e.g. "Standard", "Charge Upon Activation:Hanover").
+  /// Empty string if not found in QB Customer List.
+  final String jobType;
+
   const QbCustomerSummary({
     required this.customerName,
     required this.billedCount,
@@ -115,6 +119,7 @@ class QbCustomerSummary {
     this.hanoverCsQty = 0,
     required this.activeDevices,
     this.isCua = false,
+    this.jobType = '',
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -747,8 +752,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     };
 
     // Load the CUA flags once (name → isCua).
-    // We match by stripping the display name to the same normalised form used as the key.
-    final cuaMap = QbCustomerService.getCuaMap();
+    // Use normalized map so slight name differences still match
+    // (e.g. "Cyprus Air" in MyAdmin vs "Cyprus Air, Inc" in QB).
+    final cuaMap     = QbCustomerService.getCuaMapNormalized();
+    final jobTypeMap = QbCustomerService.getJobTypeMapNormalized();
 
     final List<QbCustomerSummary> summaries = allKeys.map((key) {
       final devices = _myAdminData[key] ?? [];
@@ -765,11 +772,20 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         displayName = _qbDisplayNameCache[key] ?? key;
       }
 
-      // Look up CUA flag: try exact display name, then QB cache name, then key.
+      // Look up CUA flag using normalised key first, then display name, then QB cache name.
+      // _normKey() already normalizes (strips parens/curlies, lowercase, collapse whitespace)
+      // so it doubles as the normalization function for the cuaMap lookup.
+      final normDisplay = _normKey(displayName);
       final isCua = cuaMap[displayName] ??
+          cuaMap[normDisplay] ??
           cuaMap[_qbDisplayNameCache[key] ?? key] ??
           cuaMap[key] ??
           false;
+      final jobType = jobTypeMap[displayName] ??
+          jobTypeMap[normDisplay] ??
+          jobTypeMap[_qbDisplayNameCache[key] ?? key] ??
+          jobTypeMap[key] ??
+          '';
 
       // Split devices into billing groups.
       // CUA customers: only Active devices count toward the billing diff.
@@ -822,6 +838,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         hanoverCsQty: hanoverBillableCount, // cost-share devices counted toward billing
         activeDevices: devices,              // ALL devices for display
         isCua: isCua,
+        jobType: jobType,
       );
     }).toList();
 
@@ -868,6 +885,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             hanoverCsQty: existing.hanoverCsQty,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:         existing.isCua,
+            jobType:       existing.jobType,
           );
         }
       } else {
@@ -885,6 +903,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           hanoverCsQty: 0,
           activeDevices: hanoverGoDevices,
           isCua:         false,
+          jobType:       '',
         ));
       }
     }
@@ -1560,6 +1579,19 @@ class _CustomerVerifyCard extends StatelessWidget {
                             color: AppTheme.textPrimary,
                           ),
                         ),
+                        if (summary.jobType.isNotEmpty) ...[
+                          const SizedBox(height: 1),
+                          Text(
+                            summary.jobType,
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: summary.isCua
+                                  ? Colors.deepPurple.withValues(alpha: 0.75)
+                                  : AppTheme.textSecondary.withValues(alpha: 0.65),
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 3),
                         Row(
                           children: [

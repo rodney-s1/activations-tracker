@@ -12,6 +12,8 @@
 //   csv_qb_filename       — original filename shown in the UI
 //   csv_activations_content — raw text of the last Activations dashboard CSV
 //   csv_activations_filename — original filename shown in the UI
+//   csv_qb_customer_content  — raw text of the QB Customer List (persisted permanently)
+//   csv_qb_customer_filename — filename of the QB Customer List
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,6 +28,10 @@ class CsvPersistService {
 
   static const _kActivationsContent = 'csv_activations_content';
   static const _kActivationsFile    = 'csv_activations_filename';
+
+  // QB Customer List — persisted permanently, restored on every startup
+  static const _kQbCustomerContent  = 'csv_qb_customer_content';
+  static const _kQbCustomerFile     = 'csv_qb_customer_filename';
 
   // ── MyAdmin ───────────────────────────────────────────────────────────────
 
@@ -116,19 +122,50 @@ class CsvPersistService {
     await prefs.remove(_kActivationsFile);
   }
 
+  // ── QB Customer List (permanent) ──────────────────────────────────────────
+  // Stored separately so it is ALWAYS restored on startup and never cleared
+  // by normal app operations. Only replaced when a new CSV is imported.
+
+  static Future<void> saveQbCustomerList({
+    required String content,
+    required String fileName,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kQbCustomerContent, content);
+    await prefs.setString(_kQbCustomerFile,    fileName);
+  }
+
+  static Future<({String content, String fileName})?> loadQbCustomerList() async {
+    final prefs = await SharedPreferences.getInstance();
+    final content = prefs.getString(_kQbCustomerContent);
+    if (content == null || content.isEmpty) return null;
+    return (
+      content:  content,
+      fileName: prefs.getString(_kQbCustomerFile) ?? 'QB Customer List.csv',
+    );
+  }
+
+  static Future<void> clearQbCustomerList() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kQbCustomerContent);
+    await prefs.remove(_kQbCustomerFile);
+  }
+
   // ── Cloud sync helpers ─────────────────────────────────────────────────────
   // Called by CloudSyncService when pushing/pulling CSV data to Firebase RTDB.
 
   static Future<Map<String, String>> getAllRaw() async {
     final prefs = await SharedPreferences.getInstance();
     return {
-      'myadmin_content':  prefs.getString(_kMyAdminContent)     ?? '',
-      'myadmin_filename': prefs.getString(_kMyAdminFile)        ?? '',
-      'myadmin_date':     prefs.getString(_kMyAdminDate)        ?? '',
-      'qb_content':       prefs.getString(_kQbContent)          ?? '',
-      'qb_filename':      prefs.getString(_kQbFile)             ?? '',
-      'act_content':      prefs.getString(_kActivationsContent) ?? '',
-      'act_filename':     prefs.getString(_kActivationsFile)    ?? '',
+      'myadmin_content':      prefs.getString(_kMyAdminContent)       ?? '',
+      'myadmin_filename':     prefs.getString(_kMyAdminFile)          ?? '',
+      'myadmin_date':         prefs.getString(_kMyAdminDate)          ?? '',
+      'qb_content':           prefs.getString(_kQbContent)            ?? '',
+      'qb_filename':          prefs.getString(_kQbFile)               ?? '',
+      'act_content':          prefs.getString(_kActivationsContent)   ?? '',
+      'act_filename':         prefs.getString(_kActivationsFile)      ?? '',
+      'qb_customer_content':  prefs.getString(_kQbCustomerContent)    ?? '',
+      'qb_customer_filename': prefs.getString(_kQbCustomerFile)       ?? '',
     };
   }
 
@@ -137,12 +174,14 @@ class CsvPersistService {
     Future<void> s(String k, String v) async {
       if (v.isNotEmpty) await prefs.setString(k, v);
     }
-    await s(_kMyAdminContent,     map['myadmin_content']  as String? ?? '');
-    await s(_kMyAdminFile,        map['myadmin_filename'] as String? ?? '');
-    await s(_kMyAdminDate,        map['myadmin_date']     as String? ?? '');
-    await s(_kQbContent,          map['qb_content']       as String? ?? '');
-    await s(_kQbFile,             map['qb_filename']      as String? ?? '');
-    await s(_kActivationsContent, map['act_content']      as String? ?? '');
-    await s(_kActivationsFile,    map['act_filename']     as String? ?? '');
+    await s(_kMyAdminContent,     map['myadmin_content']       as String? ?? '');
+    await s(_kMyAdminFile,        map['myadmin_filename']       as String? ?? '');
+    await s(_kMyAdminDate,        map['myadmin_date']           as String? ?? '');
+    await s(_kQbContent,          map['qb_content']             as String? ?? '');
+    await s(_kQbFile,             map['qb_filename']            as String? ?? '');
+    await s(_kActivationsContent, map['act_content']            as String? ?? '');
+    await s(_kActivationsFile,    map['act_filename']           as String? ?? '');
+    await s(_kQbCustomerContent,  map['qb_customer_content']    as String? ?? '');
+    await s(_kQbCustomerFile,     map['qb_customer_filename']   as String? ?? '');
   }
 }

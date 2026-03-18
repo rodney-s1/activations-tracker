@@ -307,6 +307,7 @@ class CloudSyncService {
               'phone':     c.phone,
               'address':   c.address,
               'isCua':     c.isCua,
+              'jobType':   c.jobType,
             }).toList(),
           });
           if (r5 != null && kDebugMode) {
@@ -468,7 +469,9 @@ class CloudSyncService {
                 email:     item['email']?.toString()     ?? '',
                 phone:     item['phone']?.toString()     ?? '',
                 address:   item['address']?.toString()   ?? '',
-              )..isCua = item['isCua'] as bool? ?? false);
+                isCua:     item['isCua']    as bool?     ?? false,
+                jobType:   item['jobType']?.toString()   ?? '',
+              ));
             }
             counts['qbCustomers'] = list.length;
           }
@@ -583,6 +586,7 @@ class CloudSyncService {
               'phone':     c.phone,
               'address':   c.address,
               'isCua':     c.isCua,
+              'jobType':   c.jobType,
             }).toList(),
           }),
         _putNode('qb_ignore_keywords', {

@@ -1,6 +1,7 @@
 // App-wide state provider
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import '../models/customer_group.dart';
 import '../models/import_session.dart';
@@ -298,6 +299,20 @@ class AppProvider extends ChangeNotifier {
     final count = await QbCustomerService.importFromBytes(bytes);
     _qbCustomers = QbCustomerService.getAll();
     notifyListeners();
+    // Persist the raw CSV permanently so it survives browser clear + app restarts.
+    // We re-decode here with the same logic QbCustomerService uses (utf8 then latin1).
+    try {
+      String content;
+      try {
+        content = utf8.decode(bytes, allowMalformed: false);
+      } catch (_) {
+        content = latin1.decode(bytes);
+      }
+      await CsvPersistService.saveQbCustomerList(
+        content: content,
+        fileName: 'QB Customer List.csv',
+      );
+    } catch (_) {}
     CloudSyncService.pushSilent(); // back up QB customer list to cloud immediately
     return count;
   }
@@ -306,6 +321,11 @@ class AppProvider extends ChangeNotifier {
     final count = await QbCustomerService.importFromCsv(csvContent);
     _qbCustomers = QbCustomerService.getAll();
     notifyListeners();
+    // Persist the raw CSV permanently so it survives browser clear + app restarts.
+    await CsvPersistService.saveQbCustomerList(
+      content: csvContent,
+      fileName: 'QB Customer List.csv',
+    );
     CloudSyncService.pushSilent(); // back up QB customer list to cloud immediately
     return count;
   }
@@ -358,6 +378,26 @@ class AppProvider extends ChangeNotifier {
     // If data is already loaded (e.g. from history re-open), skip.
     if (_state == AppState.loaded) return;
 
+    // ── Restore QB Customer List if Hive box is empty ─────────────────────
+    // The raw CSV is stored in SharedPreferences as a permanent backup.
+    // If the Hive box was cleared (browser clear, new device), re-import from
+    // the persisted CSV so CUA flags and customer names are always available.
+    if (_qbCustomers.isEmpty) {
+      try {
+        final saved = await CsvPersistService.loadQbCustomerList();
+        if (saved != null && saved.content.isNotEmpty) {
+          final count = await QbCustomerService.importFromCsv(saved.content);
+          _qbCustomers = QbCustomerService.getAll();
+          if (kDebugMode) {
+            debugPrint('[AppProvider] QB Customer List restored from persist: $count customers');
+          }
+        }
+      } catch (_) {
+        // Silently ignore — user can re-import manually
+      }
+    }
+
+    // ── Restore Activations CSV ────────────────────────────────────────────
     final saved = await CsvPersistService.loadActivations();
     if (saved == null || saved.content.isEmpty) return;
 

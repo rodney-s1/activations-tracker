@@ -161,10 +161,10 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Import the QuickBooks Customer List CSV to enable '
-                      'auto-complete when adding plan codes. '
-                      'Tap the ⚡ Std/CUA button on each customer to mark them as '
-                      '"Charged Upon Activation" — CUA customers are only billed for Active devices.',
+                      'The CUA flag is auto-set from Column AK (Job Type) when you import a '
+                      'QB Customer List CSV — "Charge Upon Activation" = CUA (Active devices only), '
+                      'all others = Standard (Active + Suspended + Never Activated). '
+                      'Use the ⚡ button to manually override any customer\'s billing type.',
                       style: TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                   ),
@@ -384,6 +384,17 @@ class _QbCustomerTileState extends State<_QbCustomerTile> {
                     Text(customer.phone,
                         style: const TextStyle(
                             fontSize: 11, color: AppTheme.textSecondary)),
+                  if (customer.jobType.isNotEmpty)
+                    Text(
+                      customer.jobType,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: customer.isCua
+                            ? Colors.deepPurple.withValues(alpha: 0.8)
+                            : AppTheme.textSecondary.withValues(alpha: 0.7),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
                 ],
               ),
             ),

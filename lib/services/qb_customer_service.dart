@@ -56,26 +56,55 @@ class QbCustomerService {
         .split('\n');
 
     // QB CSV columns (0-indexed, first col is blank):
-    // 0=blank  1=Active Status  2=Customer  3=Balance  4=Balance Total
-    // 5=Company  6=Mr/Ms  7=First  8=MI  9=Last  10=Primary Contact
+    //  0=blank  1=Active Status  2=Customer  3=Balance  4=Balance Total
+    //  5=Company  6=Mr/Ms  7=First  8=MI  9=Last  10=Primary Contact
     // 11=Main Phone  12=Fax  13=Alt Phone  14=Secondary Contact
     // 15=Job Title  16=Main Email  17-21=Bill to 1-5  22-26=Ship to 1-5
     // 27=Customer Type  28=Terms  29=Rep  30=Sales Tax Code  31=Tax Item
-    // 32=Resale Num  33=Account No.  34=Credit Limit  35=Job Status ...
+    // 32=Resale Num  33=Account No.  34=Credit Limit  35=Job Status
+    // 36=Job Type (AK) ← CUA / Standard determination
+    // 37=Job Description  38=Start Date  39=Projected End  40=End Date
 
-    // Find the header row (contains "Active Status" column)
+    // Find the header row (contains "Active Status" column) and resolve
+    // column indices dynamically so we're not hard-coded to a column order.
     int dataStart = 0;
+    int activeStatusIdx = 1;
+    int customerIdx     = 2;
+    int phoneIdx        = 11;
+    int altPhoneIdx     = 13;
+    int emailIdx        = 16;
+    int billTo1Idx      = 17;
+    int billTo2Idx      = 18;
+    int billTo3Idx      = 19;
+    int accountNoIdx    = 33;
+    int jobTypeIdx      = 36; // Column AK
+
     for (int i = 0; i < lines.length && i < 5; i++) {
       if (lines[i].contains('Active Status')) {
-        dataStart = i + 1; // data starts on the line after the header
+        dataStart = i + 1;
+        // Resolve indices from header row
+        final hdr = _splitCsv(lines[i]);
+        for (int j = 0; j < hdr.length; j++) {
+          final h = hdr[j].trim().toLowerCase();
+          if (h == 'active status')           activeStatusIdx = j;
+          else if (h == 'customer')            customerIdx     = j;
+          else if (h == 'main phone')          phoneIdx        = j;
+          else if (h == 'alt. phone')          altPhoneIdx     = j;
+          else if (h == 'main email')          emailIdx        = j;
+          else if (h == 'bill to 1')           billTo1Idx      = j;
+          else if (h == 'bill to 2')           billTo2Idx      = j;
+          else if (h == 'bill to 3')           billTo3Idx      = j;
+          else if (h == 'account no.')         accountNoIdx    = j;
+          else if (h == 'job type')            jobTypeIdx      = j;
+        }
         break;
       }
     }
-    // If header not found in first 5 lines, assume line 0 is header
     if (dataStart == 0) dataStart = 1;
 
     if (kDebugMode) {
-      debugPrint('[QbCustomerService] dataStart=$dataStart, total lines=${lines.length}');
+      debugPrint('[QbCustomerService] dataStart=$dataStart, '
+          'jobTypeIdx=$jobTypeIdx, total lines=${lines.length}');
     }
 
     for (int i = dataStart; i < lines.length; i++) {
@@ -87,18 +116,25 @@ class QbCustomerService {
 
       String get(int idx) => idx < cols.length ? cols[idx].trim() : '';
 
-      final status = get(1).toLowerCase();
+      final status = get(activeStatusIdx).toLowerCase();
       if (status != 'active') continue;
 
-      final name = get(2);
+      final name = get(customerIdx);
       if (name.isEmpty || name.startsWith('**')) continue;
 
-      final phone = get(11).isNotEmpty ? get(11) : get(13);
-      final email = get(16);
-      final addr  = [get(17), get(18), get(19)]
+      final phone   = get(phoneIdx).isNotEmpty ? get(phoneIdx) : get(altPhoneIdx);
+      final email   = get(emailIdx);
+      final addr    = [get(billTo1Idx), get(billTo2Idx), get(billTo3Idx)]
           .where((s) => s.isNotEmpty)
           .join(', ');
-      final acct  = get(33);
+      final acct    = get(accountNoIdx);
+      final jobType = get(jobTypeIdx);
+
+      // Auto-detect CUA from Column AK (Job Type):
+      //   "Charge Upon Activation" (and any variant like "Charge Upon Activation:Hanover")
+      //   → isCua = true
+      //   Everything else (Standard, blank, Reseller, etc.) → isCua = false
+      final isCua = jobType.toLowerCase().contains('charge upon activation');
 
       await _box!.add(QbCustomer(
         name:      name,
@@ -106,6 +142,8 @@ class QbCustomerService {
         email:     email,
         phone:     phone,
         address:   addr,
+        isCua:     isCua,
+        jobType:   jobType,
       ));
       count++;
     }
@@ -133,6 +171,7 @@ class QbCustomerService {
   }
 
   /// Toggle the CUA flag for the customer at the given box index.
+  /// Note: manual toggle overrides the auto-imported value from Column AK.
   static Future<void> toggleCua(int boxIndex) async {
     final key = _box!.keyAt(boxIndex);
     final customer = _box!.get(key);
@@ -155,6 +194,42 @@ class QbCustomerService {
   /// Return a map of customerName → isCua for all customers.
   static Map<String, bool> getCuaMap() {
     return {for (final c in _box!.values) c.name: c.isCua};
+  }
+
+  /// Return a map of customerName → isCua keyed by NORMALISED name (lowercase, no paren suffix).
+  /// This allows fuzzy matching when MyAdmin customer names differ slightly from QB names.
+  static Map<String, bool> getCuaMapNormalized() {
+    final result = <String, bool>{};
+    for (final c in _box!.values) {
+      // exact name
+      result[c.name] = c.isCua;
+      // normalised: lowercase, strip trailing parenthetical suffix, collapse whitespace
+      final norm = _normalizeName(c.name);
+      result[norm] = c.isCua;
+    }
+    return result;
+  }
+
+  /// Return a map of customerName → jobType keyed by NORMALISED name.
+  static Map<String, String> getJobTypeMapNormalized() {
+    final result = <String, String>{};
+    for (final c in _box!.values) {
+      result[c.name] = c.jobType;
+      final norm = _normalizeName(c.name);
+      result[norm] = c.jobType;
+    }
+    return result;
+  }
+
+  /// Normalise a customer name for fuzzy matching:
+  /// lowercase, strip trailing parenthetical suffix, collapse whitespace.
+  static String _normalizeName(String name) {
+    String s = name;
+    final parenIdx = s.indexOf('(');
+    if (parenIdx > 0) s = s.substring(0, parenIdx);
+    final curlyIdx = s.indexOf('{');
+    if (curlyIdx > 0) s = s.substring(0, curlyIdx);
+    return s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   static Future<void> clear() => _box!.clear();
