@@ -1,6 +1,6 @@
 // Settings Screen — QB Customer List + Export/Import Settings
 
-import 'dart:convert' show jsonDecode;
+import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -96,23 +96,27 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
       if (result == null || result.files.isEmpty) return;
 
       final file = result.files.first;
-      String content;
+      int count;
+
       if (file.bytes != null) {
-        content = String.fromCharCodes(file.bytes!);
+        // Web: pass raw bytes directly — avoids String.fromCharCodes encoding corruption
+        if (!mounted) return;
+        count = await context.read<AppProvider>().importQbCustomersFromBytes(file.bytes!);
       } else if (file.path != null) {
-        content = await File(file.path!).readAsString();
+        // Mobile/desktop: read file as string via path
+        final content = await File(file.path!).readAsString();
+        if (!mounted) return;
+        count = await context.read<AppProvider>().importQbCustomers(content);
       } else {
         return;
       }
 
-      if (!mounted) return;
-      final count = await context.read<AppProvider>().importQbCustomers(content);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
                 'Imported $count active QB customer${count == 1 ? '' : 's'}.'),
-            backgroundColor: AppTheme.green,
+            backgroundColor: count > 0 ? AppTheme.green : AppTheme.amber,
           ),
         );
       }
@@ -392,7 +396,11 @@ class _BackupRestoreTab extends StatelessWidget {
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
-        content = String.fromCharCodes(file.bytes!);
+        try {
+          content = utf8.decode(file.bytes!, allowMalformed: false);
+        } catch (_) {
+          content = latin1.decode(file.bytes!);
+        }
       } else if (file.path != null) {
         content = await File(file.path!).readAsString();
       } else {

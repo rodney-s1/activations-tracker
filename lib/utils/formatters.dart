@@ -1,7 +1,23 @@
 // Utility formatting helpers
 
+import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
+
+/// Decode raw file bytes to a String.
+/// Tries UTF-8 first, falls back to Latin-1, and strips any BOM.
+/// Use this instead of String.fromCharCodes() to avoid web encoding issues.
+String decodeBytesToString(List<int> bytes) {
+  String s;
+  try {
+    s = utf8.decode(bytes, allowMalformed: false);
+  } catch (_) {
+    s = latin1.decode(bytes);
+  }
+  // Strip UTF-8 BOM (EF BB BF) if present
+  if (s.startsWith('\uFEFF')) s = s.substring(1);
+  return s;
+}
 
 class Formatters {
   static final _currency = NumberFormat('\$#,##0.00', 'en_US');

@@ -289,6 +289,14 @@ class AppProvider extends ChangeNotifier {
 
   // ── QB Customers ──────────────────────────────────────────────────────────
 
+  /// Import from raw bytes — preferred on web to avoid String.fromCharCodes encoding issues.
+  Future<int> importQbCustomersFromBytes(List<int> bytes) async {
+    final count = await QbCustomerService.importFromBytes(bytes);
+    _qbCustomers = QbCustomerService.getAll();
+    notifyListeners();
+    return count;
+  }
+
   Future<int> importQbCustomers(String csvContent) async {
     final count = await QbCustomerService.importFromCsv(csvContent);
     _qbCustomers = QbCustomerService.getAll();

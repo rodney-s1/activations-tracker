@@ -678,7 +678,7 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
-        content = String.fromCharCodes(file.bytes!);
+        content = decodeBytesToString(file.bytes!);
       } else if (file.path != null) {
         content = await File(file.path!).readAsString();
       } else {

@@ -1,4 +1,6 @@
 // Service for QB Customer list (Hive typeId=5)
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/qb_customer.dart';
 
@@ -23,59 +25,92 @@ class QbCustomerService {
 
   static List<String> getAllNames() => getAll().map((c) => c.name).toList();
 
+  /// Import from a QuickBooks Customer List CSV.
+  /// Accepts the raw bytes directly (preferred — avoids web encoding issues)
+  /// or a pre-decoded string.
+  static Future<int> importFromBytes(List<int> bytes) async {
+    // Decode bytes properly: try UTF-8 first, fall back to Latin-1.
+    // This avoids the String.fromCharCodes() corruption on web.
+    String content;
+    try {
+      content = utf8.decode(bytes, allowMalformed: false);
+    } catch (_) {
+      content = latin1.decode(bytes);
+    }
+    // Strip BOM if present
+    if (content.startsWith('\uFEFF')) content = content.substring(1);
+    return importFromCsv(content);
+  }
+
   static Future<int> importFromCsv(String content) async {
-    // QB CSV columns (0-indexed after stripping leading comma):
-    // 0=blank, 1=Active Status, 2=Customer, 3=Balance, 4=Balance Total,
-    // 5=Company, 6=Mr/Ms, 7=First, 8=MI, 9=Last, 10=Primary Contact,
-    // 11=Main Phone, 12=Fax, 13=Alt Phone, 14=Secondary Contact,
-    // 15=Job Title, 16=Main Email, 17=Bill to 1 ... 21=Bill to 5
-    // 32=Account No.
+    // Strip BOM if present
+    if (content.startsWith('\uFEFF')) content = content.substring(1);
+
     await _box!.clear();
     int count = 0;
 
+    // Normalise line endings
     final lines = content
-        .split('\n')
-        .map((l) => l.replaceAll('\r', ''))
-        .toList();
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .split('\n');
 
-    bool headerSkipped = false;
+    // QB CSV columns (0-indexed, first col is blank):
+    // 0=blank  1=Active Status  2=Customer  3=Balance  4=Balance Total
+    // 5=Company  6=Mr/Ms  7=First  8=MI  9=Last  10=Primary Contact
+    // 11=Main Phone  12=Fax  13=Alt Phone  14=Secondary Contact
+    // 15=Job Title  16=Main Email  17-21=Bill to 1-5  22-26=Ship to 1-5
+    // 27=Customer Type  28=Terms  29=Rep  30=Sales Tax Code  31=Tax Item
+    // 32=Resale Num  33=Account No.  34=Credit Limit  35=Job Status ...
 
-    for (final raw in lines) {
-      if (raw.trim().isEmpty) continue;
-      if (!headerSkipped) {
-        // Skip the header row (contains "Active Status")
-        if (raw.contains('Active Status') || raw.contains('Customer')) {
-          headerSkipped = true;
-          continue;
-        }
+    // Find the header row (contains "Active Status" column)
+    int dataStart = 0;
+    for (int i = 0; i < lines.length && i < 5; i++) {
+      if (lines[i].contains('Active Status')) {
+        dataStart = i + 1; // data starts on the line after the header
+        break;
       }
+    }
+    // If header not found in first 5 lines, assume line 0 is header
+    if (dataStart == 0) dataStart = 1;
+
+    if (kDebugMode) {
+      debugPrint('[QbCustomerService] dataStart=$dataStart, total lines=${lines.length}');
+    }
+
+    for (int i = dataStart; i < lines.length; i++) {
+      final raw = lines[i].trim();
+      if (raw.isEmpty) continue;
 
       final cols = _splitCsv(raw);
       if (cols.length < 3) continue;
 
-      // Col indices (QB export starts with a blank col 0)
-      String get(int i) => i < cols.length ? cols[i].trim() : '';
+      String get(int idx) => idx < cols.length ? cols[idx].trim() : '';
 
       final status = get(1).toLowerCase();
-      if (status != 'active') continue; // skip inactive
+      if (status != 'active') continue;
 
       final name = get(2);
-      if (name.isEmpty || name.startsWith('**')) continue; // skip internal/QB accounts
+      if (name.isEmpty || name.startsWith('**')) continue;
 
       final phone = get(11).isNotEmpty ? get(11) : get(13);
       final email = get(16);
-      final addr  = [get(17), get(18), get(19)].where((s) => s.isNotEmpty).join(', ');
+      final addr  = [get(17), get(18), get(19)]
+          .where((s) => s.isNotEmpty)
+          .join(', ');
       final acct  = get(33);
 
       await _box!.add(QbCustomer(
-        name: name,
+        name:      name,
         accountNo: acct,
-        email: email,
-        phone: phone,
-        address: addr,
+        email:     email,
+        phone:     phone,
+        address:   addr,
       ));
       count++;
     }
+
+    if (kDebugMode) debugPrint('[QbCustomerService] Imported $count customers');
     return count;
   }
 

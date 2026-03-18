@@ -549,7 +549,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
-        content = String.fromCharCodes(file.bytes!);
+        content = decodeBytesToString(file.bytes!);
       } else if (file.path != null) {
         content = await File(file.path!).readAsString();
       } else {
@@ -633,7 +633,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
-        content = String.fromCharCodes(file.bytes!);
+        content = decodeBytesToString(file.bytes!);
       } else if (file.path != null) {
         content = await File(file.path!).readAsString();
       } else {
