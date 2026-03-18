@@ -132,5 +132,30 @@ class QbCustomerService {
     return result;
   }
 
+  /// Toggle the CUA flag for the customer at the given box index.
+  static Future<void> toggleCua(int boxIndex) async {
+    final key = _box!.keyAt(boxIndex);
+    final customer = _box!.get(key);
+    if (customer == null) return;
+    customer.isCua = !customer.isCua;
+    await customer.save();
+  }
+
+  /// Set CUA flag by customer name (used for cloud sync restore).
+  static Future<void> setCuaByName(String name, bool isCua) async {
+    for (final c in _box!.values) {
+      if (c.name == name) {
+        c.isCua = isCua;
+        await c.save();
+        return;
+      }
+    }
+  }
+
+  /// Return a map of customerName → isCua for all customers.
+  static Map<String, bool> getCuaMap() {
+    return {for (final c in _box!.values) c.name: c.isCua};
+  }
+
   static Future<void> clear() => _box!.clear();
 }

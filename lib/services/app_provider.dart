@@ -304,6 +304,12 @@ class AppProvider extends ChangeNotifier {
     return count;
   }
 
+  /// Call after toggling CUA flag on a customer to refresh the QB Verify screen.
+  void notifyQbCustomersChanged() {
+    _qbCustomers = QbCustomerService.getAll();
+    notifyListeners();
+  }
+
   Future<void> clearQbCustomers() async {
     await QbCustomerService.clear();
     _qbCustomers = [];

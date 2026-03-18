@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../models/qb_customer.dart';
 import '../services/app_provider.dart';
+import '../services/qb_customer_service.dart';
 import '../services/settings_export_service.dart';
 import '../utils/app_theme.dart';
 class SettingsScreen extends StatefulWidget {
@@ -159,7 +160,8 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
                     child: Text(
                       'Import the QuickBooks Customer List CSV to enable '
                       'auto-complete when adding plan codes. '
-                      'Only active customers are stored.',
+                      'Tap the ⚡ Std/CUA button on each customer to mark them as '
+                      '"Charged Upon Activation" — CUA customers are only billed for Active devices.',
                       style: TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                   ),
@@ -218,6 +220,26 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
                     '${all.length} customer${all.length == 1 ? '' : 's'} stored',
                     style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                   ),
+                  if (all.any((c) => c.isCua)) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.deepPurple.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Colors.deepPurple.withValues(alpha: 0.3)),
+                      ),
+                      child: Text(
+                        '${all.where((c) => c.isCua).length} CUA',
+                        style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.deepPurple),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -287,37 +309,70 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
   }
 }
 
-class _QbCustomerTile extends StatelessWidget {
+class _QbCustomerTile extends StatefulWidget {
   final QbCustomer customer;
   const _QbCustomerTile({required this.customer});
 
   @override
+  State<_QbCustomerTile> createState() => _QbCustomerTileState();
+}
+
+class _QbCustomerTileState extends State<_QbCustomerTile> {
+  @override
   Widget build(BuildContext context) {
+    final customer = widget.customer;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
           children: [
+            // Avatar — purple if CUA, navy otherwise
             CircleAvatar(
               radius: 18,
-              backgroundColor: AppTheme.navyAccent.withValues(alpha: 0.12),
+              backgroundColor: customer.isCua
+                  ? Colors.deepPurple.withValues(alpha: 0.18)
+                  : AppTheme.navyAccent.withValues(alpha: 0.12),
               child: Text(
                 customer.name.isNotEmpty ? customer.name[0].toUpperCase() : '?',
-                style: const TextStyle(
-                    color: AppTheme.navyAccent, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: customer.isCua ? Colors.deepPurple : AppTheme.navyAccent,
+                    fontWeight: FontWeight.w700),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(customer.name,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary)),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(customer.name,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary)),
+                      ),
+                      if (customer.isCua)
+                        Container(
+                          margin: const EdgeInsets.only(left: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.deepPurple.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: Colors.deepPurple.withValues(alpha: 0.35)),
+                          ),
+                          child: const Text('CUA',
+                              style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.deepPurple)),
+                        ),
+                    ],
+                  ),
                   if (customer.email.isNotEmpty)
                     Text(customer.email,
                         style: const TextStyle(
@@ -329,9 +384,9 @@ class _QbCustomerTile extends StatelessWidget {
                 ],
               ),
             ),
-            if (customer.accountNo.isNotEmpty)
+            if (customer.accountNo.isNotEmpty) ...[
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppTheme.teal.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
@@ -344,6 +399,70 @@ class _QbCustomerTile extends StatelessWidget {
                       fontWeight: FontWeight.w600),
                 ),
               ),
+              const SizedBox(width: 6),
+            ],
+            // CUA toggle button
+            Tooltip(
+              message: customer.isCua
+                  ? 'CUA: billed for Active devices only.\nTap to set as Standard.'
+                  : 'Standard: billed for Active + Suspended + Never Activated.\nTap to set as CUA.',
+              child: GestureDetector(
+                onTap: () async {
+                  final box = QbCustomerService.box;
+                  // Find box key for this customer object
+                  int? boxKey;
+                  for (int i = 0; i < box.length; i++) {
+                    if (box.getAt(i) == customer) {
+                      boxKey = i;
+                      break;
+                    }
+                  }
+                  if (boxKey != null) {
+                    await QbCustomerService.toggleCua(boxKey);
+                    if (mounted) setState(() {});
+                    // Notify AppProvider so QB Verify re-reads the flag
+                    if (mounted) {
+                      context.read<AppProvider>().notifyQbCustomersChanged();
+                    }
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: customer.isCua
+                        ? Colors.deepPurple.withValues(alpha: 0.15)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: customer.isCua
+                          ? Colors.deepPurple.withValues(alpha: 0.5)
+                          : AppTheme.textSecondary.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.bolt,
+                          size: 13,
+                          color: customer.isCua
+                              ? Colors.deepPurple
+                              : AppTheme.textSecondary),
+                      const SizedBox(width: 3),
+                      Text(
+                        customer.isCua ? 'CUA' : 'Std',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: customer.isCua
+                              ? Colors.deepPurple
+                              : AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),

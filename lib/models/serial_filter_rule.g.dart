@@ -19,8 +19,8 @@ class SerialFilterRuleAdapter extends TypeAdapter<SerialFilterRule> {
     return SerialFilterRule(
       prefix: fields[0] as String,
       isExcluded: fields[1] as bool,
-      label: fields[2] as String? ?? '',
-      isSystem: fields[3] as bool? ?? false,
+      label: fields[2] as String,
+      isSystem: fields[3] as bool,
     );
   }
 

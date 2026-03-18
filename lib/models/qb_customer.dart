@@ -19,11 +19,19 @@ class QbCustomer extends HiveObject {
   @HiveField(4)
   String address;
 
+  /// True = "Charged Upon Activation" customer.
+  /// CUA customers are only billed for Active (not Suspended / Never Activated)
+  /// devices, so the billing comparison in QB Verify uses only active devices
+  /// for these customers instead of the full billable set.
+  @HiveField(5, defaultValue: false)
+  bool isCua;
+
   QbCustomer({
     required this.name,
     this.accountNo = '',
     this.email = '',
     this.phone = '',
     this.address = '',
+    this.isCua = false,
   });
 }

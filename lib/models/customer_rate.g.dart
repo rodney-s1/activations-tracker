@@ -19,9 +19,9 @@ class CustomerRateAdapter extends TypeAdapter<CustomerRate> {
     return CustomerRate(
       customerName: fields[0] as String,
       overrideMonthlyRate: fields[1] as double?,
-      notes: fields[2] as String? ?? '',
+      notes: fields[2] as String,
       lastUpdated: fields[3] as DateTime?,
-      ratePlanLabel: fields[4] as String? ?? '',
+      ratePlanLabel: fields[4] as String,
     );
   }
 

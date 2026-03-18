@@ -13,6 +13,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
 import '../services/csv_persist_service.dart';
+import '../services/qb_customer_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -68,7 +69,10 @@ class QbInvoiceLine {
 
 /// Per-customer combined summary used for display.
 /// [billedCount]   = sum of Qty across all QB invoice lines (not row count).
-/// [activeCount]   = billable devices: Active + Suspended + Never Activated.
+/// [activeCount]   = billable devices based on customer type:
+///                   • Standard: Active + Suspended + Never Activated
+///                   • CUA:      Active only (Charged Upon Activation customers
+///                               are only billed for active devices)
 /// [unknownCount]  = devices with "Unknown" status (shown for review, not counted in billing diff).
 class QbCustomerSummary {
   final String customerName;
@@ -79,9 +83,13 @@ class QbCustomerSummary {
   final List<QbInvoiceLine> qbLines;
 
   // MyAdmin side
-  final int activeCount;        // billable devices (Active + Suspended + Never Activated)
+  final int activeCount;        // billable devices (see above — CUA vs Standard logic)
   final int unknownCount;       // Unknown-status devices (shown for review, excluded from diff)
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown)
+
+  /// True = Charged Upon Activation.
+  /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
+  final bool isCua;
 
   const QbCustomerSummary({
     required this.customerName,
@@ -91,6 +99,7 @@ class QbCustomerSummary {
     required this.activeCount,
     this.unknownCount = 0,
     required this.activeDevices,
+    this.isCua = false,
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -365,12 +374,16 @@ QbParseResult parseQbSalesCsvWithNames(String content) {
 ///   "Geotab Service:Geotab Service (GO Plan) (...)" → "GO"
 ///   "Geotab Service:Service Fee Geotab (Pro V2) (...)" → "Pro"
 ///   "Geotab Service:SS Service Fee (...)" → "Surfsight"
+///   "Geotab Service:Hanover (...)" → "Hanover"
 String _extractPlanLabel(String item) {
   final lower = item.toLowerCase();
 
   // Surfsight / SS camera lines
   if (lower.contains('surfsight') || lower.contains('ss service') ||
       lower.contains('ss camera')) return 'Surfsight';
+
+  // Hanover rate plan
+  if (lower.contains('hanover')) return 'Hanover';
 
   // Extract from innermost parenthetical e.g. "(Service Fee Geotab (HOS))"
   // Try last paren group first
@@ -379,6 +392,7 @@ String _extractPlanLabel(String item) {
     final inside = m.group(1)!.trim();
     // look for known plan keywords inside
     final il = inside.toLowerCase();
+    if (il.contains('hanover')) return 'Hanover';
     if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
     if (il.contains('pro')) return 'Pro';
     if (il.contains('hos')) return 'HOS';
@@ -392,6 +406,7 @@ String _extractPlanLabel(String item) {
 
   // Fallback: scan item string directly
   final il = lower;
+  if (il.contains('hanover')) return 'Hanover';
   if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
   if (il.contains('pro')) return 'Pro';
   if (il.contains('hos')) return 'HOS';
@@ -701,6 +716,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       ..._qbData.keys,
     };
 
+    // Load the CUA flags once (name → isCua).
+    // We match by stripping the display name to the same normalised form used as the key.
+    final cuaMap = QbCustomerService.getCuaMap();
+
     final List<QbCustomerSummary> summaries = allKeys.map((key) {
       final devices = _myAdminData[key] ?? [];
       final qbLines = _qbData[key] ?? [];
@@ -716,13 +735,24 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         displayName = _qbDisplayNameCache[key] ?? key;
       }
 
-      // Split devices: billable (Active/Suspended/Never Activated) vs Unknown
-      // Billing diff is only calculated against billable devices.
-      // Unknown devices are still shown in the UI list for investigation.
+      // Look up CUA flag: try exact display name, then QB cache name, then key.
+      final isCua = cuaMap[displayName] ??
+          cuaMap[_qbDisplayNameCache[key] ?? key] ??
+          cuaMap[key] ??
+          false;
+
+      // Split devices into billing groups.
+      // CUA customers: only Active devices count toward the billing diff.
+      // Standard customers: Active + Suspended + Never Activated count.
+      // Unknown devices are always excluded from the billing diff (shown for review only).
       final billableDevices = devices.where((d) {
         final s = d.billingStatus.toLowerCase();
+        if (isCua) {
+          return s == 'active';
+        }
         return s == 'active' || s == 'suspended' || s == 'never activated';
       }).toList();
+
       final unknownDeviceCount = devices
           .where((d) => d.billingStatus.toLowerCase() == 'unknown')
           .length;
@@ -733,9 +763,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         billedCount: qbLines.fold(0, (s, l) => s + l.qty.round()),
         totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
         qbLines: qbLines,
-        activeCount: billableDevices.length,  // billable only (excl. Unknown)
+        activeCount: billableDevices.length,
         unknownCount: unknownDeviceCount,
         activeDevices: devices,               // ALL devices for display
+        isCua: isCua,
       );
     }).toList();
 
@@ -1241,13 +1272,13 @@ class _EmptyState extends StatelessWidget {
 
   static const _legendItems = [
     (Icons.check_circle, AppTheme.green, 'Match',
-        'Billed count = billable device count (Active + Suspended + Never Activated)'),
+        'Billed count = billable device count (Standard: Active+Suspended+NeverActivated; CUA: Active only)'),
     (Icons.warning_amber, AppTheme.amber, 'Overbilled',
         'More QB lines than billable MyAdmin devices'),
     (Icons.error, AppTheme.red, 'Underbilled',
         'Fewer QB lines than billable MyAdmin devices — revenue leak'),
     (Icons.money_off, AppTheme.red, 'Not Billed',
-        'Billable devices (Active/Suspended/Never Activated) but no QB invoice'),
+        'Billable devices in MyAdmin but no QB invoice'),
     (Icons.help_outline, Colors.grey, 'QB Only',
         'In QB but not in MyAdmin — possibly a closed account'),
   ];
@@ -1410,9 +1441,19 @@ class _CustomerVerifyCard extends StatelessWidget {
                         const SizedBox(height: 3),
                         Row(
                           children: [
+                            if (summary.isCua) ...[
+                              _MiniChip(
+                                icon: Icons.bolt,
+                                label: 'CUA',
+                                color: Colors.deepPurple,
+                              ),
+                              const SizedBox(width: 4),
+                            ],
                             _MiniChip(
                               icon: Icons.devices,
-                              label: 'Billable: ${summary.activeCount}',
+                              label: summary.isCua
+                                  ? 'Active: ${summary.activeCount}'
+                                  : 'Billable: ${summary.activeCount}',
                               color: AppTheme.teal,
                             ),
                             if (summary.unknownCount > 0) ...[
@@ -1485,9 +1526,9 @@ class _CustomerVerifyCard extends StatelessWidget {
                   _SideHeader(
                     icon: Icons.devices,
                     label: summary.unknownCount > 0
-                        ? 'MyAdmin Devices (${summary.activeCount} billable'
+                        ? 'MyAdmin Devices (${summary.activeCount} ${summary.isCua ? 'active' : 'billable'}'
                           ' + ${summary.unknownCount} unknown)'
-                        : 'MyAdmin Devices (${summary.activeCount})',
+                        : 'MyAdmin Devices (${summary.activeCount} ${summary.isCua ? 'active' : 'billable'})',
                     color: AppTheme.teal,
                   ),
                   const SizedBox(height: 6),
@@ -1845,7 +1886,20 @@ class _PlanGroupTable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final byPlan = summary.linesByPlan;
-    final plans  = byPlan.keys.toList();
+    // Sort plans: alphabetical, but 'Suspend' at bottom and never-activated-related last.
+    final plans = byPlan.keys.toList()
+      ..sort((a, b) {
+        int planRank(String p) {
+          final pl = p.toLowerCase();
+          if (pl.contains('suspend')) return 2;
+          if (pl.contains('never') || pl.contains('n/a')) return 3;
+          return 0;
+        }
+        final ra = planRank(a);
+        final rb = planRank(b);
+        if (ra != rb) return ra - rb;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
 
     return Container(
       decoration: BoxDecoration(
@@ -2022,12 +2076,37 @@ class _PlanGroupTable extends StatelessWidget {
 
 // ── Device Table (MyAdmin side) ───────────────────────────────────────────────
 
+/// Sort rank for billing status within the device table.
+/// Lower = shown earlier.
+/// Active devices first, then other plans alphabetically, then Suspended, then Never Activated.
+int _statusSortRank(String billingStatus) {
+  switch (billingStatus.toLowerCase()) {
+    case 'active':          return 0;
+    case 'suspended':       return 2;
+    case 'never activated': return 3;
+    case 'unknown':         return 4;
+    default:                return 1;
+  }
+}
+
 class _DeviceTable extends StatelessWidget {
   final List<MyAdminDevice> devices;
   const _DeviceTable({required this.devices});
 
   @override
   Widget build(BuildContext context) {
+    // Sort: active devices alphabetically by plan first, then by plan for other
+    // statuses, but always put Suspended at the bottom and Never Activated last.
+    final sorted = [...devices]..sort((a, b) {
+        final rankA = _statusSortRank(a.billingStatus);
+        final rankB = _statusSortRank(b.billingStatus);
+        if (rankA != rankB) return rankA - rankB;
+        // Within same status group: sort alphabetically by billing plan
+        final planCmp = a.billingPlan.toLowerCase().compareTo(b.billingPlan.toLowerCase());
+        if (planCmp != 0) return planCmp;
+        return a.serialNumber.compareTo(b.serialNumber);
+      });
+
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.teal.withValues(alpha: 0.25)),
@@ -2072,7 +2151,7 @@ class _DeviceTable extends StatelessWidget {
             ),
           ),
           // Rows (cap at 20 for performance — use View All for the rest)
-          ...devices.take(20).toList().asMap().entries.map((e) {
+          ...sorted.take(20).toList().asMap().entries.map((e) {
             final odd = e.key.isOdd;
             final d   = e.value;
             final plan = d.billingPlan
@@ -2132,11 +2211,11 @@ class _DeviceTable extends StatelessWidget {
               ),
             );
           }),
-          if (devices.length > 20)
+          if (sorted.length > 20)
             Padding(
               padding: const EdgeInsets.all(8),
               child: Text(
-                '… and ${devices.length - 20} more — tap View All',
+                '… and ${sorted.length - 20} more — tap View All',
                 style: const TextStyle(
                     fontSize: 11, color: AppTheme.textSecondary),
               ),
