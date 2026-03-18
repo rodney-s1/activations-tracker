@@ -31,6 +31,13 @@ class MyAdminDevice {
   final String billingStatus; // "Billing status" column  (Active / Suspended / Never billed)
   final String account;
 
+  /// True when this device belongs to a {Cameras} sub-group in MyAdmin.
+  /// Camera devices have different billing rules from Geotab trackers:
+  ///   • Standard customers: Active + Never Activated are billed (Suspended is NOT)
+  ///   • CUA cameras: same as Standard UNLESS the customer is Hollywood Feed Corporate
+  ///     (they are CUA for cameras too — Active only)
+  final bool isCamera;
+
   const MyAdminDevice({
     required this.serialNumber,
     required this.customer,
@@ -38,6 +45,7 @@ class MyAdminDevice {
     required this.ratePlanCode,
     required this.billingStatus,
     required this.account,
+    this.isCamera = false,
   });
 
   /// True when this device is on the Hanover Insurance rate plan.
@@ -78,13 +86,17 @@ class QbInvoiceLine {
 /// Per-customer combined summary used for display.
 /// [billedCount]   = sum of Qty across all QB invoice lines (not row count).
 /// [activeCount]   = billable devices based on customer type:
-///                   • Standard: Active + Suspended + Never Activated (excl. Hanover-only)
-///                   • CUA:      Active only (excl. Hanover-only)
+///                   • Standard Geotab:  Active + Suspended + Never Activated (excl. Hanover-only)
+///                   • CUA Geotab:       Active + Suspended (Never Activated excluded)
+///                   • Standard Camera:  Active + Never Activated (Suspended NOT billed)
+///                   • CUA Camera:       Active + Never Activated UNLESS Hollywood Feed → Active only
 /// [unknownCount]  = devices with "Unknown" status (shown for review, not counted in billing diff).
 /// [hanoverCount]  = devices whose ratePlanCode == 'hanover' with NO cost-share QB line.
 ///                   These are billed directly to Hanover Insurance, NOT to this customer.
 /// [hanoverCsQty]  = QB HANOVER-CS (Cost Share) line quantity — customer pays half,
 ///                   Hanover Insurance pays half.  These devices ARE included in activeCount.
+/// [cameraCount]   = billable camera devices (Active + Never Activated for most; Active only for Hollywood Feed CUA)
+/// [geotabCount]   = billable Geotab (non-camera) devices
 class QbCustomerSummary {
   final String customerName;
 
@@ -94,10 +106,12 @@ class QbCustomerSummary {
   final List<QbInvoiceLine> qbLines;
 
   // MyAdmin side
-  final int activeCount;        // billable devices (see above — CUA + Hanover logic)
+  final int activeCount;        // billable devices (see above — CUA + Hanover + Camera logic)
   final int unknownCount;       // Unknown-status devices (shown for review, excluded from diff)
   final int hanoverCount;       // Hanover-RPC devices excluded from billing (billed to Hanover direct)
   final int hanoverCsQty;       // HANOVER-CS QB lines qty (cost-share — customer pays half)
+  final int cameraCount;        // billable camera devices
+  final int geotabCount;        // billable Geotab (non-camera) devices
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
   /// True = Charged Upon Activation.
@@ -117,6 +131,8 @@ class QbCustomerSummary {
     this.unknownCount = 0,
     this.hanoverCount = 0,
     this.hanoverCsQty = 0,
+    this.cameraCount = 0,
+    this.geotabCount = 0,
     required this.activeDevices,
     this.isCua = false,
     this.jobType = '',
@@ -234,6 +250,10 @@ Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
     // Nothing is filtered out; status badges in the UI distinguish each type.
 
     final normKey = _normKey(customer);
+    // Detect camera sub-group: MyAdmin appends " {Cameras}" to the customer name
+    // for camera devices (Surfsight, Go Focus, Smarter AI, etc.)
+    final isCamera = customer.contains('{') &&
+        customer.toLowerCase().contains('camera');
     result.putIfAbsent(normKey, () => []);
     result[normKey]!.add(MyAdminDevice(
       serialNumber: serial,
@@ -242,6 +262,7 @@ Map<String, List<MyAdminDevice>> parseMyAdminCsv(String content) {
       ratePlanCode: g(rpcIdx),
       billingStatus: status,
       account: g(accountIdx),
+      isCamera: isCamera,
     ));
   }
 
@@ -353,11 +374,18 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     final itemLower = item.toLowerCase();
     if (ignoreLower.any((kw) => itemLower.contains(kw))) continue;
 
-    // Skip non-Geotab service items (after ignore-keyword check)
+    // Skip non-Geotab/camera service items (after ignore-keyword check)
+    // Camera SKUs: Surfsight, Go Focus, Go Focus Plus, Smarter AI
+    final isCameraSkuItem = itemLower.contains('surfsight') ||
+        itemLower.contains('ss service') ||
+        itemLower.contains('ss camera') ||
+        itemLower.contains('go focus') ||
+        itemLower.contains('gofocus') ||
+        itemLower.contains('smarter ai') ||
+        itemLower.contains('smarterai');
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
-        !itemLower.contains('surfsight') &&
-        !itemLower.contains('ss service')) continue;
+        !isCameraSkuItem) continue;
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
@@ -408,13 +436,28 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
 ///   "Geotab Service:Service Fee Geotab (Pro V2) (...)" → "Pro"
 ///   "Geotab Service:SS Service Fee (...)" → "Surfsight"
 ///   "Geotab Service:Hanover (...)" → "Hanover"
+///   "Service (GO Focus)" → "Go Focus"
+///   "Service (GO Focus Plus)" → "Go Focus Plus"
+///   "Smarter AI Service Fee" → "Smarter AI"
 String _extractPlanLabel(String item) {
   final lower = item.toLowerCase();
 
+  // ── Camera product lines ──────────────────────────────────────────────────
   // Surfsight / SS camera lines
   if (lower.contains('surfsight') || lower.contains('ss service') ||
       lower.contains('ss camera')) return 'Surfsight';
 
+  // Go Focus Plus must be checked before Go Focus (longer match wins)
+  if (lower.contains('go focus plus') || lower.contains('gofocus plus') ||
+      lower.contains('focus plus')) return 'Go Focus Plus';
+
+  // Go Focus (standalone — not Plus)
+  if (lower.contains('go focus') || lower.contains('gofocus')) return 'Go Focus';
+
+  // Smarter AI
+  if (lower.contains('smarter ai') || lower.contains('smarterai')) return 'Smarter AI';
+
+  // ── Geotab / Hanover lines ────────────────────────────────────────────────
   // Hanover rate plan
   if (lower.contains('hanover')) return 'Hanover';
 
@@ -787,40 +830,64 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           jobTypeMap[key] ??
           '';
 
-      // Split devices into billing groups.
-      // CUA customers: only Active devices count toward the billing diff.
-      // Standard customers: Active + Suspended + Never Activated count.
-      // Unknown devices are always excluded from the billing diff (shown for review only).
-      // Hanover-RPC devices: excluded from activeCount UNLESS there is a HANOVER-CS QB line
-      //   (cost share = customer pays half, billed to Hanover direct otherwise).
+      // ── Billing rules ──────────────────────────────────────────────────────
+      //
+      // GEOTAB devices:
+      //   Standard → Active + Suspended + Never Activated
+      //   CUA      → Active + Suspended  (Never Activated excluded)
+      //
+      // CAMERA devices ({Cameras} sub-group in MyAdmin):
+      //   Standard      → Active + Never Activated  (Suspended NOT billed)
+      //   CUA (general) → Active + Never Activated  (CUA rule does NOT apply to cameras)
+      //   CUA + Hollywood Feed Corporate → Active only (they are CUA for cameras too)
+      //
+      // Hollywood Feed Corporate exception detected via isCua + name match.
+      // Unknown devices are always excluded from billing diff (shown for review only).
+      // Hanover-RPC devices: excluded unless covered by a HANOVER-CS QB line (cost share).
+
+      // Is this the Hollywood Feed Corporate account (CUA for cameras too)?
+      final isHollywoodFeed = displayName.toLowerCase().contains('hollywood feed');
 
       // How many HANOVER-CS QB lines are there for this customer?
       final hanoverCsQty = qbLines
           .where((l) => l.planLabel.toLowerCase() == 'hanover')
           .fold(0, (s, l) => s + l.qty.round());
 
-      // Hanover-RPC devices: billed to Hanover Insurance, NOT this customer
-      // (unless covered by a HANOVER-CS line — cost share)
+      // Hanover-RPC devices billed direct to Hanover (not this customer)
       final hanoverDevices = devices.where((d) => d.isHanover).toList();
-      // Non-cost-share hanover devices: exclude from activeCount
-      // Cost-share: hanoverCsQty of those devices DO count (customer pays half)
       final hanoverExcluded = (hanoverDevices.length - hanoverCsQty).clamp(0, hanoverDevices.length);
 
-      final billableDevices = devices.where((d) {
+      // ── Camera billable count ────────────────────────────────────────────
+      final cameraDevices = devices.where((d) => d.isCamera).toList();
+      final billableCameras = cameraDevices.where((d) {
         final s = d.billingStatus.toLowerCase();
-        // Always exclude unknown
         if (s == 'unknown') return false;
-        // Hanover-RPC devices are excluded from billing unless cost-share covers them
-        if (d.isHanover) return false; // handled separately via hanoverCsQty
-        if (isCua) {
+        if (d.isHanover) return false;
+        if (isCua && isHollywoodFeed) {
+          // Hollywood Feed: CUA applies to cameras → Active only
           return s == 'active';
         }
+        // All other customers (Standard or CUA): Active + Never Activated
+        return s == 'active' || s == 'never activated';
+      }).toList();
+
+      // ── Geotab billable count ────────────────────────────────────────────
+      final geotabDevices = devices.where((d) => !d.isCamera).toList();
+      final billableGeotab = geotabDevices.where((d) {
+        final s = d.billingStatus.toLowerCase();
+        if (s == 'unknown') return false;
+        if (d.isHanover) return false; // handled via hanoverCsQty
+        if (isCua) {
+          // CUA: Active + Suspended (Never Activated excluded)
+          return s == 'active' || s == 'suspended';
+        }
+        // Standard: Active + Suspended + Never Activated
         return s == 'active' || s == 'suspended' || s == 'never activated';
       }).toList();
 
-      // For cost-share hanover devices: count up to hanoverCsQty as billable
+      // Cost-share Hanover devices count toward billable (customer pays half)
       final hanoverBillableCount = hanoverCsQty.clamp(0, hanoverDevices.length);
-      final totalBillable = billableDevices.length + hanoverBillableCount;
+      final totalBillable = billableGeotab.length + billableCameras.length + hanoverBillableCount;
 
       final unknownDeviceCount = devices
           .where((d) => d.billingStatus.toLowerCase() == 'unknown')
@@ -834,9 +901,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbLines: qbLines,
         activeCount: totalBillable,
         unknownCount: unknownDeviceCount,
-        hanoverCount: hanoverExcluded,   // devices billed to Hanover direct (not customer)
-        hanoverCsQty: hanoverBillableCount, // cost-share devices counted toward billing
-        activeDevices: devices,              // ALL devices for display
+        hanoverCount: hanoverExcluded,
+        hanoverCsQty: hanoverBillableCount,
+        cameraCount:  billableCameras.length,
+        geotabCount:  billableGeotab.length,
+        activeDevices: devices,
         isCua: isCua,
         jobType: jobType,
       );
@@ -883,6 +952,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             unknownCount: existing.unknownCount,
             hanoverCount: existing.hanoverCount,
             hanoverCsQty: existing.hanoverCsQty,
+            cameraCount:  existing.cameraCount,
+            geotabCount:  existing.geotabCount + newDevices.length,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:         existing.isCua,
             jobType:       existing.jobType,
@@ -901,6 +972,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           unknownCount: 0,
           hanoverCount: 0,
           hanoverCsQty: 0,
+          cameraCount:  0,
+          geotabCount:  hanoverGoDevices.length,
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
@@ -1410,7 +1483,7 @@ class _EmptyState extends StatelessWidget {
 
   static const _legendItems = [
     (Icons.check_circle, AppTheme.green, 'Match',
-        'Billed count = billable device count (Standard: Active+Suspended+NeverActivated; CUA: Active only)'),
+        'Billed count = billable device count'),
     (Icons.warning_amber, AppTheme.amber, 'Overbilled',
         'More QB lines than billable MyAdmin devices'),
     (Icons.error, AppTheme.red, 'Underbilled',
@@ -1422,6 +1495,12 @@ class _EmptyState extends StatelessWidget {
     (Icons.shield_outlined, Colors.teal, 'Hanover-direct',
         'Devices on Hanover Insurance rate plan — billed direct to Hanover, not this customer. '
         'HANOVER-CS (Cost Share) lines split billing 50/50 and are included in the billable count.'),
+    (Icons.videocam_outlined, Colors.indigo, 'Camera devices',
+        'Billed: Active + Never Activated (Suspended excluded). '
+        'Exception: Hollywood Feed Corporate cameras are CUA → Active only.'),
+    (Icons.gps_fixed, AppTheme.navyAccent, 'GPS/Geotab devices',
+        'Standard: Active + Suspended + Never Activated. '
+        'CUA: Active + Suspended (Never Activated excluded).'),
   ];
 }
 
@@ -1603,13 +1682,34 @@ class _CustomerVerifyCard extends StatelessWidget {
                               ),
                               const SizedBox(width: 4),
                             ],
+                            // Show combined billable count
                             _MiniChip(
                               icon: Icons.devices,
-                              label: summary.isCua
-                                  ? 'Active: ${summary.activeCount}'
-                                  : 'Billable: ${summary.activeCount}',
+                              label: 'Billable: ${summary.activeCount}',
                               color: AppTheme.teal,
                             ),
+                            // Show Geotab + Camera breakdown when both present
+                            if (summary.cameraCount > 0 && summary.geotabCount > 0) ...[
+                              const SizedBox(width: 4),
+                              _MiniChip(
+                                icon: Icons.gps_fixed,
+                                label: 'GPS ${summary.geotabCount}',
+                                color: AppTheme.navyAccent,
+                              ),
+                              const SizedBox(width: 4),
+                              _MiniChip(
+                                icon: Icons.videocam_outlined,
+                                label: 'Cam ${summary.cameraCount}',
+                                color: Colors.indigo,
+                              ),
+                            ] else if (summary.cameraCount > 0) ...[
+                              const SizedBox(width: 4),
+                              _MiniChip(
+                                icon: Icons.videocam_outlined,
+                                label: 'Cam ${summary.cameraCount}',
+                                color: Colors.indigo,
+                              ),
+                            ],
                             if (summary.unknownCount > 0) ...[
                               const SizedBox(width: 4),
                               _MiniChip(
@@ -2239,10 +2339,17 @@ class _PlanGroupTable extends StatelessWidget {
 // ── Device header label helper ────────────────────────────────────────────────
 
 /// Build the label for the MyAdmin devices section header, including
-/// CUA, unknown, and Hanover-excluded counts where relevant.
+/// CUA, camera/geotab split, unknown, and Hanover-excluded counts where relevant.
 String _buildDeviceHeaderLabel(QbCustomerSummary s) {
-  final typeLabel = s.isCua ? 'active' : 'billable';
-  final parts = <String>['${s.activeCount} $typeLabel'];
+  final parts = <String>[];
+
+  // Show GPS + Camera split when both present; otherwise just total
+  if (s.cameraCount > 0 && s.geotabCount > 0) {
+    parts.add('${s.geotabCount} GPS');
+    parts.add('${s.cameraCount} cameras');
+  } else {
+    parts.add('${s.activeCount} billable');
+  }
   if (s.hanoverCount > 0) {
     parts.add('${s.hanoverCount} Hanover-direct');
   }
@@ -2593,8 +2700,9 @@ class _SummaryFooter extends StatelessWidget {
     final notBilled   = summaries
         .where((s) => s.status == VerifyStatus.activeOnly)
         .length;
-    final totalBilled = summaries.fold(0.0, (s, c) => s + c.totalBilled);
+    final totalBilled   = summaries.fold(0.0, (s, c) => s + c.totalBilled);
     final totalActive   = summaries.fold(0, (s, c) => s + c.activeCount);
+    final totalCameras  = summaries.fold(0, (s, c) => s + c.cameraCount);
     final totalUnknown  = summaries.fold(0, (s, c) => s + c.unknownCount);
     final totalHanover  = summaries.fold(0, (s, c) => s + c.hanoverCount);
 
@@ -2613,6 +2721,11 @@ class _SummaryFooter extends StatelessWidget {
           Text('$totalActive billable',
               style:
                   const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
+          if (totalCameras > 0)
+            Text('$totalCameras cameras',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.indigo)),
           if (totalUnknown > 0)
             Text('$totalUnknown unknown',
                 style: const TextStyle(
