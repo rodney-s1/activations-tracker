@@ -66,7 +66,9 @@ class QbInvoiceLine {
 }
 
 /// Per-customer combined summary used for display.
-/// [billedCount] = sum of Qty across all QB invoice lines (not row count).
+/// [billedCount]   = sum of Qty across all QB invoice lines (not row count).
+/// [activeCount]   = billable devices: Active + Suspended + Never Activated.
+/// [unknownCount]  = devices with "Unknown" status (shown for review, not counted in billing diff).
 class QbCustomerSummary {
   final String customerName;
 
@@ -75,9 +77,10 @@ class QbCustomerSummary {
   final double totalBilled;
   final List<QbInvoiceLine> qbLines;
 
-  // MyAdmin (Active) side
-  final int activeCount;
-  final List<MyAdminDevice> activeDevices;
+  // MyAdmin side
+  final int activeCount;        // billable devices (Active + Suspended + Never Activated)
+  final int unknownCount;       // Unknown-status devices (shown for review, excluded from diff)
+  final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown)
 
   const QbCustomerSummary({
     required this.customerName,
@@ -85,9 +88,12 @@ class QbCustomerSummary {
     required this.totalBilled,
     required this.qbLines,
     required this.activeCount,
+    this.unknownCount = 0,
     required this.activeDevices,
   });
 
+  /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
+  /// Unknown devices are visible in the list but excluded from the diff calculation.
   VerifyStatus get status {
     if (billedCount == 0 && activeCount == 0) return VerifyStatus.match;
     if (billedCount > 0 && activeCount == 0) return VerifyStatus.qbOnly;
@@ -662,14 +668,26 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         displayName = _qbDisplayNameCache[key] ?? key;
       }
 
+      // Split devices: billable (Active/Suspended/Never Activated) vs Unknown
+      // Billing diff is only calculated against billable devices.
+      // Unknown devices are still shown in the UI list for investigation.
+      final billableDevices = devices.where((d) {
+        final s = d.billingStatus.toLowerCase();
+        return s == 'active' || s == 'suspended' || s == 'never activated';
+      }).toList();
+      final unknownDeviceCount = devices
+          .where((d) => d.billingStatus.toLowerCase() == 'unknown')
+          .length;
+
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
         // billedCount = sum of Qty across all QB lines (devices invoiced, not row count)
         billedCount: qbLines.fold(0, (s, l) => s + l.qty.round()),
         totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
         qbLines: qbLines,
-        activeCount: devices.length,
-        activeDevices: devices,
+        activeCount: billableDevices.length,  // billable only (excl. Unknown)
+        unknownCount: unknownDeviceCount,
+        activeDevices: devices,               // ALL devices for display
       );
     }).toList();
 
@@ -1175,13 +1193,13 @@ class _EmptyState extends StatelessWidget {
 
   static const _legendItems = [
     (Icons.check_circle, AppTheme.green, 'Match',
-        'Billed count = MyAdmin device count'),
+        'Billed count = billable device count (Active + Suspended + Never Activated)'),
     (Icons.warning_amber, AppTheme.amber, 'Overbilled',
-        'More QB lines than MyAdmin devices'),
+        'More QB lines than billable MyAdmin devices'),
     (Icons.error, AppTheme.red, 'Underbilled',
-        'Fewer QB lines than MyAdmin devices — revenue leak'),
+        'Fewer QB lines than billable MyAdmin devices — revenue leak'),
     (Icons.money_off, AppTheme.red, 'Not Billed',
-        'Devices in MyAdmin (Active/Suspended/Never Activated/Unknown) but no QB invoice'),
+        'Billable devices (Active/Suspended/Never Activated) but no QB invoice'),
     (Icons.help_outline, Colors.grey, 'QB Only',
         'In QB but not in MyAdmin — possibly a closed account'),
   ];
@@ -1346,9 +1364,17 @@ class _CustomerVerifyCard extends StatelessWidget {
                           children: [
                             _MiniChip(
                               icon: Icons.devices,
-                              label: 'MyAdmin: ${summary.activeCount}',
+                              label: 'Billable: ${summary.activeCount}',
                               color: AppTheme.teal,
                             ),
+                            if (summary.unknownCount > 0) ...[
+                              const SizedBox(width: 4),
+                              _MiniChip(
+                                icon: Icons.help_outline,
+                                label: '??? ${summary.unknownCount}',
+                                color: Colors.grey,
+                              ),
+                            ],
                             const SizedBox(width: 6),
                             _MiniChip(
                               icon: Icons.receipt,
@@ -1410,7 +1436,10 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // ── MyAdmin active devices section ─────────────────
                   _SideHeader(
                     icon: Icons.devices,
-                    label: 'MyAdmin Devices (${summary.activeCount})',
+                    label: summary.unknownCount > 0
+                        ? 'MyAdmin Devices (${summary.activeCount} billable'
+                          ' + ${summary.unknownCount} unknown)'
+                        : 'MyAdmin Devices (${summary.activeCount})',
                     color: AppTheme.teal,
                   ),
                   const SizedBox(height: 6),
@@ -1424,7 +1453,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                         onPressed: () => _showAllSerials(context),
                         icon: const Icon(Icons.list_alt, size: 14),
                         label: Text(
-                          'View All ${summary.activeCount} Serials',
+                          'View All ${summary.activeDevices.length} Serials',
                           style: const TextStyle(fontSize: 11),
                         ),
                         style: TextButton.styleFrom(
@@ -2082,26 +2111,32 @@ class _DiffCallout extends StatelessWidget {
     Color color;
     IconData icon;
 
+    final unknownNote = summary.unknownCount > 0
+        ? ' (${summary.unknownCount} Unknown-status device'
+          '${summary.unknownCount == 1 ? '' : 's'} shown in list, excluded from billing count.)'
+        : '';
+
     switch (summary.status) {
       case VerifyStatus.overbilled:
         color = AppTheme.amber;
         icon  = Icons.warning_amber;
-        msg   = '${summary.billedCount} billed vs ${summary.activeCount} in MyAdmin — '
+        msg   = '${summary.billedCount} billed vs ${summary.activeCount} billable in MyAdmin — '
                 '${summary.diff} extra line${summary.diff == 1 ? '' : 's'} in QB. '
-                'Possible duplicate invoice or closed device still being billed.';
+                'Possible duplicate invoice or closed device still being billed.$unknownNote';
         break;
       case VerifyStatus.underbilled:
         color = AppTheme.red;
         icon  = Icons.error;
-        msg   = '${summary.activeCount} in MyAdmin vs ${summary.billedCount} billed — '
+        msg   = '${summary.activeCount} billable in MyAdmin vs ${summary.billedCount} billed — '
                 '${-summary.diff} device${-summary.diff == 1 ? '' : 's'} not fully invoiced. '
-                'Revenue leak — add missing line items to QB invoice.';
+                'Revenue leak — add missing line items to QB invoice.$unknownNote';
         break;
       case VerifyStatus.activeOnly:
         color = AppTheme.red;
         icon  = Icons.money_off;
-        msg   = '${summary.activeCount} device${summary.activeCount == 1 ? '' : 's'} in MyAdmin '
-                'with NO QB invoice. This customer is not being billed at all.';
+        msg   = '${summary.activeCount} billable device${summary.activeCount == 1 ? '' : 's'} '
+                'in MyAdmin with NO QB invoice. '
+                'This customer is not being billed at all.$unknownNote';
         break;
       case VerifyStatus.qbOnly:
         color = Colors.grey;
@@ -2157,7 +2192,8 @@ class _SummaryFooter extends StatelessWidget {
         .where((s) => s.status == VerifyStatus.activeOnly)
         .length;
     final totalBilled = summaries.fold(0.0, (s, c) => s + c.totalBilled);
-    final totalActive = summaries.fold(0, (s, c) => s + c.activeCount);
+    final totalActive  = summaries.fold(0, (s, c) => s + c.activeCount);
+    final totalUnknown = summaries.fold(0, (s, c) => s + c.unknownCount);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -2171,9 +2207,14 @@ class _SummaryFooter extends StatelessWidget {
           Text('$total customers',
               style:
                   const TextStyle(fontSize: 11, color: Colors.white54)),
-          Text('$totalActive devices',
+          Text('$totalActive billable',
               style:
                   const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
+          if (totalUnknown > 0)
+            Text('$totalUnknown unknown',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey)),
           if (issues > 0)
             Text('$issues issue${issues > 1 ? 's' : ''}',
                 style: const TextStyle(
