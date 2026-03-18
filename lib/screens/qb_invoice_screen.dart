@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 import '../services/app_provider.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
+import '../services/qb_ignore_keyword_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -263,7 +264,7 @@ class QbParseResult {
 /// NOT a row count.  billedCount = sum(qty) across all service lines.
 ///
 /// Returns a [QbParseResult] with normalised customer-key maps.
-QbParseResult parseQbSalesCsvWithNames(String content) {
+QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywords = const []}) {
   final rawLines = content.split(RegExp(r'\r?\n'));
   if (rawLines.isEmpty) return QbParseResult(lines: {}, displayNames: {});
 
@@ -293,8 +294,13 @@ QbParseResult parseQbSalesCsvWithNames(String content) {
   final qtyIdx  = headers.indexWhere((h) => h == 'qty' || h == 'quantity');
   final rateIdx = headers.indexWhere((h) => h == 'sales price' || h == 'rate' || h.contains('unit price'));
   final amtIdx  = headers.indexWhere((h) => h == 'amount');
+  // Column L = Memo/Description — used to skip "- New Activations" prorated lines
+  final memoIdx = headers.indexWhere((h) => h == 'memo' || h == 'description' || h == 'class' || h == 'memo/description');
 
   if (nameIdx < 0 || qtyIdx < 0) return QbParseResult(lines: {}, displayNames: {});
+
+  // Build a lowercase set of ignore keywords for fast matching
+  final ignoreLower = ignoreKeywords.map((k) => k.toLowerCase()).toList();
 
   final Map<String, List<QbInvoiceLine>> result      = {};
   final Map<String, String>             displayNames = {};
@@ -333,14 +339,22 @@ QbParseResult parseQbSalesCsvWithNames(String content) {
     final item = gc(itemIdx);
     if (item.isEmpty) continue;
 
-    // Skip non-Geotab service items
+    // ── Skip lines where memo/description contains "- New Activations" ──────
+    // These are prorated first-month charges, not recurring monthly service fees.
+    final memo = memoIdx >= 0 ? gc(memoIdx).toLowerCase() : '';
+    if (memo.contains('- new activations')) continue;
+
+    // ── Skip lines where Item/SKU matches any user-configured ignore keyword ─
     final itemLower = item.toLowerCase();
+    if (ignoreLower.any((kw) => itemLower.contains(kw))) continue;
+
+    // Skip non-Geotab service items (after ignore-keyword check)
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
         !itemLower.contains('surfsight') &&
         !itemLower.contains('ss service')) continue;
 
-    // Skip credit card fees, shipping, early termination, etc.
+    // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
         itemLower.contains('shipping') ||
         itemLower.contains('early term') ||
@@ -545,7 +559,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     // Restore QB CSV
     final qb = await CsvPersistService.loadQb();
     if (qb != null && qb.content.isNotEmpty) {
-      final qbParsed = parseQbSalesCsvWithNames(qb.content);
+      final qbParsed = parseQbSalesCsvWithNames(qb.content,
+          ignoreKeywords: QbIgnoreKeywordService.getAllKeywords());
       if (qbParsed.lines.isNotEmpty && mounted) {
         setState(() {
           _qbData             = qbParsed.lines;
@@ -669,7 +684,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         return;
       }
 
-      final qbParsed = parseQbSalesCsvWithNames(content);
+      final qbParsed = parseQbSalesCsvWithNames(content,
+          ignoreKeywords: QbIgnoreKeywordService.getAllKeywords());
       if (!mounted) return;
 
       if (qbParsed.lines.isEmpty) {

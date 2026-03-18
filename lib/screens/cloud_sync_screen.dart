@@ -198,8 +198,9 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       });
     } else {
       final counts = result['counts'] as Map<String, int>? ?? {};
-      final csvRestored  = (counts['importedCsvs']  ?? 0) > 0;
-      final qbRestored   = (counts['qbCustomers']   ?? 0) > 0;
+      final csvRestored  = (counts['importedCsvs']      ?? 0) > 0;
+      final qbRestored   = (counts['qbCustomers']       ?? 0) > 0;
+      final kwRestored   = (counts['qbIgnoreKeywords']  ?? 0) > 0;
       setState(() {
         _loading   = false;
         _statusMsg =
@@ -207,7 +208,8 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
             '${counts['customerPlanCodes'] ?? 0} customer codes, '
             '${counts['serialFilterRules'] ?? 0} filter rules'
             '${csvRestored ? ', + CSV files' : ''}'
-            '${qbRestored ? ', ${counts['qbCustomers']} QB customers' : ''}.';
+            '${qbRestored ? ', ${counts['qbCustomers']} QB customers' : ''}'
+            '${kwRestored ? ', ${counts['qbIgnoreKeywords']} QB filter keywords' : ''}.';
         _statusOk = true;
       });
     }
@@ -335,7 +337,9 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
                     value: autoOn
                         ? (next == Duration.zero
                             ? 'pending'
-                            : '${next.inMinutes} min')
+                            : next.inMinutes > 0
+                                ? '${next.inMinutes}m ${next.inSeconds % 60}s'
+                                : '${next.inSeconds}s')
                         : 'off',
                     color: autoOn ? AppTheme.amber : Colors.white30,
                   ),
@@ -356,11 +360,11 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
                 Icons.alarm,
                 color: _autoSync ? AppTheme.amber : Colors.grey,
               ),
-              title: const Text('Auto-sync every hour',
+              title: const Text('Auto-sync every 3 minutes',
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
               subtitle: Text(
                 _autoSync
-                    ? 'Settings pushed to cloud automatically while the app is open.'
+                    ? 'Pulls latest data from cloud every 3 min — all users stay in sync automatically.'
                     : 'Disabled — use Push below to sync manually.',
                 style: const TextStyle(fontSize: 12),
               ),

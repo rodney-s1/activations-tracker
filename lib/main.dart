@@ -9,6 +9,7 @@ import 'services/customer_rate_service.dart';
 import 'services/standard_plan_rate_service.dart';
 import 'services/customer_plan_code_service.dart';
 import 'services/qb_customer_service.dart';
+import 'services/qb_ignore_keyword_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'screens/main_shell.dart';
 import 'utils/app_theme.dart';
@@ -22,6 +23,7 @@ void main() async {
   await StandardPlanRateService.init();
   await CustomerPlanCodeService.init();
   await QbCustomerService.init();
+  await QbIgnoreKeywordService.init();
   await CloudSyncService.init(); // load saved Firebase config (if any)
 
   // Auto-pull from Firebase on startup if configured.
@@ -37,6 +39,12 @@ void main() async {
     ..loadCustomerRates()
     ..loadPricingData()
     ..startSyncCountdown();
+
+  // Wire periodic pull callback so pulled data refreshes the UI automatically
+  CloudSyncService.onPeriodicPullComplete = () {
+    provider.loadPricingData();
+    provider.notifyQbCustomersChanged();
+  };
 
   // Restore last imported Activations CSV (if any) from local storage.
   // This runs AFTER cloud pull so cloud data takes precedence.

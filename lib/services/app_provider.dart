@@ -42,10 +42,11 @@ class AppProvider extends ChangeNotifier {
   Timer? _countdownTimer;
 
   /// Kick off the countdown ticker so the Cloud Sync screen refreshes
-  /// its "next sync in X min" display without manual rebuilds.
+  /// its "next sync in Xm Ys" display without manual rebuilds.
   void startSyncCountdown() {
     _countdownTimer?.cancel();
-    _countdownTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+    // Tick every 30 seconds — fine-grained enough for "Xm Ys" without spam
+    _countdownTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       notifyListeners(); // triggers UI rebuild in CloudSyncScreen
     });
   }
@@ -326,6 +327,12 @@ class AppProvider extends ChangeNotifier {
   void refreshFilterRules() {
     notifyListeners();
     CloudSyncService.pushSilent(); // persist filter rule changes to cloud
+  }
+
+  /// Called after QB ignore keywords change to push to cloud.
+  void refreshQbIgnoreKeywords() {
+    notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   // ── Refresh ───────────────────────────────────────────────────────────────

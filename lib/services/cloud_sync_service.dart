@@ -7,12 +7,13 @@
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
-// Data layout (5 PUT calls per push, 5 GET calls per pull):
+// Data layout (6 PUT calls per push, 6 GET calls per pull):
 //   /activation_tracker/{userId}/standard_plan_rates.json
 //   /activation_tracker/{userId}/customer_plan_codes.json
 //   /activation_tracker/{userId}/serial_filter_rules.json
 //   /activation_tracker/{userId}/imported_csvs.json        ← CSV backup
 //   /activation_tracker/{userId}/qb_customers.json         ← QB Customer list + CUA flags
+//   /activation_tracker/{userId}/qb_ignore_keywords.json   ← QB import filter keywords
 //
 // Each node stores a plain JSON object — no encoding tricks needed.
 // The Realtime Database REST API accepts and returns native JSON directly.
@@ -31,6 +32,7 @@ import '../services/customer_plan_code_service.dart';
 import '../services/filter_settings_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
+import '../services/qb_ignore_keyword_service.dart';
 import '../models/qb_customer.dart';
 
 // ── Status enum ──────────────────────────────────────────────────────────────
@@ -59,9 +61,15 @@ class CloudSyncService {
   static bool       _configured     = false;
   static SyncStatus _status         = SyncStatus.notConfigured;
   static String     _lastError      = '';
-  static Timer?     _hourlyTimer;
+  static Timer?     _periodicTimer;   // fires every 3 minutes — pull then silent-push
   static DateTime?  _lastSyncAt;
   static bool       _autoSyncEnabled = false;
+
+  // How often to auto-pull from Firebase (keeps multiple users in sync)
+  static const _kPullInterval = Duration(minutes: 3);
+
+  // Callback invoked after a periodic pull so the UI can refresh live data
+  static void Function()? onPeriodicPullComplete;
 
   // ValueNotifier so the UI rebuilds on status changes
   static final ValueNotifier<SyncStatus> statusNotifier =
@@ -76,10 +84,10 @@ class CloudSyncService {
   static String     get userId       => _userId;
 
   static Duration get nextSyncIn {
-    if (_hourlyTimer == null || !_hourlyTimer!.isActive) return Duration.zero;
-    if (_lastSyncAt == null) return const Duration(hours: 1);
+    if (_periodicTimer == null || !_periodicTimer!.isActive) return Duration.zero;
+    if (_lastSyncAt == null) return _kPullInterval;
     final elapsed   = DateTime.now().difference(_lastSyncAt!);
-    final remaining = const Duration(hours: 1) - elapsed;
+    final remaining = _kPullInterval - elapsed;
     return remaining.isNegative ? Duration.zero : remaining;
   }
 
@@ -309,6 +317,25 @@ class CloudSyncService {
         if (kDebugMode) debugPrint('[CloudSync] QB customer backup warning (non-fatal): $e');
       }
 
+      // ── 6. QB Ignore Keywords ─────────────────────────────────
+      // Non-fatal: failure does not abort the sync.
+      try {
+        final keywords = QbIgnoreKeywordService.getAll();
+        final r6 = await _putNode('qb_ignore_keywords', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': keywords.length,
+          'data': keywords.map((k) => {
+            'keyword':   k.keyword,
+            'isDefault': k.isDefault,
+          }).toList(),
+        });
+        if (r6 != null && kDebugMode) {
+          debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r6');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $e');
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return null;
@@ -359,6 +386,7 @@ class CloudSyncService {
         http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),
         http.get(Uri.parse(_nodeUrl('imported_csvs')),      headers: _headers),
         http.get(Uri.parse(_nodeUrl('qb_customers')),       headers: _headers),
+        http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')), headers: _headers),
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -449,6 +477,21 @@ class CloudSyncService {
           // Non-fatal
         }
       }
+
+      // ── QB Ignore Keywords restore ─────────────────────────────
+      if (responses[5].statusCode == 200 && responses[5].body != 'null') {
+        try {
+          final node = jsonDecode(responses[5].body) as Map<String, dynamic>;
+          final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
+          if (list.isNotEmpty) {
+            await QbIgnoreKeywordService.restoreFromList(list);
+            counts['qbIgnoreKeywords'] = list.length;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] QB ignore keywords restore warning: $e');
+          // Non-fatal
+        }
+      }
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return {'counts': counts};
@@ -459,21 +502,25 @@ class CloudSyncService {
     }
   }
 
-  // ── Hourly timer ──────────────────────────────────────────────────────────
+  // ── Periodic timer (every 3 min: pull → silent push) ─────────────────────
 
   static void _startTimer() {
     _stopTimer();
     if (!_configured) return;
-    _hourlyTimer = Timer.periodic(const Duration(hours: 1), (_) async {
-      if (kDebugMode) debugPrint('[CloudSync] Hourly auto-sync triggered');
-      await pushAll();
+    _periodicTimer = Timer.periodic(_kPullInterval, (_) async {
+      if (kDebugMode) debugPrint('[CloudSync] Periodic auto-pull triggered (every 3 min)');
+      await pullAll();
+      // Notify the app to refresh UI with pulled data
+      onPeriodicPullComplete?.call();
+      // Push any local changes that may have been made since last sync
+      await pushSilent();
     });
-    if (kDebugMode) debugPrint('[CloudSync] Hourly auto-sync timer started');
+    if (kDebugMode) debugPrint('[CloudSync] Periodic sync timer started (${_kPullInterval.inMinutes} min)');
   }
 
   static void _stopTimer() {
-    _hourlyTimer?.cancel();
-    _hourlyTimer = null;
+    _periodicTimer?.cancel();
+    _periodicTimer = null;
   }
 
   static void dispose() => _stopTimer();
@@ -491,6 +538,7 @@ class CloudSyncService {
       final codes     = CustomerPlanCodeService.getAll();
       final rules     = FilterSettingsService.getAllRules();
       final customers = QbCustomerService.getAll();
+      final keywords  = QbIgnoreKeywordService.getAll();
 
       await Future.wait([
         _putNode('standard_plan_rates', {
@@ -537,6 +585,14 @@ class CloudSyncService {
               'isCua':     c.isCua,
             }).toList(),
           }),
+        _putNode('qb_ignore_keywords', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': keywords.length,
+          'data': keywords.map((k) => {
+            'keyword':   k.keyword,
+            'isDefault': k.isDefault,
+          }).toList(),
+        }),
       ]);
 
       await _recordLastSync();

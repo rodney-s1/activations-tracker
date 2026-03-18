@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../models/qb_customer.dart';
 import '../services/app_provider.dart';
 import '../services/qb_customer_service.dart';
+import '../services/qb_ignore_keyword_service.dart';
 import '../services/settings_export_service.dart';
 import '../utils/app_theme.dart';
 class SettingsScreen extends StatefulWidget {
@@ -26,7 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -57,6 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           indicatorColor: AppTheme.teal,
           tabs: const [
             Tab(icon: Icon(Icons.business, size: 18), text: 'QB Customers'),
+            Tab(icon: Icon(Icons.filter_list, size: 18), text: 'QB Filters'),
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
           ],
         ),
@@ -65,6 +67,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         controller: _tabs,
         children: const [
           _QbCustomersTab(),
+          _QbFiltersTab(),
           _BackupRestoreTab(),
         ],
       ),
@@ -471,7 +474,283 @@ class _QbCustomerTileState extends State<_QbCustomerTile> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// TAB 2 — Backup / Restore
+// TAB 2 — QB Import Filters
+// ════════════════════════════════════════════════════════════════════════════
+
+class _QbFiltersTab extends StatefulWidget {
+  const _QbFiltersTab();
+
+  @override
+  State<_QbFiltersTab> createState() => _QbFiltersTabState();
+}
+
+class _QbFiltersTabState extends State<_QbFiltersTab> {
+  final _ctrl = TextEditingController();
+  List<dynamic> _keywords = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void _load() {
+    setState(() {
+      _keywords = QbIgnoreKeywordService.getAll();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _add() async {
+    final kw = _ctrl.text.trim();
+    if (kw.isEmpty) return;
+    // Prevent duplicates
+    if (_keywords.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$kw" is already in the list.'),
+            backgroundColor: AppTheme.amber,
+          ),
+        );
+      }
+      return;
+    }
+    await QbIgnoreKeywordService.add(kw);
+    _ctrl.clear();
+    _load();
+    if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
+  }
+
+  Future<void> _delete(dynamic kw) async {
+    await QbIgnoreKeywordService.delete(kw);
+    _load();
+    if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
+  }
+
+  Future<void> _resetDefaults() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reset to Defaults?'),
+        content: const Text(
+          'This will remove all custom keywords and restore the '
+          'original default list. Your changes cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.amber),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await QbIgnoreKeywordService.resetToDefaults();
+    _load();
+    if (mounted) {
+      context.read<AppProvider>().refreshQbIgnoreKeywords();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('QB import filters reset to defaults.'),
+          backgroundColor: AppTheme.green,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // ── Info banner ───────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyMid,
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline, size: 15, color: Colors.white54),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Lines in your QuickBooks "Sales by Customer Detail" report '
+                  'whose Item/SKU column contains any of these keywords will be '
+                  'skipped during import — they are not monthly service fees. '
+                  'Also skips any line whose description contains "- New Activations".',
+                  style: TextStyle(color: Colors.white60, fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Add keyword row ───────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    hintText: 'Add keyword (e.g. Rosco, Xtract)…',
+                    prefixIcon: Icon(Icons.add_circle_outline, color: AppTheme.teal),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                  onSubmitted: (_) => _add(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _add,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                child: const Text('Add'),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Count + Reset row ─────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+          child: Row(
+            children: [
+              Text(
+                '${_keywords.length} keyword${_keywords.length == 1 ? '' : 's'}',
+                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _resetDefaults,
+                icon: const Icon(Icons.restore, size: 15, color: AppTheme.amber),
+                label: const Text('Reset to Defaults',
+                    style: TextStyle(fontSize: 12, color: AppTheme.amber)),
+              ),
+            ],
+          ),
+        ),
+
+        const Divider(height: 1, color: AppTheme.divider),
+
+        // ── Keyword list ──────────────────────────────────────────────
+        Expanded(
+          child: _keywords.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No keywords. Add keywords above to start filtering.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppTheme.textSecondary),
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  itemCount: _keywords.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 4),
+                  itemBuilder: (context, i) {
+                    final kw = _keywords[i];
+                    return Card(
+                      margin: EdgeInsets.zero,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.block,
+                              size: 16,
+                              color: AppTheme.red.withValues(alpha: 0.7),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    kw.keyword,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppTheme.textPrimary,
+                                    ),
+                                  ),
+                                  if (kw.isDefault)
+                                    const Text(
+                                      'Default keyword',
+                                      style: TextStyle(
+                                          fontSize: 10,
+                                          color: AppTheme.textSecondary),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            // Delete button
+                            IconButton(
+                              icon: Icon(
+                                Icons.delete_outline,
+                                size: 18,
+                                color: AppTheme.red.withValues(alpha: 0.7),
+                              ),
+                              onPressed: () => _showDeleteConfirm(kw),
+                              tooltip: 'Remove keyword',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 32, minHeight: 32),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  void _showDeleteConfirm(dynamic kw) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove Keyword?'),
+        content: Text(
+          'Remove "${kw.keyword}" from the ignore list?\n'
+          'QB lines containing this keyword will no longer be skipped.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _delete(kw);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 3 — Backup / Restore
 // ════════════════════════════════════════════════════════════════════════════
 
 class _BackupRestoreTab extends StatelessWidget {
