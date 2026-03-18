@@ -414,9 +414,11 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         itemLower.contains('gofocus') ||
         itemLower.contains('smarter ai') ||
         itemLower.contains('smarterai');
-    if (!itemLower.contains('geotab') &&
-        !itemLower.contains('service fee') &&
-        !isCameraSkuItem) continue;
+    // Require "geotab" in the item name for Geotab service lines.
+    // The old standalone 'service fee' passthrough was too broad and could admit
+    // non-device fees (admin fees, setup fees, etc.).  All real Geotab service
+    // items in QB contain the word "geotab" (e.g. "Geotab Service:Service Fee Geotab (Pro)").
+    if (!itemLower.contains('geotab') && !isCameraSkuItem) continue;
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
