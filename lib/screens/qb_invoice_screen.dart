@@ -3,9 +3,12 @@
 // and a QuickBooks "Sales by Customer Detail" CSV as the "Billed" side.
 // Cross-references both to surface billing discrepancies before invoices are sent.
 
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:js' as js; // ignore: deprecated_member_use
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
@@ -37,14 +40,17 @@ class MyAdminDevice {
   bool get isActive => billingStatus.toLowerCase() == 'active';
 }
 
-/// A single line item from the QB Sales by Customer Detail CSV
+/// A single line item from the QB Sales by Customer Detail CSV.
+/// [qty] is the number of devices billed on this line (column R in the export).
+/// [planLabel] is a short human-readable plan name extracted from [description].
 class QbInvoiceLine {
   final String invoiceNumber;
   final String date;
   final String description;
-  final double qty;
+  final double qty;        // column R — number of devices billed
   final double unitPrice;
   final double amount;
+  final String planLabel;  // short plan name, e.g. "Pro", "GO", "HOS"
 
   const QbInvoiceLine({
     required this.invoiceNumber,
@@ -53,15 +59,17 @@ class QbInvoiceLine {
     required this.qty,
     required this.unitPrice,
     required this.amount,
+    this.planLabel = '',
   });
 }
 
-/// Per-customer combined summary used for display
+/// Per-customer combined summary used for display.
+/// [billedCount] = sum of Qty across all QB invoice lines (not row count).
 class QbCustomerSummary {
   final String customerName;
 
   // QB (Billed) side
-  final int billedCount;
+  final int billedCount;        // sum of Qty from QB — total devices invoiced
   final double totalBilled;
   final List<QbInvoiceLine> qbLines;
 
@@ -88,6 +96,26 @@ class QbCustomerSummary {
   }
 
   int get diff => billedCount - activeCount; // positive = over, negative = under
+
+  /// Group QB lines by plan label for the multi-plan display.
+  Map<String, List<QbInvoiceLine>> get linesByPlan {
+    final map = <String, List<QbInvoiceLine>>{};
+    for (final line in qbLines) {
+      final key = line.planLabel.isEmpty ? line.description : line.planLabel;
+      map.putIfAbsent(key, () => []).add(line);
+    }
+    return map;
+  }
+
+  /// Total billed devices per plan — for the plan breakdown chips.
+  Map<String, int> get billedPerPlan {
+    final map = <String, int>{};
+    for (final line in qbLines) {
+      final key = line.planLabel.isEmpty ? line.description : line.planLabel;
+      map[key] = (map[key] ?? 0) + line.qty.round();
+    }
+    return map;
+  }
 }
 
 // ── MyAdmin CSV Parser ────────────────────────────────────────────────────────
@@ -169,22 +197,28 @@ class QbParseResult {
 }
 
 /// Parse a QuickBooks "Sales by Customer Detail" CSV export.
+///
+/// The QB export uses interleaved blank columns — every data column has an
+/// empty spacer beside it, so the actual column indices are:
+///   F=5  Type  |  H=7  Date  |  J=9  Num  |  L=11 Memo  |  N=13 Name
+///   P=15 Item  |  R=17 Qty   |  T=19 Sales Price  |  V=21 Amount
+///
+/// **[qty] (column R) is the number of devices billed on that line** — it is
+/// NOT a row count.  billedCount = sum(qty) across all service lines.
+///
 /// Returns a [QbParseResult] with normalised customer-key maps.
 QbParseResult parseQbSalesCsvWithNames(String content) {
   final rawLines = content.split(RegExp(r'\r?\n'));
   if (rawLines.isEmpty) return QbParseResult(lines: {}, displayNames: {});
 
-  // Find the header row (contains "Name" / "Customer" AND a description/item col)
+  // Find the header row (must contain both 'qty' and 'name'/'customer')
   int headerIdx = -1;
   List<String> headers = [];
   for (int i = 0; i < rawLines.length; i++) {
     final row = _splitCsv(rawLines[i]);
     final lower = row.map((c) => c.toLowerCase().trim()).toList();
     if (lower.any((c) => c == 'name' || c == 'customer') &&
-        lower.any((c) =>
-            c.contains('item') ||
-            c.contains('product') ||
-            c.contains('description'))) {
+        lower.any((c) => c == 'qty' || c == 'quantity')) {
       headerIdx = i;
       headers = row.map((c) => c.trim().toLowerCase()).toList();
       break;
@@ -192,26 +226,22 @@ QbParseResult parseQbSalesCsvWithNames(String content) {
   }
   if (headerIdx < 0) return QbParseResult(lines: {}, displayNames: {});
 
-  int nameIdx = headers.indexWhere((h) => h == 'name' || h == 'customer');
-  int typeIdx = headers.indexWhere((h) => h == 'type');
-  int numIdx  = headers.indexWhere((h) => h.contains('num') || h == 'invoice #');
-  int dateIdx = headers.indexWhere((h) => h == 'date');
-  int itemIdx = headers.indexWhere((h) =>
-      h.contains('item') ||
-      h.contains('product') ||
-      h == 'description' ||
-      h == 'service');
-  int qtyIdx  = headers.indexWhere((h) => h == 'qty' || h == 'quantity');
-  int rateIdx = headers.indexWhere(
-      (h) => h == 'rate' || h.contains('unit price') || h == 'sales price');
-  int amtIdx  = headers.indexWhere((h) => h == 'amount' || h == 'total');
+  // Column indices resolved from the header row.
+  // QB exports have interleaved blank columns so we always resolve by name.
+  final nameIdx = headers.indexWhere((h) => h == 'name' || h == 'customer');
+  final typeIdx = headers.indexWhere((h) => h == 'type');
+  final numIdx  = headers.indexWhere((h) => h == 'num' || h == 'invoice #' || h.startsWith('num'));
+  final dateIdx = headers.indexWhere((h) => h == 'date');
+  final itemIdx = headers.indexWhere((h) => h == 'item' || h == 'product/service' || h.startsWith('item'));
+  // *** Column R (index 17) = Qty — devices billed per line ***
+  final qtyIdx  = headers.indexWhere((h) => h == 'qty' || h == 'quantity');
+  final rateIdx = headers.indexWhere((h) => h == 'sales price' || h == 'rate' || h.contains('unit price'));
+  final amtIdx  = headers.indexWhere((h) => h == 'amount');
 
-  if (nameIdx < 0) nameIdx = 3;
-  if (itemIdx < 0) itemIdx = 5;
-  if (amtIdx < 0)  amtIdx  = headers.length > 7 ? 7 : headers.length - 1;
+  if (nameIdx < 0 || qtyIdx < 0) return QbParseResult(lines: {}, displayNames: {});
 
-  final Map<String, List<QbInvoiceLine>> result       = {};
-  final Map<String, String>              displayNames = {};
+  final Map<String, List<QbInvoiceLine>> result      = {};
+  final Map<String, String>             displayNames = {};
 
   String currentCustomer    = '';
   String currentCustomerKey = '';
@@ -230,56 +260,115 @@ QbParseResult parseQbSalesCsvWithNames(String content) {
     final rowType  = typeIdx >= 0 ? gc(typeIdx).toLowerCase() : '';
     final nameCell = gc(nameIdx);
 
-    // Update customer/invoice context from Invoice header rows
-    if (rowType.contains('invoice')) {
-      if (nameCell.isNotEmpty) {
-        currentCustomer    = nameCell;
-        currentCustomerKey = _normKey(nameCell);
-        // Store original-case display name the first time we see this key
-        displayNames.putIfAbsent(currentCustomerKey, () => nameCell);
-      }
-      if (numIdx >= 0 && gc(numIdx).isNotEmpty) currentInvoice = gc(numIdx);
-      if (dateIdx >= 0 && gc(dateIdx).isNotEmpty) currentDate   = gc(dateIdx);
-    }
-
-    // If non-invoice row has a name cell, update context
-    if (nameCell.isNotEmpty && !rowType.contains('invoice')) {
+    // Update customer/invoice context
+    if (nameCell.isNotEmpty) {
       currentCustomer    = nameCell;
       currentCustomerKey = _normKey(nameCell);
       displayNames.putIfAbsent(currentCustomerKey, () => nameCell);
     }
+    if (numIdx  >= 0 && gc(numIdx).isNotEmpty)  currentInvoice = gc(numIdx);
+    if (dateIdx >= 0 && gc(dateIdx).isNotEmpty) currentDate    = gc(dateIdx);
 
-    final customer    = currentCustomer;
-    final customerKey = currentCustomerKey;
-    if (customer.isEmpty) continue;
+    if (currentCustomer.isEmpty) continue;
+
+    // Skip total/summary rows
+    if (rowType.contains('total') || rowType.contains('balance')) continue;
 
     final item = gc(itemIdx);
     if (item.isEmpty) continue;
 
-    // Skip totals, shipping, one-time fees, flat account fees
+    // Skip non-Geotab service items
     final itemLower = item.toLowerCase();
-    if (itemLower.contains('total')) continue;
-    if (itemLower.contains('shipping')) continue;
-    if (itemLower.contains('early term')) continue;
-    if (itemLower.contains('mkt-fee')) continue;
+    if (!itemLower.contains('geotab') &&
+        !itemLower.contains('service fee') &&
+        !itemLower.contains('surfsight') &&
+        !itemLower.contains('ss service')) continue;
+
+    // Skip credit card fees, shipping, early termination, etc.
+    if (itemLower.contains('credit card') ||
+        itemLower.contains('shipping') ||
+        itemLower.contains('early term') ||
+        itemLower.contains('mkt-fee')) continue;
+
+    // Qty column R — number of devices billed on this line
+    final qtyRaw = gc(qtyIdx).replaceAll(',', '');
+    final qty    = double.tryParse(qtyRaw) ?? 0.0;
+    if (qty <= 0) continue; // skip lines with no devices
 
     final amount =
-        double.tryParse(gc(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0;
-    if (amount <= 0) continue;
+        amtIdx >= 0
+            ? (double.tryParse(
+                    gc(amtIdx).replaceAll(RegExp(r'[,\$]'), '')) ??
+                0.0)
+            : 0.0;
+    final unitPrice =
+        rateIdx >= 0
+            ? (double.tryParse(
+                    gc(rateIdx).replaceAll(RegExp(r'[,\$%]'), '')) ??
+                0.0)
+            : 0.0;
 
-    result.putIfAbsent(customerKey, () => []);
-    result[customerKey]!.add(QbInvoiceLine(
+    // Extract a short plan label from the item description
+    final planLabel = _extractPlanLabel(item);
+
+    result.putIfAbsent(currentCustomerKey, () => []);
+    result[currentCustomerKey]!.add(QbInvoiceLine(
       invoiceNumber: currentInvoice,
-      date: currentDate,
-      description: item,
-      qty: double.tryParse(gc(qtyIdx).replaceAll(',', '')) ?? 1.0,
-      unitPrice:
-          double.tryParse(gc(rateIdx).replaceAll(RegExp(r'[,\$]'), '')) ?? 0.0,
-      amount: amount,
+      date:          currentDate,
+      description:   item,
+      qty:           qty,
+      unitPrice:     unitPrice,
+      amount:        amount > 0 ? amount : qty * unitPrice,
+      planLabel:     planLabel,
     ));
   }
 
   return QbParseResult(lines: result, displayNames: displayNames);
+}
+
+/// Extract a short plan label from a QB item description.
+/// Examples:
+///   "Geotab Service:Service Fee Geotab (HOS V2) (Service Fee Geotab (HOS))" → "HOS"
+///   "Geotab Service:Geotab Service (GO Plan) (...)" → "GO"
+///   "Geotab Service:Service Fee Geotab (Pro V2) (...)" → "Pro"
+///   "Geotab Service:SS Service Fee (...)" → "Surfsight"
+String _extractPlanLabel(String item) {
+  final lower = item.toLowerCase();
+
+  // Surfsight / SS camera lines
+  if (lower.contains('surfsight') || lower.contains('ss service') ||
+      lower.contains('ss camera')) return 'Surfsight';
+
+  // Extract from innermost parenthetical e.g. "(Service Fee Geotab (HOS))"
+  // Try last paren group first
+  final allParens = RegExp(r'\(([^()]+)\)').allMatches(item);
+  for (final m in allParens.toList().reversed) {
+    final inside = m.group(1)!.trim();
+    // look for known plan keywords inside
+    final il = inside.toLowerCase();
+    if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
+    if (il.contains('pro')) return 'Pro';
+    if (il.contains('hos')) return 'HOS';
+    if (il.contains('go plan') || il == 'go' || il.endsWith('(go)') ||
+        il.startsWith('go')) return 'GO';
+    if (il.contains('regulatory')) return 'Regulatory';
+    if (il.contains('base')) return 'Base';
+    if (il.contains('suspend')) return 'Suspend';
+    if (il.contains('predictive')) return 'Predictive Coach';
+  }
+
+  // Fallback: scan item string directly
+  final il = lower;
+  if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
+  if (il.contains('pro')) return 'Pro';
+  if (il.contains('hos')) return 'HOS';
+  if (il.contains('go plan') || RegExp(r'\bgo\b').hasMatch(il)) return 'GO';
+  if (il.contains('regulatory')) return 'Regulatory';
+  if (il.contains('base')) return 'Base';
+  if (il.contains('suspend')) return 'Suspend';
+  if (il.contains('predictive')) return 'Predictive Coach';
+
+  return item.length > 30 ? '${item.substring(0, 30)}…' : item;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -489,13 +578,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         _expanded.clear();
       });
 
-      final totalLines =
-          qbParsed.lines.values.fold(0, (s, list) => s + list.length);
+      final totalDevicesBilled = qbParsed.lines.values
+          .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))
+          .round();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                'QB: $totalLines line items across ${qbParsed.lines.length} customers'),
+                'QB: $totalDevicesBilled devices billed across ${qbParsed.lines.length} customers'),
             backgroundColor: AppTheme.teal,
           ),
         );
@@ -537,7 +627,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
-        billedCount: qbLines.length,
+        // billedCount = sum of Qty across all QB lines (devices invoiced, not row count)
+        billedCount: qbLines.fold(0, (s, l) => s + l.qty.round()),
         totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
         qbLines: qbLines,
         activeCount: devices.length,
@@ -1274,33 +1365,35 @@ class _CustomerVerifyCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Side-by-side counts
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _SideHeader(
-                          icon: Icons.devices,
-                          label:
-                              'MyAdmin Active (${summary.activeCount})',
-                          color: AppTheme.teal,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _SideHeader(
-                          icon: Icons.receipt_long,
-                          label: 'QB Billed (${summary.billedCount})',
-                          color: AppTheme.navyAccent,
-                        ),
-                      ),
-                    ],
+                  // ── MyAdmin active devices section ─────────────────
+                  _SideHeader(
+                    icon: Icons.devices,
+                    label: 'MyAdmin Active (${summary.activeCount})',
+                    color: AppTheme.teal,
                   ),
-                  const SizedBox(height: 8),
-
-                  // MyAdmin devices list
-                  if (summary.activeDevices.isNotEmpty)
-                    _DeviceTable(devices: summary.activeDevices)
-                  else
+                  const SizedBox(height: 6),
+                  if (summary.activeDevices.isNotEmpty) ...[
+                    _DeviceTable(devices: summary.activeDevices),
+                    const SizedBox(height: 4),
+                    // "View All" button
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => _showAllSerials(context),
+                        icon: const Icon(Icons.list_alt, size: 14),
+                        label: Text(
+                          'View All ${summary.activeCount} Serials',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppTheme.teal,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    ),
+                  ] else
                     const Padding(
                       padding: EdgeInsets.only(bottom: 8),
                       child: Text(
@@ -1312,12 +1405,20 @@ class _CustomerVerifyCard extends StatelessWidget {
                       ),
                     ),
 
-                  if (summary.qbLines.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _InvoiceTable(lines: summary.qbLines),
-                  ] else
+                  const SizedBox(height: 12),
+
+                  // ── QB billed section (grouped by plan) ───────────
+                  _SideHeader(
+                    icon: Icons.receipt_long,
+                    label: 'QB Billed (${summary.billedCount} devices)',
+                    color: AppTheme.navyAccent,
+                  ),
+                  const SizedBox(height: 6),
+                  if (summary.qbLines.isNotEmpty)
+                    _PlanGroupTable(summary: summary)
+                  else
                     const Padding(
-                      padding: EdgeInsets.only(top: 8),
+                      padding: EdgeInsets.only(top: 4, bottom: 4),
                       child: Text(
                         'No QB invoice lines for this customer.',
                         style: TextStyle(
@@ -1340,9 +1441,446 @@ class _CustomerVerifyCard extends StatelessWidget {
       ),
     );
   }
+
+  /// Full serial-number list dialog with CSV download.
+  void _showAllSerials(BuildContext context) {
+    final devices = summary.activeDevices;
+    final serials = devices.map((d) => d.serialNumber).toList()..sort();
+
+    showDialog(
+      context: context,
+      builder: (_) => _SerialListDialog(
+        customerName: summary.customerName,
+        devices: devices,
+        serials: serials,
+      ),
+    );
+  }
 }
 
-// ── Device Table (MyAdmin) ────────────────────────────────────────────────────
+// ── Serial List Dialog ────────────────────────────────────────────────────────
+
+class _SerialListDialog extends StatelessWidget {
+  final String customerName;
+  final List<MyAdminDevice> devices;
+  final List<String> serials;
+
+  const _SerialListDialog({
+    required this.customerName,
+    required this.devices,
+    required this.serials,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 680),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Header ────────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 14, 10, 14),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.list_alt, size: 18, color: AppTheme.tealLight),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          customerName,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white),
+                        ),
+                        Text(
+                          '${serials.length} active device${serials.length == 1 ? '' : 's'}',
+                          style: const TextStyle(
+                              fontSize: 11, color: AppTheme.tealLight),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18, color: Colors.white54),
+                    onPressed: () => Navigator.pop(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Serial list ───────────────────────────────────────────
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                itemCount: serials.length,
+                itemBuilder: (ctx, i) {
+                  final d = devices.firstWhere(
+                      (dev) => dev.serialNumber == serials[i],
+                      orElse: () => devices[i]);
+                  final plan = d.billingPlan
+                      .replaceAll(' Mode: Live', '')
+                      .replaceAll(' Mode:', '')
+                      .replaceAll(': Live', '');
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 6),
+                    color: i.isEven
+                        ? Colors.transparent
+                        : AppTheme.navyDark.withValues(alpha: 0.03),
+                    child: Row(
+                      children: [
+                        Text(
+                          '${i + 1}.',
+                          style: const TextStyle(
+                              fontSize: 10, color: Colors.grey),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            serials[i],
+                            style: const TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                color: AppTheme.textPrimary),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            plan,
+                            style: const TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.textSecondary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        SizedBox(
+                          width: 60,
+                          child: Text(
+                            d.ratePlanCode,
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.textSecondary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+
+            // ── Actions ───────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.vertical(
+                    bottom: Radius.circular(12)),
+                border: Border(top: BorderSide(color: AppTheme.divider)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _copySerials(context),
+                      icon: const Icon(Icons.copy, size: 14),
+                      label: const Text('Copy List',
+                          style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.tealLight,
+                        side: const BorderSide(color: AppTheme.teal),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => _downloadCsv(context),
+                      icon: const Icon(Icons.download, size: 14),
+                      label: const Text('Download CSV',
+                          style: TextStyle(fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.teal,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _copySerials(BuildContext context) {
+    final text = serials.join('\n');
+    _clipboardWrite(text).then((_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${serials.length} serial numbers copied to clipboard'),
+            backgroundColor: AppTheme.teal,
+          ),
+        );
+      }
+    });
+  }
+
+  void _downloadCsv(BuildContext context) {
+    // Build CSV with header
+    final buf = StringBuffer();
+    buf.writeln('Serial Number,Plan,Rate Plan Code,Customer');
+    for (final d in devices) {
+      final plan = d.billingPlan
+          .replaceAll(' Mode: Live', '')
+          .replaceAll(': Live', '');
+      buf.writeln('"${d.serialNumber}","$plan","${d.ratePlanCode}","${_stripParenSuffix(d.customer)}"');
+    }
+    _downloadText(buf.toString(),
+        '${customerName.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_')}_serials.csv');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${serials.length} devices exported to CSV'),
+        backgroundColor: AppTheme.teal,
+      ),
+    );
+  }
+}
+
+// ── Platform helpers for clipboard/download ───────────────────────────────────
+
+/// Copy [text] to the clipboard (works on web + mobile/desktop).
+Future<void> _clipboardWrite(String text) async {
+  await Clipboard.setData(ClipboardData(text: text));
+}
+
+/// Trigger a browser file download via a data URI (web only).
+void _downloadText(String content, String filename) {
+  try {
+    final uri = 'data:text/csv;charset=utf-8,${Uri.encodeComponent(content)}';
+    // Use dart:js to call window.open / anchor click on web
+    js.context.callMethod('eval', [
+      '''
+      (function(){
+        var a = document.createElement('a');
+        a.href = '$uri';
+        a.download = '${filename.replaceAll("'", "\\'")}';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      })();
+      '''
+    ]);
+  } catch (e) {
+    // Non-web platform: silently ignore
+  }
+}
+
+// ── Plan Group Table (QB side, grouped by plan) ───────────────────────────────
+
+class _PlanGroupTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _PlanGroupTable({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final byPlan = summary.linesByPlan;
+    final plans  = byPlan.keys.toList();
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+            color: AppTheme.navyAccent.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: const BoxDecoration(
+              color: AppTheme.navyDark,
+              borderRadius:
+                  BorderRadius.vertical(top: Radius.circular(7)),
+            ),
+            child: const Row(
+              children: [
+                Expanded(
+                    flex: 3,
+                    child: Text('Plan',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white70))),
+                SizedBox(
+                    width: 44,
+                    child: Text('Qty',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white70))),
+                SizedBox(
+                    width: 56,
+                    child: Text('Rate',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white70))),
+                SizedBox(
+                    width: 64,
+                    child: Text('Amount',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white70))),
+              ],
+            ),
+          ),
+          // One row per plan group
+          ...plans.asMap().entries.map((e) {
+            final odd   = e.key.isOdd;
+            final plan  = e.value;
+            final lines = byPlan[plan]!;
+            // Sum qty and amount across all lines for this plan
+            final totalQty = lines.fold(0.0, (s, l) => s + l.qty);
+            final totalAmt = lines.fold(0.0, (s, l) => s + l.amount);
+            // Use first line's unit price as representative rate
+            final rate = lines.first.unitPrice;
+
+            return Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              color: odd
+                  ? Colors.transparent
+                  : AppTheme.navyDark.withValues(alpha: 0.03),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(plan,
+                        style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  SizedBox(
+                    width: 44,
+                    child: Text(
+                      totalQty == totalQty.roundToDouble()
+                          ? totalQty.toInt().toString()
+                          : totalQty.toStringAsFixed(1),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.navyAccent),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 56,
+                    child: Text(
+                      rate > 0 ? Formatters.currency(rate) : '—',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.textSecondary),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 64,
+                    child: Text(
+                      Formatters.currency(totalAmt),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          // Total row if multiple plans
+          if (plans.length > 1)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius:
+                    BorderRadius.vertical(bottom: Radius.circular(7)),
+                border:
+                    Border(top: BorderSide(color: AppTheme.divider)),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    flex: 3,
+                    child: Text('TOTAL',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54)),
+                  ),
+                  SizedBox(
+                    width: 44,
+                    child: Text(
+                      summary.billedCount.toString(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.navyAccent),
+                    ),
+                  ),
+                  const SizedBox(width: 56),
+                  SizedBox(
+                    width: 64,
+                    child: Text(
+                      Formatters.currency(summary.totalBilled),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Device Table (MyAdmin side) ───────────────────────────────────────────────
 
 class _DeviceTable extends StatelessWidget {
   final List<MyAdminDevice> devices;
@@ -1393,7 +1931,7 @@ class _DeviceTable extends StatelessWidget {
               ],
             ),
           ),
-          // Rows (cap at 20 for performance)
+          // Rows (cap at 20 for performance — use View All for the rest)
           ...devices.take(20).toList().asMap().entries.map((e) {
             final odd = e.key.isOdd;
             final d   = e.value;
@@ -1441,129 +1979,11 @@ class _DeviceTable extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(8),
               child: Text(
-                '… and ${devices.length - 20} more devices',
+                '… and ${devices.length - 20} more — tap View All',
                 style: const TextStyle(
                     fontSize: 11, color: AppTheme.textSecondary),
               ),
             ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Invoice Table (QB) ────────────────────────────────────────────────────────
-
-class _InvoiceTable extends StatelessWidget {
-  final List<QbInvoiceLine> lines;
-  const _InvoiceTable({required this.lines});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(
-            color: AppTheme.navyAccent.withValues(alpha: 0.25)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: const BoxDecoration(
-              color: AppTheme.navyDark,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(7)),
-            ),
-            child: const Row(
-              children: [
-                Expanded(
-                    flex: 3,
-                    child: Text('Description',
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white70))),
-                SizedBox(
-                    width: 36,
-                    child: Text('Qty',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white70))),
-                SizedBox(
-                    width: 56,
-                    child: Text('Rate',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white70))),
-                SizedBox(
-                    width: 64,
-                    child: Text('Amount',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white70))),
-              ],
-            ),
-          ),
-          ...lines.asMap().entries.map((e) {
-            final odd = e.key.isOdd;
-            final l   = e.value;
-            return Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              color: odd
-                  ? Colors.transparent
-                  : AppTheme.navyDark.withValues(alpha: 0.03),
-              child: Row(
-                children: [
-                  Expanded(
-                      flex: 3,
-                      child: Text(l.description,
-                          style: const TextStyle(
-                              fontSize: 10,
-                              color: AppTheme.textPrimary))),
-                  SizedBox(
-                    width: 36,
-                    child: Text(
-                      l.qty == l.qty.roundToDouble()
-                          ? l.qty.toInt().toString()
-                          : l.qty.toStringAsFixed(1),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          fontSize: 10, color: AppTheme.textSecondary),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 56,
-                    child: Text(
-                      Formatters.currency(l.unitPrice),
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 10, color: AppTheme.textSecondary),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 64,
-                    child: Text(
-                      Formatters.currency(l.amount),
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
         ],
       ),
     );
