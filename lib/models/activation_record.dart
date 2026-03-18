@@ -30,6 +30,8 @@ class ActivationRecord {
   final String priceMatchedRule;
   /// True if customer has plan codes but none matched this record
   final bool missingCodeFlag;
+  /// True if plan code matched but the required RPC is absent on this device
+  final bool missingRpcFlag;
 
   ActivationRecord({
     required this.device,
@@ -56,6 +58,7 @@ class ActivationRecord {
     double? resolvedCustomerPrice,
     this.priceMatchedRule = '',
     this.missingCodeFlag = false,
+    this.missingRpcFlag = false,
   }) : resolvedCustomerPrice = resolvedCustomerPrice ?? monthlyCost;
 
   /// Proration using YOUR cost to Geotab (internal cost basis)
@@ -145,6 +148,7 @@ class ActivationRecord {
     required double customerPrice,
     required String matchedRule,
     required bool missingCode,
+    bool missingRpc = false,
   }) {
     return ActivationRecord(
       device: device,
@@ -171,6 +175,7 @@ class ActivationRecord {
       resolvedCustomerPrice: customerPrice,
       priceMatchedRule: matchedRule,
       missingCodeFlag: missingCode,
+      missingRpcFlag: missingRpc,
     );
   }
 }

@@ -251,6 +251,7 @@ class CloudSyncService {
           'planCode':      c.planCode,
           'customerPrice': c.customerPrice,
           'notes':         c.notes,
+          'requiredRpc':   c.requiredRpc,
         }).toList(),
       });
       if (r2 != null) { _setStatus(SyncStatus.error); _lastError = r2; return r2; }
@@ -389,6 +390,7 @@ class CloudSyncService {
             planCode:      item['planCode']?.toString()                ?? '',
             customerPrice: (item['customerPrice'] as num?)?.toDouble() ?? 0,
             notes:         item['notes']?.toString()                   ?? '',
+            requiredRpc:   item['requiredRpc']?.toString()             ?? '',
           ));
         }
         counts['customerPlanCodes'] = list.length;
@@ -509,6 +511,7 @@ class CloudSyncService {
             'planCode':      c.planCode,
             'customerPrice': c.customerPrice,
             'notes':         c.notes,
+            'requiredRpc':   c.requiredRpc,
           }).toList(),
         }),
         _putNode('serial_filter_rules', {

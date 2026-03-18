@@ -811,6 +811,7 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
             ? existing.customerPrice.toStringAsFixed(2)
             : '');
     final notesCtrl = TextEditingController(text: existing?.notes ?? '');
+    final rpcCtrl   = TextEditingController(text: existing?.requiredRpc ?? '');
 
     // Plan type suggestions for the code field
     final planCodeHints = [
@@ -927,6 +928,28 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
                       hintText: 'e.g. Special contract, QB ref',
                     ),
                   ),
+                  const SizedBox(height: 12),
+
+                  // Required RPC
+                  TextField(
+                    controller: rpcCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'Required Rate Plan Code (optional)',
+                      hintText: 'e.g. BUNDLE, RS78-R1, NEXTLINK',
+                      helperText:
+                          'MyAdmin RPC that must be present for the discount to apply. '
+                          'If missing on a device, it will be flagged and billed at full price.',
+                      helperMaxLines: 3,
+                      prefixIcon: const Icon(Icons.qr_code, size: 16),
+                      suffixIcon: rpcCtrl.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 16),
+                              onPressed: () => setS(() => rpcCtrl.clear()),
+                            )
+                          : null,
+                    ),
+                    onChanged: (_) => setS(() {}),
+                  ),
                 ],
               ),
             ),
@@ -947,6 +970,7 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
                   planCode: code,
                   customerPrice: price,
                   notes: notesCtrl.text.trim(),
+                  requiredRpc: rpcCtrl.text.trim(),
                 );
                 if (ctx.mounted) {
                   await provider.saveCustomerPlanCode(entry);
@@ -1109,6 +1133,25 @@ class _CodeRow extends StatelessWidget {
                       fontFamily: 'monospace',
                     ),
                   ),
+                  if (code.requiredRpc.isNotEmpty) ...[ 
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        const Icon(Icons.qr_code, size: 10,
+                            color: AppTheme.tealLight),
+                        const SizedBox(width: 3),
+                        Text(
+                          'RPC: ${code.requiredRpc}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppTheme.tealLight,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                   if (code.notes.isNotEmpty) ...[
                     const SizedBox(height: 2),
                     Text(

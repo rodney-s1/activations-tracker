@@ -29,6 +29,20 @@ class MissingCodeFlag {
   });
 }
 
+class MissingRpcFlag {
+  final String customerName;
+  final String serialNumber;
+  final String ratePlan;
+  final String requiredRpc; // the RPC that should have been on the device
+
+  MissingRpcFlag({
+    required this.customerName,
+    required this.serialNumber,
+    required this.ratePlan,
+    required this.requiredRpc,
+  });
+}
+
 class CsvParseResult {
   final String reportName;
   final String reportDate;
@@ -38,6 +52,7 @@ class CsvParseResult {
   final List<String> skippedReasons;
   final List<BlankCustomerRecord> blankCustomers;
   final List<MissingCodeFlag> missingCodeFlags;
+  final List<MissingRpcFlag> missingRpcFlags;
 
   CsvParseResult({
     required this.reportName,
@@ -48,6 +63,7 @@ class CsvParseResult {
     required this.skippedReasons,
     required this.blankCustomers,
     required this.missingCodeFlags,
+    this.missingRpcFlags = const [],
   });
 }
 
@@ -190,6 +206,7 @@ class CsvParserService {
     final skipped = <String>[];
     final blankCustomers = <BlankCustomerRecord>[];
     final missingCodeFlags = <MissingCodeFlag>[];
+    final missingRpcFlags  = <MissingRpcFlag>[];
 
     bool headerFound = false;
 
@@ -249,12 +266,27 @@ class CsvParserService {
               customerPrice: priceResult.customerPrice,
               matchedRule: priceResult.matchedRule,
               missingCode: priceResult.missingCode,
+              missingRpc: priceResult.missingRpc,
             );
             if (priceResult.missingCode) {
               missingCodeFlags.add(MissingCodeFlag(
                 customerName: record.customer,
                 serialNumber: record.serialNumber,
                 ratePlan: record.ratePlan,
+              ));
+            }
+            if (priceResult.missingRpc) {
+              missingRpcFlags.add(MissingRpcFlag(
+                customerName: record.customer,
+                serialNumber: record.serialNumber,
+                ratePlan: record.ratePlan,
+                requiredRpc: priceResult.matchedRule
+                    .contains('"') // extract RPC from matchedRule string
+                    ? RegExp(r'MISSING RPC "([^"]+)"')
+                            .firstMatch(priceResult.matchedRule)
+                            ?.group(1) ??
+                        ''
+                    : '',
               ));
             }
           }
@@ -274,6 +306,7 @@ class CsvParserService {
       skippedReasons: skipped,
       blankCustomers: blankCustomers,
       missingCodeFlags: missingCodeFlags,
+      missingRpcFlags:  missingRpcFlags,
     );
   }
 

@@ -4,9 +4,14 @@
 // Tier 2 — Customer Plan Codes  (customer + plan code match → customer's price)
 //
 // Resolution order for a given device:
-//   1. Customer has a specific plan code that matches → use customerPrice
+//   1. Customer has a specific plan code that matches → check requiredRpc → use customerPrice
 //   2. Standard plan keyword matches → use yourCost (what Geotab charges you)
 //   3. Fall back to the raw CSV monthly cost
+//
+// requiredRpc: if set on a CustomerPlanCode, the discounted price only applies
+// when the device's Rate Plan column contains that RPC substring (case-insensitive).
+// If the device is MISSING that RPC, Geotab hasn't applied the discount to you,
+// so the device is flagged as 'missing RPC' and billed at full price.
 //
 // "Missing code" flag: if a customer has ANY CustomerPlanCode entries AND
 // none of them match a device's rate plan, that device is flagged so you
@@ -24,6 +29,7 @@ class PriceResult {
   final PriceSource source;
   final String matchedRule;    // human-readable description of what matched
   final bool missingCode;      // true when customer has codes but none matched
+  final bool missingRpc;       // true when plan code matched but requiredRpc is absent
 
   const PriceResult({
     required this.yourCost,
@@ -31,6 +37,7 @@ class PriceResult {
     required this.source,
     required this.matchedRule,
     this.missingCode = false,
+    this.missingRpc = false,
   });
 }
 
@@ -66,14 +73,33 @@ class PricingEngine {
       }
 
       if (matched != null) {
-        // We have a customer code AND it matched — use customer price
-        // For yourCost, resolve from standard plan as usual
         final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
+
+        // ── Check requiredRpc ────────────────────────────────────────────
+        // If the rule has a required RPC, the discount only applies when the
+        // device's rate plan contains that RPC string (case-insensitive).
+        // If the device is missing it, Geotab hasn't applied the discount to
+        // us, so we can't pass it on — flag it and fall back to full cost.
+        final rpcRequired = matched.requiredRpc.trim();
+        if (rpcRequired.isNotEmpty &&
+            !ratePlanNorm.contains(rpcRequired.toLowerCase())) {
+          return PriceResult(
+            yourCost: stdCost,
+            customerPrice: stdCost, // can't give discount — RPC missing
+            source: PriceSource.standardPlan,
+            matchedRule:
+                'MISSING RPC "${matched.requiredRpc}" — device not on discounted plan; billed at full rate',
+            missingRpc: true,
+          );
+        }
+
+        // RPC present (or not required) — apply customer price
         return PriceResult(
           yourCost: stdCost,
           customerPrice: matched.customerPrice,
           source: PriceSource.customerCode,
-          matchedRule: 'Customer code: "${matched.planCode}"',
+          matchedRule: 'Customer code: "${matched.planCode}"'
+              '${rpcRequired.isNotEmpty ? ' (RPC: $rpcRequired ✓)' : ''}',
         );
       } else {
         // Customer has codes but NONE matched this plan — flag it

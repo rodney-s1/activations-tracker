@@ -226,6 +226,106 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Shows a dialog listing devices where the required RPC is absent
+  void _showMissingRpcWarning(BuildContext context, AppProvider provider) {
+    final flags = provider.missingRpcFlags;
+    if (flags.isEmpty) return;
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        icon: const Icon(Icons.qr_code, color: Color(0xFF0F766E), size: 36),
+        title: Text(
+          '${flags.length} Device${flags.length > 1 ? 's' : ''} — Missing Rate Plan Code',
+          style: const TextStyle(fontSize: 17),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'These devices matched a customer plan code rule that requires a specific '
+                'Rate Plan Code (RPC) in MyAdmin, but the RPC is missing. '
+                'Geotab has not applied the discount to your account for these devices, '
+                'so they are billed at full price. '
+                'Add the correct RPC in MyAdmin to enable the discounted rate.',
+                style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 300),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: flags.length,
+                  itemBuilder: (_, i) {
+                    final f = flags[i];
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0FDFA),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: const Color(0xFF0F766E).withValues(alpha: 0.35)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            f.customerName,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Serial: ${f.serialNumber}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
+                          Text(
+                            'Plan: ${f.ratePlan}',
+                            style: const TextStyle(
+                                fontSize: 11, color: AppTheme.textSecondary),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (f.requiredRpc.isNotEmpty)
+                            Text(
+                              'Required RPC: ${f.requiredRpc}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF0F766E),
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Got It'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Shows a dialog listing devices with missing/unmatched plan codes
   void _showMissingCodeWarning(BuildContext context, AppProvider provider) {
     final flags = provider.missingCodeFlags;
@@ -675,6 +775,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: Text(
                       '${provider.missingCodeFlags.length} device${provider.missingCodeFlags.length > 1 ? 's' : ''} '
                       'missing a matching plan code — tap to review.',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, size: 16, color: Colors.white),
+                ],
+              ),
+            ),
+          ),
+
+        // ── Missing RPC warning banner ────────────────────────────
+        if (provider.missingRpcFlags.isNotEmpty)
+          GestureDetector(
+            onTap: () => _showMissingRpcWarning(context, provider),
+            child: Container(
+              color: const Color(0xFF0F766E), // teal-700
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.qr_code, size: 16, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${provider.missingRpcFlags.length} device${provider.missingRpcFlags.length > 1 ? 's' : ''} '
+                      'missing required Rate Plan Code — billed at full price. Tap to review.',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,

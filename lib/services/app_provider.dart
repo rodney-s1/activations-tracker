@@ -108,6 +108,9 @@ class AppProvider extends ChangeNotifier {
   List<MissingCodeFlag> get missingCodeFlags =>
       _parseResult?.missingCodeFlags ?? [];
 
+  List<MissingRpcFlag> get missingRpcFlags =>
+      _parseResult?.missingRpcFlags ?? [];
+
   void setSearchQuery(String q) {
     _searchQuery = q;
     notifyListeners();
