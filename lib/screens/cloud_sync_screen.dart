@@ -160,10 +160,12 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       builder: (_) => AlertDialog(
         title: const Text('Pull from Cloud?'),
         content: const Text(
-          'This will replace your local settings with the cloud version:\n'
+          'This will replace your local settings and CSV files with the cloud version:\n'
           '• Standard plan rates\n'
           '• Customer plan codes\n'
-          '• Serial filter rules\n\n'
+          '• Serial filter rules\n'
+          '• Activations CSV (last imported)\n'
+          '• MyAdmin & QB Verify CSVs (last imported)\n\n'
           'This cannot be undone.',
         ),
         actions: [
@@ -194,12 +196,14 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       });
     } else {
       final counts = result['counts'] as Map<String, int>? ?? {};
+      final csvRestored = (counts['importedCsvs'] ?? 0) > 0;
       setState(() {
         _loading   = false;
         _statusMsg =
             'Pulled: ${counts['standardPlanRates'] ?? 0} plan rates, '
             '${counts['customerPlanCodes'] ?? 0} customer codes, '
-            '${counts['serialFilterRules'] ?? 0} filter rules.';
+            '${counts['serialFilterRules'] ?? 0} filter rules'
+            '${csvRestored ? ', + CSV files restored' : ''}.';
         _statusOk = true;
       });
     }
@@ -370,7 +374,7 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
                 child: _ActionButton(
                   icon: Icons.upload_rounded,
                   label: 'Push to Cloud',
-                  sublabel: 'Save settings now',
+                  sublabel: 'Save settings + CSVs now',
                   color: AppTheme.teal,
                   loading: _loading,
                   onTap: _loading ? null : _push,
@@ -381,7 +385,7 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
                 child: _ActionButton(
                   icon: Icons.download_rounded,
                   label: 'Pull from Cloud',
-                  sublabel: 'Restore settings',
+                  sublabel: 'Restore settings + CSVs',
                   color: AppTheme.navyAccent,
                   loading: false,
                   onTap: _loading ? null : _pull,
@@ -405,8 +409,8 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Settings are automatically saved to the cloud whenever you make changes. '
-                    'On relaunch the app restores your settings from the cloud automatically.',
+                    'Settings and imported CSV files are automatically saved to the cloud whenever you import or make changes. '
+                    'On relaunch, the app restores everything — your settings AND your last imported files — automatically.',
                     style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                   ),
                 ),

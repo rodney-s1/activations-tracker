@@ -16,6 +16,7 @@ import '../services/customer_plan_code_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/pricing_engine.dart';
 import '../services/cloud_sync_service.dart';
+import '../services/csv_persist_service.dart';
 export '../services/csv_parser_service.dart' show BlankCustomerRecord;
 
 enum AppState { idle, loading, loaded, error }
@@ -159,6 +160,12 @@ class AppProvider extends ChangeNotifier {
       );
       await HistoryService.saveSession(session);
       _history = HistoryService.getAllSessions();
+
+      // Persist the CSV so it survives page refresh / app reopen
+      await CsvPersistService.saveActivations(
+        content:  content,
+        fileName: fileName,
+      );
     } catch (e) {
       _state = AppState.error;
       _errorMessage = 'Failed to parse CSV: $e';
@@ -317,6 +324,30 @@ class AppProvider extends ChangeNotifier {
     );
 
     await loadCsv(_currentFileName, session.rawCsvContent);
+  }
+
+  /// On startup: restore the last imported Activations CSV from local storage
+  /// so the dashboard shows data immediately without requiring a re-import.
+  Future<void> restorePersistedData() async {
+    // If data is already loaded (e.g. from history re-open), skip.
+    if (_state == AppState.loaded) return;
+
+    final saved = await CsvPersistService.loadActivations();
+    if (saved == null || saved.content.isEmpty) return;
+
+    try {
+      loadPricingData();
+      final result = CsvParserService.parse(saved.content, _pricingEngine);
+      final groups = CsvParserService.groupByCustomer(result.records);
+      _parseResult     = result;
+      _customerGroups  = groups;
+      _currentFileName = saved.fileName;
+      _searchQuery     = '';
+      _state           = AppState.loaded;
+    } catch (_) {
+      // Silently ignore restore errors — user can re-import manually
+    }
+    notifyListeners();
   }
 
   // ── Clear ─────────────────────────────────────────────────────────────────

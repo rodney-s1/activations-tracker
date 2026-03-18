@@ -25,19 +25,26 @@ void main() async {
   await CloudSyncService.init(); // load saved Firebase config (if any)
 
   // Auto-pull from Firebase on startup if configured.
-  // This restores all settings after a browser storage clear or first load
-  // on a new device — silently in background, no user prompt needed.
+  // This restores all settings AND imported CSVs after a browser storage clear
+  // or first load on a new device — silently in background.
   if (CloudSyncService.isConfigured) {
     await CloudSyncService.pullAll();
   }
 
+  // Build provider first so restorePersistedData can notify listeners
+  final provider = AppProvider()
+    ..initHistory()
+    ..loadCustomerRates()
+    ..loadPricingData()
+    ..startSyncCountdown();
+
+  // Restore last imported Activations CSV (if any) from local storage.
+  // This runs AFTER cloud pull so cloud data takes precedence.
+  await provider.restorePersistedData();
+
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => AppProvider()
-        ..initHistory()
-        ..loadCustomerRates()
-        ..loadPricingData()
-        ..startSyncCountdown(), // starts the 1-min countdown ticker for Cloud Sync UI
+    ChangeNotifierProvider.value(
+      value: provider,
       child: const ActivationTrackerApp(),
     ),
   );

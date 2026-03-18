@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
+import '../services/csv_persist_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -491,6 +492,40 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
+    // Restore previously imported CSVs so data survives page refresh / reopen
+    WidgetsBinding.instance.addPostFrameCallback((_) => _restorePersistedCsvs());
+  }
+
+  // ── Restore persisted CSV data on startup ──────────────────────────────────
+
+  Future<void> _restorePersistedCsvs() async {
+    // Restore MyAdmin CSV
+    final ma = await CsvPersistService.loadMyAdmin();
+    if (ma != null && ma.content.isNotEmpty) {
+      final parsed = parseMyAdminCsv(ma.content);
+      if (parsed.isNotEmpty && mounted) {
+        setState(() {
+          _myAdminData      = parsed;
+          _myAdminLoaded    = true;
+          _myAdminFileName  = ma.fileName;
+          _myAdminReportDate = ma.reportDate;
+        });
+      }
+    }
+
+    // Restore QB CSV
+    final qb = await CsvPersistService.loadQb();
+    if (qb != null && qb.content.isNotEmpty) {
+      final qbParsed = parseQbSalesCsvWithNames(qb.content);
+      if (qbParsed.lines.isNotEmpty && mounted) {
+        setState(() {
+          _qbData             = qbParsed.lines;
+          _qbDisplayNameCache = qbParsed.displayNames;
+          _qbLoaded           = true;
+          _qbFileName         = qb.fileName;
+        });
+      }
+    }
   }
 
   @override
@@ -557,6 +592,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         _expanded.clear();
       });
 
+      // Persist so the data survives page refresh / app reopen
+      CsvPersistService.saveMyAdmin(
+        content:    content,
+        fileName:   file.name,
+        reportDate: reportDate,
+      );
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -620,6 +662,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         _qbFileName          = file.name;
         _expanded.clear();
       });
+
+      // Persist so the data survives page refresh / app reopen
+      CsvPersistService.saveQb(
+        content:  content,
+        fileName: file.name,
+      );
 
       final totalDevicesBilled = qbParsed.lines.values
           .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))

@@ -7,10 +7,11 @@
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
-// Data layout (3 PUT calls per push, 3 GET calls per pull):
+// Data layout (4 PUT calls per push, 4 GET calls per pull):
 //   /activation_tracker/{userId}/standard_plan_rates.json
 //   /activation_tracker/{userId}/customer_plan_codes.json
 //   /activation_tracker/{userId}/serial_filter_rules.json
+//   /activation_tracker/{userId}/imported_csvs.json        ← CSV backup
 //
 // Each node stores a plain JSON object — no encoding tricks needed.
 // The Realtime Database REST API accepts and returns native JSON directly.
@@ -27,6 +28,7 @@ import '../models/serial_filter_rule.dart';
 import '../services/standard_plan_rate_service.dart';
 import '../services/customer_plan_code_service.dart';
 import '../services/filter_settings_service.dart';
+import '../services/csv_persist_service.dart';
 
 // ── Status enum ──────────────────────────────────────────────────────────────
 
@@ -263,6 +265,20 @@ class CloudSyncService {
       });
       if (r3 != null) { _setStatus(SyncStatus.error); _lastError = r3; return r3; }
 
+      // ── 4. Imported CSV files (backup) ────────────────────────────
+      // Non-fatal: a CSV backup failure does not abort the sync.
+      final csvMap = await CsvPersistService.getAllRaw();
+      final hasCsv = csvMap.values.any((v) => v.isNotEmpty);
+      if (hasCsv) {
+        final r4 = await _putNode('imported_csvs', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          ...csvMap,
+        });
+        if (r4 != null && kDebugMode) {
+          debugPrint('[CloudSync] CSV backup warning (non-fatal): $r4');
+        }
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return null;
@@ -300,7 +316,7 @@ class CloudSyncService {
     }
   }
 
-  // ── Pull — 3 parallel GET calls ───────────────────────────────────────────
+  // ── Pull — 4 parallel GET calls ───────────────────────────────────────────
 
   static Future<Map<String, dynamic>> pullAll() async {
     if (!_configured) return {'error': 'Firebase not configured'};
@@ -311,6 +327,7 @@ class CloudSyncService {
         http.get(Uri.parse(_nodeUrl('standard_plan_rates')), headers: _headers),
         http.get(Uri.parse(_nodeUrl('customer_plan_codes')), headers: _headers),
         http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),
+        http.get(Uri.parse(_nodeUrl('imported_csvs')),      headers: _headers),
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -361,6 +378,19 @@ class CloudSyncService {
           ));
         }
         counts['serialFilterRules'] = list.length;
+      }
+
+      // ── Imported CSV files ──────────────────────────────────
+      if (responses[3].statusCode == 200 && responses[3].body != 'null') {
+        try {
+          final node = jsonDecode(responses[3].body) as Map<String, dynamic>;
+          // Restore to local SharedPreferences so the UI shows data immediately
+          await CsvPersistService.restoreFromMap(node);
+          counts['importedCsvs'] = 1;
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] CSV restore warning: $e');
+          // Non-fatal — settings still restored even if CSV restore fails
+        }
       }
 
       await _recordLastSync();
