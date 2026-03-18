@@ -809,6 +809,70 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       );
     }).toList();
 
+    // ── Hanover Insurance Company roll-up ─────────────────────────────────
+    // Any device across ANY customer that has ratePlanCode == 'hanover' AND
+    // a billing plan containing 'GO' (case-insensitive) is billed directly
+    // to Hanover Insurance Company — not to the device's own customer.
+    // Collect those devices and inject them into Hanover's summary so they
+    // appear as billable devices under "Hanover Insurance Company" in QB Verify.
+    final hanoverGoDevices = <MyAdminDevice>[];
+    for (final deviceList in _myAdminData.values) {
+      for (final d in deviceList) {
+        if (d.isHanover &&
+            d.billingPlan.toLowerCase().contains('go') &&
+            d.billingStatus.toLowerCase() == 'active') {
+          hanoverGoDevices.add(d);
+        }
+      }
+    }
+
+    if (hanoverGoDevices.isNotEmpty) {
+      const hanoverKey = 'hanover insurance company';
+      final existingIdx = summaries.indexWhere(
+          (s) => s.customerName.toLowerCase().contains('hanover insurance'));
+
+      if (existingIdx >= 0) {
+        // Hanover Insurance Company already has a QB entry — merge GO devices in
+        final existing = summaries[existingIdx];
+        // Avoid double-counting devices already listed under Hanover's own key
+        final existingSerials =
+            existing.activeDevices.map((d) => d.serialNumber).toSet();
+        final newDevices = hanoverGoDevices
+            .where((d) => !existingSerials.contains(d.serialNumber))
+            .toList();
+        if (newDevices.isNotEmpty) {
+          summaries[existingIdx] = QbCustomerSummary(
+            customerName: existing.customerName,
+            billedCount:  existing.billedCount,
+            totalBilled:  existing.totalBilled,
+            qbLines:      existing.qbLines,
+            activeCount:  existing.activeCount + newDevices.length,
+            unknownCount: existing.unknownCount,
+            hanoverCount: existing.hanoverCount,
+            hanoverCsQty: existing.hanoverCsQty,
+            activeDevices: [...existing.activeDevices, ...newDevices],
+            isCua:         existing.isCua,
+          );
+        }
+      } else {
+        // No QB entry yet for Hanover Insurance Company — create one from
+        // MyAdmin data alone so it surfaces as "Not Billed" if missing from QB.
+        final qbLines = _qbData[hanoverKey] ?? [];
+        summaries.add(QbCustomerSummary(
+          customerName: 'Hanover Insurance Company',
+          billedCount:  qbLines.fold(0, (s, l) => s + l.qty.round()),
+          totalBilled:  qbLines.fold(0.0, (s, l) => s + l.amount),
+          qbLines:      qbLines,
+          activeCount:  hanoverGoDevices.length,
+          unknownCount: 0,
+          hanoverCount: 0,
+          hanoverCsQty: 0,
+          activeDevices: hanoverGoDevices,
+          isCua:         false,
+        ));
+      }
+    }
+
     // Sort: issues first, then alphabetically
     summaries.sort((a, b) {
       final aOk = a.status == VerifyStatus.match ? 1 : 0;
