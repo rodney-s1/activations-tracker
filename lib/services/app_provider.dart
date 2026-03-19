@@ -8,12 +8,14 @@ import '../models/import_session.dart';
 import '../models/customer_rate.dart';
 import '../models/standard_plan_rate.dart';
 import '../models/customer_plan_code.dart';
+import '../models/customer_rate_plan_override.dart';
 import '../models/qb_customer.dart';
 import '../services/csv_parser_service.dart';
 import '../services/history_service.dart';
 import '../services/customer_rate_service.dart';
 import '../services/standard_plan_rate_service.dart';
 import '../services/customer_plan_code_service.dart';
+import '../services/customer_rate_plan_override_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/pricing_engine.dart';
 import '../services/cloud_sync_service.dart';
@@ -38,6 +40,7 @@ class AppProvider extends ChangeNotifier {
   List<StandardPlanRate> _standardRates = [];
   List<CustomerPlanCode> _customerPlanCodes = [];
   List<QbCustomer> _qbCustomers = [];
+  List<CustomerRatePlanOverride> _ratePlanOverrides = [];
 
   // ── Cloud sync countdown timer (updates UI every minute) ──────────────
   Timer? _countdownTimer;
@@ -75,6 +78,7 @@ class AppProvider extends ChangeNotifier {
   List<StandardPlanRate> get standardRates => _standardRates;
   List<CustomerPlanCode> get customerPlanCodes => _customerPlanCodes;
   List<QbCustomer> get qbCustomers => _qbCustomers;
+  List<CustomerRatePlanOverride> get ratePlanOverrides => _ratePlanOverrides;
 
   bool get hasData => _parseResult != null && _customerGroups.isNotEmpty;
 
@@ -124,6 +128,7 @@ class AppProvider extends ChangeNotifier {
     _standardRates = StandardPlanRateService.getAll();
     _customerPlanCodes = CustomerPlanCodeService.getAll();
     _qbCustomers = QbCustomerService.getAll();
+    _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
     notifyListeners();
   }
 
@@ -290,6 +295,22 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
     CloudSyncService.pushSilent(); // push updated plan codes to cloud
     return counts;
+  }
+
+  // ── Rate Plan Overrides ─────────────────────────────────────────────────
+
+  Future<void> saveRatePlanOverride(CustomerRatePlanOverride o) async {
+    await CustomerRatePlanOverrideService.save(o);
+    _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    notifyListeners();
+    CloudSyncService.pushSilent();
+  }
+
+  Future<void> deleteRatePlanOverride(CustomerRatePlanOverride o) async {
+    await CustomerRatePlanOverrideService.delete(o);
+    _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    notifyListeners();
+    CloudSyncService.pushSilent();
   }
 
   // ── QB Customers ──────────────────────────────────────────────────────────
