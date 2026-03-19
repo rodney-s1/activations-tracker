@@ -60,13 +60,6 @@ class AuthUser {
     required this.idToken,
   });
 
-  /// Sanitised email used as Cloud Sync userId path.
-  /// e.g. "john@bluearrowmail.com" → "john_bluearrowmail.com"
-  String get syncUserId =>
-      email.toLowerCase()
-          .replaceAll('@', '_')
-          .replaceAll(RegExp(r'[^a-z0-9._-]'), '_');
-
   bool get isBlueArrow => email.toLowerCase().endsWith('@$kAllowedDomain');
 }
 

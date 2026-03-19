@@ -8,12 +8,14 @@
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
 // Data layout (6 PUT calls per push, 6 GET calls per pull):
-//   /activation_tracker/{userId}/standard_plan_rates.json
-//   /activation_tracker/{userId}/customer_plan_codes.json
-//   /activation_tracker/{userId}/serial_filter_rules.json
-//   /activation_tracker/{userId}/imported_csvs.json        ← CSV backup
-//   /activation_tracker/{userId}/qb_customers.json         ← QB Customer list + CUA flags
-//   /activation_tracker/{userId}/qb_ignore_keywords.json   ← QB import filter keywords
+//   /activation_tracker/shared/standard_plan_rates.json
+//   /activation_tracker/shared/customer_plan_codes.json
+//   /activation_tracker/shared/serial_filter_rules.json
+//   /activation_tracker/shared/imported_csvs.json
+//   /activation_tracker/shared/qb_customers.json
+//   /activation_tracker/shared/qb_ignore_keywords.json
+//
+// All @bluearrowmail.com users read and write the SAME shared path.
 //
 // Each node stores a plain JSON object — no encoding tricks needed.
 // The Realtime Database REST API accepts and returns native JSON directly.
@@ -45,7 +47,8 @@ class CloudSyncService {
   // SharedPreferences keys
   static const _kDbUrl         = 'rtdb_url';          // e.g. https://my-app-default-rtdb.firebaseio.com
   static const _kApiKey        = 'firebase_api_key';  // Web API key (for auth param)
-  static const _kUserId        = 'cloud_sync_user_id';
+  // Shared path constant — all users access the same data node
+  static const _kSharedPath    = 'shared';
   static const _kEnabled       = 'cloud_sync_enabled';
   static const _kAutoSync      = 'cloud_sync_auto';
   static const _kLastSyncEpoch = 'cloud_sync_last_epoch';
@@ -57,7 +60,6 @@ class CloudSyncService {
   // Runtime state
   static String     _dbUrl          = '';
   static String     _apiKey         = '';
-  static String     _userId         = 'default';
   static bool       _configured     = false;
   static SyncStatus _status         = SyncStatus.notConfigured;
   static String     _lastError      = '';
@@ -81,7 +83,6 @@ class CloudSyncService {
   static bool       get isConfigured => _configured;
   static DateTime?  get lastSyncAt   => _lastSyncAt;
   static bool       get autoSync     => _autoSyncEnabled;
-  static String     get userId       => _userId;
 
   static Duration get nextSyncIn {
     if (_periodicTimer == null || !_periodicTimer!.isActive) return Duration.zero;
@@ -99,7 +100,7 @@ class CloudSyncService {
         ? _dbUrl.substring(0, _dbUrl.length - 1)
         : _dbUrl;
     final auth = _apiKey.isNotEmpty ? '?auth=$_apiKey' : '';
-    return '$base/activation_tracker/$_userId/$node.json$auth';
+    return '$base/activation_tracker/$_kSharedPath/$node.json$auth';
   }
 
   static Map<String, String> get _headers => {
@@ -114,7 +115,6 @@ class CloudSyncService {
     final enabled    = prefs.getBool(_kEnabled)   ?? false;
     _dbUrl           = prefs.getString(_kDbUrl)   ?? '';
     _apiKey          = prefs.getString(_kApiKey)  ?? '';
-    _userId          = prefs.getString(_kUserId)  ?? 'default';
     _autoSyncEnabled = prefs.getBool(_kAutoSync)  ?? true;
 
     final lastEpoch = prefs.getInt(_kLastSyncEpoch);
@@ -136,7 +136,6 @@ class CloudSyncService {
   static Future<String?> configure({
     required String dbUrl,
     required String apiKey,
-    required String userId,
     required bool   enabled,
     bool            autoSync = true,
     // kept for compatibility with old call sites
@@ -147,7 +146,6 @@ class CloudSyncService {
     await prefs.setBool(_kEnabled,   enabled);
     await prefs.setString(_kDbUrl,   dbUrl.trim());
     await prefs.setString(_kApiKey,  apiKey.trim());
-    await prefs.setString(_kUserId,  userId.trim().isEmpty ? 'default' : userId.trim());
     await prefs.setBool(_kAutoSync,  autoSync);
     // preserve old keys so the form can still show them
     if (projectId.isNotEmpty) await prefs.setString(_kProjectId, projectId);
@@ -155,7 +153,6 @@ class CloudSyncService {
 
     _dbUrl           = dbUrl.trim();
     _apiKey          = apiKey.trim();
-    _userId          = userId.trim().isEmpty ? 'default' : userId.trim();
     _autoSyncEnabled = autoSync;
 
     if (!enabled || _dbUrl.isEmpty) {
@@ -185,7 +182,6 @@ class CloudSyncService {
       'apiKey':    prefs.getString(_kApiKey)     ?? '',
       'projectId': prefs.getString(_kProjectId)  ?? '',
       'appId':     prefs.getString(_kAppId)      ?? '',
-      'userId':    prefs.getString(_kUserId)     ?? '',
       'enabled':   (prefs.getBool(_kEnabled)    ?? false) ? 'true' : 'false',
       'autoSync':  (prefs.getBool(_kAutoSync)   ?? true)  ? 'true' : 'false',
     };

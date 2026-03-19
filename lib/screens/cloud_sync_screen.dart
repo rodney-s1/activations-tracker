@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
-import '../services/auth_service.dart';
+// import '../services/auth_service.dart'; // removed — shared data path, no per-user ID needed
 import '../services/cloud_sync_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -23,7 +23,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
   // Credential fields — only shown inside the collapsed "Advanced" section
   final _dbUrlCtrl  = TextEditingController();
   final _apiKeyCtrl = TextEditingController();
-  final _userIdCtrl = TextEditingController();
 
   bool    _enabled      = false;
   bool    _autoSync     = true;
@@ -48,7 +47,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
     CloudSyncService.statusNotifier.removeListener(_onStatusChanged);
     _dbUrlCtrl.dispose();
     _apiKeyCtrl.dispose();
-    _userIdCtrl.dispose();
     super.dispose();
   }
 
@@ -59,14 +57,9 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
   Future<void> _loadSaved() async {
     final cfg = await CloudSyncService.readConfig();
     if (!mounted) return;
-    // Auto-populate userId from signed-in Google account if not already set
-    final authUser = AuthService.instance.currentUser;
-    final savedUserId = cfg['userId'] ?? '';
-    final autoUserId = authUser?.syncUserId ?? '';
     setState(() {
       _dbUrlCtrl.text  = cfg['dbUrl']   ?? '';
       _apiKeyCtrl.text = cfg['apiKey']  ?? '';
-      _userIdCtrl.text = savedUserId.isNotEmpty ? savedUserId : autoUserId;
       _enabled         = cfg['enabled'] == 'true';
       _autoSync        = cfg['autoSync'] != 'false';
       _saved           = _dbUrlCtrl.text.isNotEmpty;
@@ -88,7 +81,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
     final err = await CloudSyncService.configure(
       dbUrl:    _dbUrlCtrl.text.trim(),
       apiKey:   _apiKeyCtrl.text.trim(),
-      userId:   _userIdCtrl.text.trim(),
       enabled:  _enabled,
       autoSync: _autoSync,
     );
@@ -130,7 +122,6 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       await CloudSyncService.configure(
         dbUrl:    _dbUrlCtrl.text.trim(),
         apiKey:   _apiKeyCtrl.text.trim(),
-        userId:   _userIdCtrl.text.trim(),
         enabled:  value,
         autoSync: _autoSync,
       );
@@ -513,7 +504,7 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
           _CredentialsPanel(
             dbUrlCtrl:  _dbUrlCtrl,
             apiKeyCtrl: _apiKeyCtrl,
-            userIdCtrl: _userIdCtrl,
+
             enabled:    _enabled,
             onEnabledChanged: (v) => setState(() => _enabled = v),
             loading:    _loading,
@@ -636,7 +627,6 @@ class _ActionButton extends StatelessWidget {
 class _CredentialsPanel extends StatelessWidget {
   final TextEditingController dbUrlCtrl;
   final TextEditingController apiKeyCtrl;
-  final TextEditingController userIdCtrl;
   final bool enabled;
   final ValueChanged<bool> onEnabledChanged;
   final bool loading;
@@ -646,7 +636,6 @@ class _CredentialsPanel extends StatelessWidget {
   const _CredentialsPanel({
     required this.dbUrlCtrl,
     required this.apiKeyCtrl,
-    required this.userIdCtrl,
     required this.enabled,
     required this.onEnabledChanged,
     required this.loading,
@@ -713,16 +702,7 @@ class _CredentialsPanel extends StatelessWidget {
               prefixIcon: Icon(Icons.vpn_key, size: 18),
             ),
           ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: userIdCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Account / User ID',
-              hintText: 'e.g. my_company',
-              prefixIcon: Icon(Icons.person, size: 18),
-              helperText: 'Same ID on all computers = shared settings',
-            ),
-          ),
+          // No User ID field — all @bluearrowmail.com users share the same data path.
           const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
