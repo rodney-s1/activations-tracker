@@ -1,6 +1,7 @@
 // Customer card widget — always expanded, with completed checkbox
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/customer_group.dart';
 import '../models/activation_record.dart';
 import '../utils/app_theme.dart';
@@ -252,42 +253,58 @@ class _CustomerCardState extends State<CustomerCard> {
               borderRadius:
                   const BorderRadius.vertical(bottom: Radius.circular(12)),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+            child: Column(
               children: [
-                Expanded(
-                  child: Text(
-                    _completed ? 'Invoiced ✓' : 'Customer Subtotal',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: _completed ? _completedBar : AppTheme.textPrimary,
+                // ── Totals row ──────────────────────────────────────
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _completed ? 'Invoiced ✓' : 'Customer Subtotal',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _completed ? _completedBar : AppTheme.textPrimary,
+                        ),
+                      ),
                     ),
-                  ),
+                    SizedBox(width: 90, child: Container()),
+                    SizedBox(
+                      width: 72,
+                      child: Text(
+                        Formatters.currency(g.totalCustomerMonthlyCost),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary,
+                        ),
+                        textAlign: TextAlign.right,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 80,
+                      child: Text(
+                        Formatters.currency(g.totalCustomerProratedCost),
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: _completed ? _completedBar : AppTheme.green,
+                        ),
+                        textAlign: TextAlign.right,
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(width: 90, child: Container()),
+
+                // ── Copy Invoice Lines button ───────────────────────
+                const SizedBox(height: 10),
                 SizedBox(
-                  width: 72,
-                  child: Text(
-                    Formatters.currency(g.totalCustomerMonthlyCost),
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                    ),
-                    textAlign: TextAlign.right,
-                  ),
-                ),
-                SizedBox(
-                  width: 80,
-                  child: Text(
-                    Formatters.currency(g.totalCustomerProratedCost),
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: _completed ? _completedBar : AppTheme.green,
-                    ),
-                    textAlign: TextAlign.right,
+                  width: double.infinity,
+                  child: _CopyInvoiceLinesButton(
+                    group: g,
+                    completed: _completed,
+                    completedBar: _completedBar,
                   ),
                 ),
               ],
@@ -320,6 +337,201 @@ class _CustomerCardState extends State<CustomerCard> {
           ),
         ),
       );
+}
+
+// ── Copy Invoice Lines Button ─────────────────────────────────────────────────
+
+class _CopyInvoiceLinesButton extends StatefulWidget {
+  final CustomerGroup group;
+  final bool completed;
+  final Color completedBar;
+
+  const _CopyInvoiceLinesButton({
+    required this.group,
+    required this.completed,
+    required this.completedBar,
+  });
+
+  @override
+  State<_CopyInvoiceLinesButton> createState() =>
+      _CopyInvoiceLinesButtonState();
+}
+
+class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
+  bool _copied = false;
+
+  Future<void> _copyLines(BuildContext context) async {
+    final lines = widget.group.buildInvoiceLines();
+    if (lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No billable devices with billing dates found.'),
+          backgroundColor: Color(0xFFB45309),
+        ),
+      );
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: lines));
+    setState(() => _copied = true);
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Invoice lines for ${widget.group.customerName} copied!'),
+          backgroundColor: AppTheme.teal,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+
+    // Reset the "Copied!" state after 3 seconds
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  void _previewLines(BuildContext context) {
+    final lines = widget.group.buildInvoiceLines();
+    if (lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No billable devices with billing dates found.')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.receipt_long, size: 20, color: AppTheme.teal),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                widget.group.customerName,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Invoice lines to paste into QuickBooks:',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.divider),
+                ),
+                child: SelectableText(
+                  lines,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    height: 1.6,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: lines));
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Copied invoice lines for ${widget.group.customerName}'),
+                    backgroundColor: AppTheme.teal,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            icon: const Icon(Icons.copy, size: 14),
+            label: const Text('Copy All'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.teal,
+              side: const BorderSide(color: AppTheme.teal),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accentColor = widget.completed
+        ? widget.completedBar
+        : AppTheme.navyAccent;
+
+    return Row(
+      children: [
+        // Preview button (eye icon)
+        Tooltip(
+          message: 'Preview invoice lines',
+          child: OutlinedButton.icon(
+            onPressed: () => _previewLines(context),
+            icon: const Icon(Icons.visibility_outlined, size: 14),
+            label: const Text('Preview', style: TextStyle(fontSize: 11)),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.textSecondary,
+              side: const BorderSide(color: Color(0xFFCBD5E1)),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              minimumSize: Size.zero,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Copy button
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: () => _copyLines(context),
+            icon: Icon(
+              _copied ? Icons.check : Icons.content_copy,
+              size: 14,
+            ),
+            label: Text(
+              _copied ? 'Copied!' : 'Copy Invoice Lines',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _copied
+                  ? const Color(0xFF16A34A)
+                  : accentColor,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 // ── Device row (standalone stateless widget) ─────────────────────────────────
