@@ -7,9 +7,10 @@
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
-// Data layout (6 PUT calls per push, 6 GET calls per pull):
+// Data layout (7 nodes synced):
 //   /activation_tracker/shared/standard_plan_rates.json
 //   /activation_tracker/shared/customer_plan_codes.json
+//   /activation_tracker/shared/rate_plan_overrides.json
 //   /activation_tracker/shared/serial_filter_rules.json
 //   /activation_tracker/shared/imported_csvs.json
 //   /activation_tracker/shared/qb_customers.json
@@ -219,29 +220,29 @@ class CloudSyncService {
     }
   }
 
-  // ── Push — 3 PUT calls ────────────────────────────────────────────────────
-  //
-  // PUT replaces the entire node with the supplied JSON — simple, atomic per
-  // node, and fully CORS-safe.  3 writes per sync cycle.
+  // ── Push all — full sync (used by manual "Sync Now" button) ──────────────
 
   static Future<String?> pushAll() async {
     if (!_configured) return 'Firebase not configured';
     _setStatus(SyncStatus.syncing);
 
     try {
-      final rates = StandardPlanRateService.getAll();
-      final codes = CustomerPlanCodeService.getAll();
-      final rules = FilterSettingsService.getAllRules();
+      final rates     = StandardPlanRateService.getAll();
+      final codes     = CustomerPlanCodeService.getAll();
+      final rules     = FilterSettingsService.getAllRules();
+      final customers = QbCustomerService.getAll();
+      final keywords  = QbIgnoreKeywordService.getAll();
 
-      // ── 1. Standard plan rates ────────────────────────────────────
+      // ── 1. Standard plan rates (with customerPrice) ───────────────
       final r1 = await _putNode('standard_plan_rates', {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': rates.length,
         'data': rates.map((r) => {
-          'planKey':   r.planKey,
-          'keyword':   r.keyword,
-          'yourCost':  r.yourCost,
-          'sortOrder': r.sortOrder,
+          'planKey':       r.planKey,
+          'keyword':       r.keyword,
+          'yourCost':      r.yourCost,
+          'customerPrice': r.customerPrice,
+          'sortOrder':     r.sortOrder,
         }).toList(),
       });
       if (r1 != null) { _setStatus(SyncStatus.error); _lastError = r1; return r1; }
@@ -265,16 +266,15 @@ class CloudSyncService {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': rules.length,
         'data': rules.map((r) => {
-          'prefix':    r.prefix,
+          'prefix':     r.prefix,
           'isExcluded': r.isExcluded,
-          'label':     r.label,
-          'isSystem':  r.isSystem,
+          'label':      r.label,
+          'isSystem':   r.isSystem,
         }).toList(),
       });
       if (r3 != null) { _setStatus(SyncStatus.error); _lastError = r3; return r3; }
 
-      // ── 4. Imported CSV files (backup) ────────────────────────────
-      // Non-fatal: a CSV backup failure does not abort the sync.
+      // ── 4. Imported CSV files (non-fatal) ─────────────────────────
       final csvMap = await CsvPersistService.getAllRaw();
       final hasCsv = csvMap.values.any((v) => v.isNotEmpty);
       if (hasCsv) {
@@ -287,50 +287,39 @@ class CloudSyncService {
         }
       }
 
-
-      // ── 5. QB Customer list + CUA flags ────────────────────────
-      // Non-fatal: failure does not abort the sync.
-      try {
-        final customers = QbCustomerService.getAll();
-        if (customers.isNotEmpty) {
-          final r5 = await _putNode('qb_customers', {
-            'updatedAt': DateTime.now().toIso8601String(),
-            'count': customers.length,
-            'data': customers.map((c) => {
-              'name':      c.name,
-              'accountNo': c.accountNo,
-              'email':     c.email,
-              'phone':     c.phone,
-              'address':   c.address,
-              'isCua':     c.isCua,
-              'jobType':   c.jobType,
-            }).toList(),
-          });
-          if (r5 != null && kDebugMode) {
-            debugPrint('[CloudSync] QB customer backup warning (non-fatal): $r5');
-          }
-        }
-      } catch (e) {
-        if (kDebugMode) debugPrint('[CloudSync] QB customer backup warning (non-fatal): $e');
+      // ── 5. QB Customer list ──────────────────────────────────────────────────────────────────────────
+      // Always push customers (even if empty) so Firebase always reflects
+      // the authoritative current state. The pull side will only overwrite
+      // local data if the cloud list is non-empty, so an accidental empty
+      // push here won't wipe other devices — but it does keep Firebase current.
+      final r5 = await _putNode('qb_customers', {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'count': customers.length,
+        'data': customers.map((c) => {
+          'name':      c.name,
+          'accountNo': c.accountNo,
+          'email':     c.email,
+          'phone':     c.phone,
+          'address':   c.address,
+          'isCua':     c.isCua,
+          'jobType':   c.jobType,
+        }).toList(),
+      });
+      if (r5 != null && kDebugMode) {
+        debugPrint('[CloudSync] QB customer backup warning (non-fatal): $r5');
       }
 
-      // ── 6. QB Ignore Keywords ─────────────────────────────────
-      // Non-fatal: failure does not abort the sync.
-      try {
-        final keywords = QbIgnoreKeywordService.getAll();
-        final r6 = await _putNode('qb_ignore_keywords', {
-          'updatedAt': DateTime.now().toIso8601String(),
-          'count': keywords.length,
-          'data': keywords.map((k) => {
-            'keyword':   k.keyword,
-            'isDefault': k.isDefault,
-          }).toList(),
-        });
-        if (r6 != null && kDebugMode) {
-          debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r6');
-        }
-      } catch (e) {
-        if (kDebugMode) debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $e');
+      // ── 6. QB Ignore Keywords ─────────────────────────────────────
+      final r6 = await _putNode('qb_ignore_keywords', {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'count': keywords.length,
+        'data': keywords.map((k) => {
+          'keyword':   k.keyword,
+          'isDefault': k.isDefault,
+        }).toList(),
+      });
+      if (r6 != null && kDebugMode) {
+        debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r6');
       }
 
       await _recordLastSync();
@@ -370,7 +359,11 @@ class CloudSyncService {
     }
   }
 
-  // ── Pull — 4 parallel GET calls ───────────────────────────────────────────
+  // ── Pull — 6 parallel GET calls ───────────────────────────────────────────
+  //
+  // Indices: 0=standard_plan_rates  1=customer_plan_codes
+  //          2=serial_filter_rules  3=imported_csvs
+  //          4=qb_customers         5=qb_ignore_keywords
 
   static Future<Map<String, dynamic>> pullAll() async {
     if (!_configured) return {'error': 'Firebase not configured'};
@@ -378,33 +371,36 @@ class CloudSyncService {
 
     try {
       final responses = await Future.wait([
-        http.get(Uri.parse(_nodeUrl('standard_plan_rates')), headers: _headers),
-        http.get(Uri.parse(_nodeUrl('customer_plan_codes')), headers: _headers),
-        http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),
-        http.get(Uri.parse(_nodeUrl('imported_csvs')),      headers: _headers),
-        http.get(Uri.parse(_nodeUrl('qb_customers')),       headers: _headers),
-        http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')), headers: _headers),
+        http.get(Uri.parse(_nodeUrl('standard_plan_rates')), headers: _headers),  // 0
+        http.get(Uri.parse(_nodeUrl('customer_plan_codes')), headers: _headers),  // 1
+        http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),  // 2
+        http.get(Uri.parse(_nodeUrl('imported_csvs')),       headers: _headers),  // 3
+        http.get(Uri.parse(_nodeUrl('qb_customers')),        headers: _headers),  // 4
+        http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')),  headers: _headers),  // 5
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
 
-      // ── Standard plan rates ───────────────────────────────────────
+      // ── 0. Standard plan rates (includes customerPrice) ───────────
       if (responses[0].statusCode == 200 && responses[0].body != 'null') {
         final node = jsonDecode(responses[0].body) as Map<String, dynamic>;
         final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
-        await StandardPlanRateService.box.clear();
-        for (final item in list) {
-          await StandardPlanRateService.box.add(StandardPlanRate(
-            planKey:   item['planKey']?.toString()            ?? '',
-            keyword:   item['keyword']?.toString()            ?? '',
-            yourCost:  (item['yourCost']  as num?)?.toDouble() ?? 0,
-            sortOrder: (item['sortOrder'] as num?)?.toInt()    ?? 99,
-          ));
+        if (list.isNotEmpty) {
+          await StandardPlanRateService.box.clear();
+          for (final item in list) {
+            await StandardPlanRateService.box.add(StandardPlanRate(
+              planKey:       item['planKey']?.toString()              ?? '',
+              keyword:       item['keyword']?.toString()              ?? '',
+              yourCost:      (item['yourCost']      as num?)?.toDouble() ?? 0,
+              customerPrice: (item['customerPrice'] as num?)?.toDouble() ?? 0,
+              sortOrder:     (item['sortOrder']     as num?)?.toInt()    ?? 99,
+            ));
+          }
+          counts['standardPlanRates'] = list.length;
         }
-        counts['standardPlanRates'] = list.length;
       }
 
-      // ── Customer plan codes ───────────────────────────────────────
+      // ── 1. Customer plan codes ────────────────────────────────────
       if (responses[1].statusCode == 200 && responses[1].body != 'null') {
         final node = jsonDecode(responses[1].body) as Map<String, dynamic>;
         final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
@@ -421,7 +417,7 @@ class CloudSyncService {
         counts['customerPlanCodes'] = list.length;
       }
 
-      // ── Serial filter rules ───────────────────────────────────────
+      // ── 2. Serial filter rules ────────────────────────────────────
       if (responses[2].statusCode == 200 && responses[2].body != 'null') {
         final node = jsonDecode(responses[2].body) as Map<String, dynamic>;
         final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
@@ -437,21 +433,24 @@ class CloudSyncService {
         counts['serialFilterRules'] = list.length;
       }
 
-      // ── Imported CSV files ──────────────────────────────────
+      // ── 3. Imported CSV files (non-fatal) ─────────────────────────
       if (responses[3].statusCode == 200 && responses[3].body != 'null') {
         try {
           final node = jsonDecode(responses[3].body) as Map<String, dynamic>;
-          // Restore to local SharedPreferences so the UI shows data immediately
           await CsvPersistService.restoreFromMap(node);
           counts['importedCsvs'] = 1;
         } catch (e) {
           if (kDebugMode) debugPrint('[CloudSync] CSV restore warning: $e');
-          // Non-fatal — settings still restored even if CSV restore fails
         }
       }
 
-
-      // ── QB Customer list restore ─────────────────────────────
+      // ── 4. QB Customer list ───────────────────────────────────────
+      // CRITICAL SAFETY RULE: Only overwrite local customers if Firebase has
+      // a NON-EMPTY list. If the cloud node is empty or null, leave local
+      // Hive data intact — this prevents the list from disappearing when:
+      //   • The cloud node was never populated on this device
+      //   • A race condition left an empty node
+      //   • The node was accidentally cleared
       if (responses[4].statusCode == 200 && responses[4].body != 'null') {
         try {
           final node = jsonDecode(responses[4].body) as Map<String, dynamic>;
@@ -471,13 +470,14 @@ class CloudSyncService {
             }
             counts['qbCustomers'] = list.length;
           }
+          // list.isEmpty → leave local Hive data intact
         } catch (e) {
           if (kDebugMode) debugPrint('[CloudSync] QB customer restore warning: $e');
           // Non-fatal
         }
       }
 
-      // ── QB Ignore Keywords restore ─────────────────────────────
+      // ── 5. QB Ignore Keywords ─────────────────────────────────────
       if (responses[5].statusCode == 200 && responses[5].body != 'null') {
         try {
           final node = jsonDecode(responses[5].body) as Map<String, dynamic>;
@@ -491,6 +491,7 @@ class CloudSyncService {
           // Non-fatal
         }
       }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return {'counts': counts};
@@ -526,9 +527,13 @@ class CloudSyncService {
 
   // ── Silent push (called after every settings save) ────────────────────────
   //
-  // Pushes all three nodes without changing the visible SyncStatus so the UI
+  // Pushes all nodes without changing the visible SyncStatus so the UI
   // dot doesn't flicker on every keystroke. Fire-and-forget — errors are
   // logged to debug output but not surfaced to the user.
+  //
+  // QB CUSTOMERS: Always pushed (even if currently empty on this device) so
+  // Firebase always has the latest state. The pull side is protected — it only
+  // overwrites local data when the cloud list is non-empty.
 
   static Future<void> pushSilent() async {
     if (!_configured) return;
@@ -544,10 +549,11 @@ class CloudSyncService {
           'updatedAt': DateTime.now().toIso8601String(),
           'count': rates.length,
           'data': rates.map((r) => {
-            'planKey':   r.planKey,
-            'keyword':   r.keyword,
-            'yourCost':  r.yourCost,
-            'sortOrder': r.sortOrder,
+            'planKey':       r.planKey,
+            'keyword':       r.keyword,
+            'yourCost':      r.yourCost,
+            'customerPrice': r.customerPrice,
+            'sortOrder':     r.sortOrder,
           }).toList(),
         }),
         _putNode('customer_plan_codes', {
@@ -571,20 +577,21 @@ class CloudSyncService {
             'isSystem':   r.isSystem,
           }).toList(),
         }),
-        if (customers.isNotEmpty)
-          _putNode('qb_customers', {
-            'updatedAt': DateTime.now().toIso8601String(),
-            'count': customers.length,
-            'data': customers.map((c) => {
-              'name':      c.name,
-              'accountNo': c.accountNo,
-              'email':     c.email,
-              'phone':     c.phone,
-              'address':   c.address,
-              'isCua':     c.isCua,
-              'jobType':   c.jobType,
-            }).toList(),
-          }),
+        // Always push qb_customers — never skip even if empty.
+        // The pull side protects against an empty cloud node overwriting local data.
+        _putNode('qb_customers', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': customers.length,
+          'data': customers.map((c) => {
+            'name':      c.name,
+            'accountNo': c.accountNo,
+            'email':     c.email,
+            'phone':     c.phone,
+            'address':   c.address,
+            'isCua':     c.isCua,
+            'jobType':   c.jobType,
+          }).toList(),
+        }),
         _putNode('qb_ignore_keywords', {
           'updatedAt': DateTime.now().toIso8601String(),
           'count': keywords.length,

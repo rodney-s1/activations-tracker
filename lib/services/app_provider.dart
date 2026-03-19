@@ -382,7 +382,13 @@ class AppProvider extends ChangeNotifier {
     // The raw CSV is stored in SharedPreferences as a permanent backup.
     // If the Hive box was cleared (browser clear, new device), re-import from
     // the persisted CSV so CUA flags and customer names are always available.
-    if (_qbCustomers.isEmpty) {
+    // ── Restore QB Customer List if Hive box is empty ─────────────────────
+    // Check the Hive box directly (not the in-memory list) so we don't
+    // accidentally overwrite customers that were just restored from the cloud.
+    // importFromCsv clears the box before importing, so it must ONLY run when
+    // the box is truly empty — not just because _qbCustomers hasn't been
+    // refreshed from Hive yet.
+    if (QbCustomerService.box.isEmpty) {
       try {
         final saved = await CsvPersistService.loadQbCustomerList();
         if (saved != null && saved.content.isNotEmpty) {
@@ -395,6 +401,9 @@ class AppProvider extends ChangeNotifier {
       } catch (_) {
         // Silently ignore — user can re-import manually
       }
+    } else {
+      // Box has data (from cloud pull or previous import) — just refresh the list
+      _qbCustomers = QbCustomerService.getAll();
     }
 
     // ── Restore Activations CSV ────────────────────────────────────────────

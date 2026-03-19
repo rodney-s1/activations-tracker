@@ -18,10 +18,14 @@ class StandardPlanRate extends HiveObject {
   @HiveField(3)
   int sortOrder; // display order in the UI
 
+  @HiveField(4)
+  double customerPrice; // what you charge the customer per device per month
+
   StandardPlanRate({
     required this.planKey,
     required this.keyword,
     required this.yourCost,
     this.sortOrder = 99,
+    this.customerPrice = 0.0,
   });
 }

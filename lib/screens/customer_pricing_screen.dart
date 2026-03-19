@@ -251,6 +251,10 @@ class _StandardPlanRatesTabState extends State<_StandardPlanRatesTab> {
         text: existing != null
             ? existing.yourCost.toStringAsFixed(2)
             : '');
+    final priceCtrl = TextEditingController(
+        text: existing != null
+            ? existing.customerPrice.toStringAsFixed(2)
+            : '');
 
     await showDialog(
       context: context,
@@ -296,6 +300,22 @@ class _StandardPlanRatesTabState extends State<_StandardPlanRatesTab> {
                       'Enter 0.00 if this is an add-on with no fixed Geotab cost',
                 ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: priceCtrl,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(
+                      RegExp(r'^\d*\.?\d{0,5}')),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Customer Price (what you charge them)',
+                  prefixText: r'$ ',
+                  hintText: '0.00',
+                  helperText: 'Standard rate billed to customers — used in Tier 2 pricing',
+                ),
+              ),
             ],
           ),
         ),
@@ -305,23 +325,26 @@ class _StandardPlanRatesTabState extends State<_StandardPlanRatesTab> {
               child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () async {
-              final key  = keyCtrl.text.trim();
-              final kw   = kwCtrl.text.trim().toLowerCase();
-              final cost = double.tryParse(costCtrl.text.trim()) ?? 0.0;
+              final key   = keyCtrl.text.trim();
+              final kw    = kwCtrl.text.trim().toLowerCase();
+              final cost  = double.tryParse(costCtrl.text.trim())  ?? 0.0;
+              final price = double.tryParse(priceCtrl.text.trim()) ?? 0.0;
               if (key.isEmpty || kw.isEmpty) return;
 
               if (isNew) {
                 await provider.addStandardRate(StandardPlanRate(
-                  planKey:  key,
-                  keyword:  kw,
-                  yourCost: cost,
+                  planKey:       key,
+                  keyword:       kw,
+                  yourCost:      cost,
+                  customerPrice: price,
                 ));
               } else {
                 final e = existing;
                 if (e == null) return;
-                e.planKey  = key;
-                e.keyword  = kw;
-                e.yourCost = cost;
+                e.planKey       = key;
+                e.keyword       = kw;
+                e.yourCost      = cost;
+                e.customerPrice = price;
                 await provider.saveStandardRate(e);
               }
               if (context.mounted) Navigator.pop(context);
@@ -426,18 +449,29 @@ class _StandardRateTile extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (rate.yourCost > 0) ...[
-              Text(
-                Formatters.currency(rate.yourCost),
-                style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: AppTheme.green),
+            if (rate.yourCost > 0 || rate.customerPrice > 0) ...[
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (rate.yourCost > 0)
+                    Text(
+                      Formatters.currency(rate.yourCost),
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.green),
+                    ),
+                  if (rate.customerPrice > 0)
+                    Text(
+                      '→ ${Formatters.currency(rate.customerPrice)}',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.teal),
+                    ),
+                ],
               ),
-              const SizedBox(width: 2),
-              const Text('/mo',
-                  style: TextStyle(
-                      fontSize: 11, color: AppTheme.textSecondary)),
             ] else
               const Text('— set cost',
                   style: TextStyle(
