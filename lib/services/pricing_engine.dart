@@ -52,7 +52,12 @@ class PricingEngine {
 
   /// Resolve pricing for a single device record.
   PriceResult resolve(ActivationRecord record) {
-    final customerNameNorm = record.customer.trim().toLowerCase();
+    // Strip everything from the first `{` or `|` in the customer name so that
+    // names like "ACME Corp {12345}" or "ACME Corp | Branch" match the override
+    // rule stored as "ACME Corp".
+    final rawCustomer = record.customer.trim();
+    final cleanCustomer = _stripCustomerSuffix(rawCustomer);
+    final customerNameNorm = cleanCustomer.toLowerCase();
     final ratePlanNorm = record.ratePlan.trim().toLowerCase();
 
     // ── Tier 2: Customer-specific plan codes ─────────────────────
@@ -153,4 +158,19 @@ class PricingEngine {
     }
     return null;
   }
+
+  /// Strip everything from the first `{` or `|` in a customer name.
+  /// "ACME Corp {12345}"  → "ACME Corp"
+  /// "ACME Corp | Branch" → "ACME Corp"
+  static String _stripCustomerSuffix(String name) {
+    final braceIdx = name.indexOf('{');
+    final pipeIdx  = name.indexOf('|');
+    int cutAt = name.length;
+    if (braceIdx >= 0 && braceIdx < cutAt) cutAt = braceIdx;
+    if (pipeIdx  >= 0 && pipeIdx  < cutAt) cutAt = pipeIdx;
+    return name.substring(0, cutAt).trim();
+  }
+
+  /// Public helper so other parts of the app can use the same stripping logic.
+  static String cleanCustomerName(String name) => _stripCustomerSuffix(name);
 }

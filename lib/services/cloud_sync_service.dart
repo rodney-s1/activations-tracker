@@ -7,7 +7,7 @@
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //
-// Data layout (7 nodes synced):
+// Data layout (8 nodes synced):
 //   /activation_tracker/shared/standard_plan_rates.json
 //   /activation_tracker/shared/customer_plan_codes.json
 //   /activation_tracker/shared/rate_plan_overrides.json
@@ -15,6 +15,7 @@
 //   /activation_tracker/shared/imported_csvs.json
 //   /activation_tracker/shared/qb_customers.json
 //   /activation_tracker/shared/qb_ignore_keywords.json
+//   /activation_tracker/shared/item_price_list.json
 //
 // All @bluearrowmail.com users read and write the SAME shared path.
 //
@@ -37,6 +38,7 @@ import '../services/filter_settings_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
+import '../services/item_price_list_service.dart';
 import '../models/qb_customer.dart';
 
 // ── Status enum ──────────────────────────────────────────────────────────────
@@ -339,6 +341,24 @@ class CloudSyncService {
         debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r7');
       }
 
+      // ── 8. Item Price List (non-fatal) ────────────────────────────
+      final priceItems = ItemPriceListService.getAll();
+      if (priceItems.isNotEmpty) {
+        final r8 = await _putNode('item_price_list', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': priceItems.length,
+          'data': priceItems.map((it) => {
+            'item':        it.item,
+            'description': it.description,
+            'cost':        it.cost,
+            'price':       it.price,
+          }).toList(),
+        });
+        if (r8 != null && kDebugMode) {
+          debugPrint('[CloudSync] Item price list warning (non-fatal): $r8');
+        }
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return null;
@@ -376,11 +396,11 @@ class CloudSyncService {
     }
   }
 
-  // ── Pull — 7 parallel GET calls ───────────────────────────────────────────
+  // ── Pull — 8 parallel GET calls ───────────────────────────────────────────
   //
   // Indices: 0=standard_plan_rates  1=customer_plan_codes  2=rate_plan_overrides
   //          3=serial_filter_rules  4=imported_csvs
-  //          5=qb_customers         6=qb_ignore_keywords
+  //          5=qb_customers         6=qb_ignore_keywords  7=item_price_list
 
   static Future<Map<String, dynamic>> pullAll() async {
     if (!_configured) return {'error': 'Firebase not configured'};
@@ -395,6 +415,7 @@ class CloudSyncService {
         http.get(Uri.parse(_nodeUrl('imported_csvs')),       headers: _headers),  // 4
         http.get(Uri.parse(_nodeUrl('qb_customers')),        headers: _headers),  // 5
         http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')),  headers: _headers),  // 6
+        http.get(Uri.parse(_nodeUrl('item_price_list')),     headers: _headers),  // 7
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -525,6 +546,21 @@ class CloudSyncService {
         }
       }
 
+      // ── 7. Item Price List ────────────────────────────────────────
+      if (responses[7].statusCode == 200 && responses[7].body != 'null') {
+        try {
+          final node = jsonDecode(responses[7].body) as Map<String, dynamic>;
+          final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
+          if (list.isNotEmpty) {
+            await ItemPriceListService.restoreFromCloud(list);
+            counts['itemPriceList'] = list.length;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] Item price list restore warning: $e');
+          // Non-fatal
+        }
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return {'counts': counts};
@@ -647,6 +683,21 @@ class CloudSyncService {
           }).toList(),
         }),
       ]);
+
+      // ── Item Price List (non-fatal, only if non-empty) ────────────
+      final priceItems = ItemPriceListService.getAll();
+      if (priceItems.isNotEmpty) {
+        await _putNode('item_price_list', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': priceItems.length,
+          'data': priceItems.map((it) => {
+            'item':        it.item,
+            'description': it.description,
+            'cost':        it.cost,
+            'price':       it.price,
+          }).toList(),
+        });
+      }
 
       await _recordLastSync();
       _setStatus(SyncStatus.success);

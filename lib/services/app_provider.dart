@@ -20,6 +20,7 @@ import '../services/qb_customer_service.dart';
 import '../services/pricing_engine.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/csv_persist_service.dart';
+import '../services/item_price_list_service.dart';
 export '../services/csv_parser_service.dart' show BlankCustomerRecord;
 
 enum AppState { idle, loading, loaded, error }
@@ -444,6 +445,18 @@ class AppProvider extends ChangeNotifier {
       // Silently ignore restore errors — user can re-import manually
     }
     notifyListeners();
+  }
+
+  // ── Item Price List ────────────────────────────────────────────────────────
+
+  List<dynamic> get qbPriceItems => ItemPriceListService.getAll();
+
+  /// Import the QB Item Price List CSV; returns count of items imported.
+  Future<int> importItemPriceList(String csvContent) async {
+    final count = await ItemPriceListService.importFromCsv(csvContent);
+    notifyListeners();
+    CloudSyncService.pushSilent(); // push to cloud immediately
+    return count;
   }
 
   // ── Clear ─────────────────────────────────────────────────────────────────

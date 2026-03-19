@@ -55,6 +55,60 @@ class CustomerGroup {
 
   // ── Invoice Line Generation ─────────────────────────────────────────────────
 
+  /// Returns devices grouped by billing start date, sorted chronologically.
+  Map<DateTime, List<ActivationRecord>> get devicesByBillingDate {
+    final billable = devices.where((d) => d.billingStart != null).toList();
+    final Map<DateTime, List<ActivationRecord>> byDate = {};
+    for (final d in billable) {
+      final key = DateTime(
+          d.billingStart!.year, d.billingStart!.month, d.billingStart!.day);
+      byDate.putIfAbsent(key, () => []).add(d);
+    }
+    return byDate;
+  }
+
+  /// Sorted unique billing dates for this customer.
+  List<DateTime> get sortedBillingDates {
+    final dates = devicesByBillingDate.keys.toList()..sort();
+    return dates;
+  }
+
+  /// Build the invoice line text for a SINGLE billing date.
+  ///
+  /// If [qbItemDescription] is provided it's used as the line header
+  /// instead of the default "New Activations Prorated … for devices:".
+  String buildInvoiceLineForDate(DateTime startDate,
+      {String? qbItemDescription}) {
+    final devicesOnDate = devicesByBillingDate[startDate] ?? [];
+    if (devicesOnDate.isEmpty) return '';
+
+    final lastDay = DateTime(startDate.year, startDate.month + 1, 0).day;
+    final monthFmt = DateFormat('MMMM');
+    final monthName = monthFmt.format(startDate);
+    final endMonthName = monthFmt.format(DateTime(startDate.year, startDate.month, lastDay));
+    final year = startDate.year;
+
+    final buffer = StringBuffer();
+
+    if (qbItemDescription != null && qbItemDescription.isNotEmpty) {
+      // Use QB SKU description format:
+      //  " - <QB Item> Prorated March 3 through March 31 2026 for devices:"
+      buffer.write(
+          ' - $qbItemDescription Prorated $monthName ${startDate.day} through $endMonthName $lastDay $year for devices:');
+    } else {
+      buffer.write(
+          ' - New Activations Prorated $monthName ${startDate.day} through $endMonthName $lastDay $year for devices:');
+    }
+    buffer.write('\n');
+
+    for (final d in devicesOnDate) {
+      buffer.write(d.serialNumber);
+      buffer.write('\n');
+    }
+
+    return buffer.toString().trimRight();
+  }
+
   /// Builds copyable invoice lines grouped by billing start date.
   ///
   /// Format per date group:
@@ -63,55 +117,13 @@ class CustomerGroup {
   ///   "GA2CTAY721SU"
   ///   (blank line between groups)
   String buildInvoiceLines() {
-    // Only include devices that have a billing start date
-    final billable = devices.where((d) => d.billingStart != null).toList();
-    if (billable.isEmpty) return '';
-
-    // Group devices by their billing start date (date only, no time)
-    final Map<DateTime, List<ActivationRecord>> byDate = {};
-    for (final d in billable) {
-      final key = DateTime(
-          d.billingStart!.year, d.billingStart!.month, d.billingStart!.day);
-      byDate.putIfAbsent(key, () => []).add(d);
-    }
-
-    // Sort date groups chronologically
-    final sortedDates = byDate.keys.toList()..sort();
+    final sortedDates = sortedBillingDates;
+    if (sortedDates.isEmpty) return '';
 
     final buffer = StringBuffer();
-    final monthFmt = DateFormat('MMMM'); // e.g. "March"
-
     for (int i = 0; i < sortedDates.length; i++) {
-      final startDate = sortedDates[i];
-      final devicesOnDate = byDate[startDate]!;
-
-      // Last day of the billing month
-      final lastDay =
-          DateTime(startDate.year, startDate.month + 1, 0).day;
-      final endDate =
-          DateTime(startDate.year, startDate.month, lastDay);
-
-      final monthName = monthFmt.format(startDate);
-      final endMonthName = monthFmt.format(endDate);
-      final year = startDate.year;
-
-      // Header line
-      // If start and end are in the same month (always true for proration):
-      // "March 3 through March 31 2026"
-      buffer.write(
-          ' - New Activations Prorated $monthName ${startDate.day} through $endMonthName $lastDay $year for devices:');
-      buffer.write('\n');
-
-      // Serial numbers, one per line
-      for (final d in devicesOnDate) {
-        buffer.write(d.serialNumber);
-        buffer.write('\n');
-      }
-
-      // Blank line between groups (not after the last one)
-      if (i < sortedDates.length - 1) {
-        buffer.write('\n');
-      }
+      buffer.write(buildInvoiceLineForDate(sortedDates[i]));
+      if (i < sortedDates.length - 1) buffer.write('\n\n');
     }
 
     return buffer.toString().trimRight();

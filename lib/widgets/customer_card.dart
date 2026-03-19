@@ -1,7 +1,9 @@
 // Customer card widget — always expanded, with completed checkbox
+// Per-billing-date invoice lines with individual copy buttons
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import '../models/customer_group.dart';
 import '../models/activation_record.dart';
 import '../utils/app_theme.dart';
@@ -10,9 +12,14 @@ import '../utils/formatters.dart';
 class CustomerCard extends StatefulWidget {
   final CustomerGroup group;
 
+  /// Set of billing-start dates (year-month-day) the user has already processed.
+  /// Rows matching these dates will be visually dimmed and skipped in "copy all".
+  final Set<DateTime> processedDates;
+
   const CustomerCard({
     super.key,
     required this.group,
+    this.processedDates = const {},
   });
 
   @override
@@ -21,15 +28,19 @@ class CustomerCard extends StatefulWidget {
 
 class _CustomerCardState extends State<CustomerCard> {
   bool _completed = false;
+  final Set<DateTime> _localProcessed = {};
 
   static const _completedBg   = Color(0xFFECFDF5); // very light green bg
   static const _completedBar  = Color(0xFF16A34A); // solid green accent bar
   static const _completedCard = Color(0xFFDCFCE7); // slightly deeper green for subtotal
 
+  Set<DateTime> get _allProcessed => {...widget.processedDates, ..._localProcessed};
+
   @override
   Widget build(BuildContext context) {
     final g = widget.group;
     final accent = _completed ? _completedBar : AppTheme.navyAccent;
+    final sortedDates = g.sortedBillingDates;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
@@ -239,11 +250,31 @@ class _CustomerCardState extends State<CustomerCard> {
             ),
           ),
 
-          // ── Device rows ───────────────────────────────────────────
-          ...g.devices.map((d) => _DeviceRow(
-                record: d,
+          // ── Per-date groups with copy buttons ─────────────────────
+          if (sortedDates.isEmpty)
+            ...g.devices.map((d) => _DeviceRow(record: d, completed: _completed))
+          else
+            ...sortedDates.map((date) {
+              final devicesOnDate = g.devicesByBillingDate[date] ?? [];
+              final isProcessed = _allProcessed.contains(date);
+              return _DateGroup(
+                date: date,
+                devices: devicesOnDate,
+                group: g,
                 completed: _completed,
-              )),
+                isProcessed: isProcessed,
+                completedBar: _completedBar,
+                onToggleProcessed: () {
+                  setState(() {
+                    if (_localProcessed.contains(date)) {
+                      _localProcessed.remove(date);
+                    } else {
+                      _localProcessed.add(date);
+                    }
+                  });
+                },
+              );
+            }),
 
           // ── Subtotal footer ───────────────────────────────────────
           AnimatedContainer(
@@ -297,7 +328,7 @@ class _CustomerCardState extends State<CustomerCard> {
                   ],
                 ),
 
-                // ── Copy Invoice Lines button ───────────────────────
+                // ── Copy Invoice Lines button (copies all dates) ────
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
@@ -305,6 +336,7 @@ class _CustomerCardState extends State<CustomerCard> {
                     group: g,
                     completed: _completed,
                     completedBar: _completedBar,
+                    skipDates: _allProcessed,
                   ),
                 ),
               ],
@@ -339,17 +371,225 @@ class _CustomerCardState extends State<CustomerCard> {
       );
 }
 
+// ── Per-Date Group with individual copy button ────────────────────────────────
+
+class _DateGroup extends StatefulWidget {
+  final DateTime date;
+  final List<ActivationRecord> devices;
+  final CustomerGroup group;
+  final bool completed;
+  final bool isProcessed;
+  final Color completedBar;
+  final VoidCallback onToggleProcessed;
+
+  const _DateGroup({
+    required this.date,
+    required this.devices,
+    required this.group,
+    required this.completed,
+    required this.isProcessed,
+    required this.completedBar,
+    required this.onToggleProcessed,
+  });
+
+  @override
+  State<_DateGroup> createState() => _DateGroupState();
+}
+
+class _DateGroupState extends State<_DateGroup> {
+  bool _copied = false;
+
+  Future<void> _copyDateLine(BuildContext context) async {
+    final line = widget.group.buildInvoiceLineForDate(widget.date);
+    if (line.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: line));
+    setState(() => _copied = true);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '${_fmtDateLabel(widget.date)} copied to clipboard!'),
+          backgroundColor: AppTheme.teal,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted) setState(() => _copied = false);
+  }
+
+  String _fmtDateLabel(DateTime d) {
+    final fmt = DateFormat('MMM d');
+    return fmt.format(d);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final devicesOnDate = widget.devices;
+    final isProcessed = widget.isProcessed;
+    final dateLabel = _fmtDateLabel(widget.date);
+
+    // Last day of the billing month
+    final lastDay = DateTime(widget.date.year, widget.date.month + 1, 0).day;
+    final monthFmt = DateFormat('MMMM');
+    final monthName = monthFmt.format(widget.date);
+    final endMonthName =
+        monthFmt.format(DateTime(widget.date.year, widget.date.month, lastDay));
+    final year = widget.date.year;
+
+    final dateRangeLabel =
+        '$monthName ${widget.date.day} – $endMonthName $lastDay $year';
+
+    final dotColor = widget.completed
+        ? widget.completedBar
+        : (isProcessed ? const Color(0xFF94A3B8) : AppTheme.teal);
+
+    return Opacity(
+      opacity: isProcessed ? 0.5 : 1.0,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Date header row with copy button ────────────────────────
+          Divider(
+            height: 1,
+            color: widget.completed
+                ? widget.completedBar.withValues(alpha: 0.2)
+                : AppTheme.divider,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
+            child: Row(
+              children: [
+                Icon(
+                  isProcessed ? Icons.check_circle : Icons.calendar_today,
+                  size: 13,
+                  color: isProcessed
+                      ? const Color(0xFF16A34A)
+                      : AppTheme.navyAccent,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    dateRangeLabel,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: isProcessed
+                          ? const Color(0xFF94A3B8)
+                          : AppTheme.navyAccent,
+                      decoration: isProcessed ? TextDecoration.lineThrough : null,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Mark processed toggle
+                Tooltip(
+                  message: isProcessed ? 'Unmark processed' : 'Mark as processed',
+                  child: InkWell(
+                    onTap: widget.onToggleProcessed,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 3),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isProcessed
+                                ? Icons.undo_rounded
+                                : Icons.done_all_rounded,
+                            size: 13,
+                            color: isProcessed
+                                ? const Color(0xFF94A3B8)
+                                : const Color(0xFF16A34A),
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            isProcessed ? 'Undo' : 'Done',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: isProcessed
+                                  ? const Color(0xFF94A3B8)
+                                  : const Color(0xFF16A34A),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // Per-date copy button
+                Tooltip(
+                  message: 'Copy "$dateLabel" invoice line',
+                  child: InkWell(
+                    onTap: () => _copyDateLine(context),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _copied
+                            ? const Color(0xFF16A34A)
+                            : AppTheme.navyAccent.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _copied ? Icons.check : Icons.content_copy,
+                            size: 12,
+                            color: _copied
+                                ? Colors.white
+                                : AppTheme.navyAccent,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _copied ? 'Copied!' : 'Copy',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: _copied
+                                  ? Colors.white
+                                  : AppTheme.navyAccent,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // ── Device rows for this date ──────────────────────────────
+          ...devicesOnDate.map((d) => _DeviceRow(
+                record: d,
+                completed: widget.completed || isProcessed,
+                accentDotColor: dotColor,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Copy Invoice Lines Button ─────────────────────────────────────────────────
 
 class _CopyInvoiceLinesButton extends StatefulWidget {
   final CustomerGroup group;
   final bool completed;
   final Color completedBar;
+  final Set<DateTime> skipDates;
 
   const _CopyInvoiceLinesButton({
     required this.group,
     required this.completed,
     required this.completedBar,
+    this.skipDates = const {},
   });
 
   @override
@@ -360,19 +600,41 @@ class _CopyInvoiceLinesButton extends StatefulWidget {
 class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
   bool _copied = false;
 
+  /// Build invoice lines, optionally skipping already-processed dates.
+  String _buildLines({bool skipProcessed = false}) {
+    final sortedDates = widget.group.sortedBillingDates;
+    final buffer = StringBuffer();
+    int written = 0;
+    for (final date in sortedDates) {
+      if (skipProcessed && widget.skipDates.contains(date)) continue;
+      final line = widget.group.buildInvoiceLineForDate(date);
+      if (line.isEmpty) continue;
+      if (written > 0) buffer.write('\n\n');
+      buffer.write(line);
+      written++;
+    }
+    return buffer.toString().trimRight();
+  }
+
   Future<void> _copyLines(BuildContext context) async {
-    final lines = widget.group.buildInvoiceLines();
+    // Skip already-processed dates when copying
+    final lines = _buildLines(skipProcessed: widget.skipDates.isNotEmpty);
     if (lines.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No billable devices with billing dates found.'),
-          backgroundColor: Color(0xFFB45309),
-        ),
-      );
-      return;
+      // Try without skip filter
+      final allLines = _buildLines(skipProcessed: false);
+      if (allLines.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No billable devices with billing dates found.'),
+            backgroundColor: Color(0xFFB45309),
+          ),
+        );
+        return;
+      }
     }
 
-    await Clipboard.setData(ClipboardData(text: lines));
+    final toCopy = lines.isEmpty ? _buildLines(skipProcessed: false) : lines;
+    await Clipboard.setData(ClipboardData(text: toCopy));
     setState(() => _copied = true);
 
     if (context.mounted) {
@@ -385,13 +647,12 @@ class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
       );
     }
 
-    // Reset the "Copied!" state after 3 seconds
     await Future.delayed(const Duration(seconds: 3));
     if (mounted) setState(() => _copied = false);
   }
 
   void _previewLines(BuildContext context) {
-    final lines = widget.group.buildInvoiceLines();
+    final lines = _buildLines(skipProcessed: false);
     if (lines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No billable devices with billing dates found.')),
@@ -512,7 +773,7 @@ class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
               size: 14,
             ),
             label: Text(
-              _copied ? 'Copied!' : 'Copy Invoice Lines',
+              _copied ? 'Copied!' : 'Copy All Invoice Lines',
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
             style: ElevatedButton.styleFrom(
@@ -539,8 +800,13 @@ class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
 class _DeviceRow extends StatelessWidget {
   final ActivationRecord record;
   final bool completed;
+  final Color? accentDotColor;
 
-  const _DeviceRow({required this.record, required this.completed});
+  const _DeviceRow({
+    required this.record,
+    required this.completed,
+    this.accentDotColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -551,7 +817,8 @@ class _DeviceRow extends StatelessWidget {
         ? daysInMonth - record.billingStart!.day + 1
         : 0;
 
-    final dotColor = completed ? const Color(0xFF16A34A) : AppTheme.teal;
+    final dotColor = accentDotColor ??
+        (completed ? const Color(0xFF16A34A) : AppTheme.teal);
     final costColor = completed ? const Color(0xFF16A34A) : AppTheme.green;
 
     return Column(

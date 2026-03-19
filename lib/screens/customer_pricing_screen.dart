@@ -5,6 +5,7 @@
 //   3. Rate Plan Overrides  — per-customer, per-plan cost+price overrides
 
 import 'dart:io';
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,6 +14,8 @@ import 'package:provider/provider.dart';
 import '../models/standard_plan_rate.dart';
 import '../models/customer_plan_code.dart';
 import '../models/customer_rate_plan_override.dart';
+import '../models/qb_item.dart';
+import '../services/item_price_list_service.dart';
 import '../services/app_provider.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -1268,6 +1271,79 @@ class _RatePlanOverridesTab extends StatefulWidget {
 
 class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
   String _search = '';
+  bool _importingPriceList = false;
+
+  // ── Import Item Price List CSV ─────────────────────────────────────────────
+  Future<void> _importItemPriceList(BuildContext context, AppProvider provider) async {
+    setState(() => _importingPriceList = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'txt'],
+        allowMultiple: false,
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        setState(() => _importingPriceList = false);
+        return;
+      }
+
+      final file = result.files.first;
+      String content;
+      if (file.bytes != null) {
+        try {
+          content = const Utf8Decoder(allowMalformed: false).convert(file.bytes!);
+        } catch (_) {
+          content = String.fromCharCodes(file.bytes!);
+        }
+      } else if (file.path != null) {
+        content = await File(file.path!).readAsString();
+      } else {
+        setState(() => _importingPriceList = false);
+        return;
+      }
+
+      final count = await provider.importItemPriceList(content);
+      setState(() => _importingPriceList = false);
+
+      if (context.mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.price_check, color: AppTheme.teal, size: 20),
+                SizedBox(width: 8),
+                Text('Item Price List Imported'),
+              ],
+            ),
+            content: Text(
+              '$count QB items imported and saved to cloud.\n\n'
+              'Use the "QB Item" picker in the Override dialog to auto-fill Cost & Price.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _importingPriceList = false);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Import failed: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1307,6 +1383,58 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                       fontSize: 11, color: AppTheme.navyAccent),
                 ),
               ),
+            ],
+          ),
+        ),
+
+        // ── Item Price List import row ────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Row(
+            children: [
+              Builder(
+                builder: (ctx) {
+                  final itemCount = ItemPriceListService.getAll().length;
+                  return Expanded(
+                    child: Text(
+                      itemCount > 0
+                          ? 'QB Item Price List: $itemCount items loaded'
+                          : 'No QB Item Price List imported yet',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: itemCount > 0
+                            ? AppTheme.teal
+                            : AppTheme.textSecondary,
+                        fontWeight: itemCount > 0
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
+              _importingPriceList
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: () => _importItemPriceList(context, provider),
+                      icon: const Icon(Icons.upload_file, size: 14),
+                      label: const Text('Import Price List',
+                          style: TextStyle(fontSize: 11)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.navyAccent,
+                        side: BorderSide(
+                            color: AppTheme.navyAccent.withValues(alpha: 0.4)),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        minimumSize: Size.zero,
+                      ),
+                    ),
             ],
           ),
         ),
@@ -1429,149 +1557,390 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
     final notesCtrl =
         TextEditingController(text: existing?.notes ?? '');
 
+    // QB item picker state (inside StatefulBuilder)
+    String qbItemQuery = '';
+    QbItem? selectedQbItem;
+
     // Build QB customer suggestion list
     final qbNames = provider.qbCustomers.map((c) => c.name).toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
     await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(isNew ? 'Add Override' : 'Edit Override'),
-        content: SizedBox(
-          width: 360,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setDialogState) {
+          final qbSuggestions = ItemPriceListService.search(qbItemQuery, limit: 6);
+
+          return AlertDialog(
+            title: Row(
               children: [
-                // Customer name with autocomplete
-                Autocomplete<String>(
-                  optionsBuilder: (tv) {
-                    if (tv.text.isEmpty) return const [];
-                    final q = tv.text.toLowerCase();
-                    return qbNames
-                        .where((n) => n.toLowerCase().contains(q))
-                        .take(6);
-                  },
-                  onSelected: (v) => customerCtrl.text = v,
-                  fieldViewBuilder:
-                      (ctx2, fCtrl, fNode, onSub) => TextField(
-                    controller: fCtrl,
-                    focusNode: fNode,
-                    onChanged: (v) => customerCtrl.text = v,
-                    decoration: const InputDecoration(
-                      labelText: 'Customer Name *',
-                      hintText: 'Must match CSV exactly',
-                      helperText: 'Suggestions from QB customer list',
-                      isDense: true,
-                    ),
-                  ),
-                  initialValue: TextEditingValue(
-                      text: existing?.customerName ?? ''),
-                ),
-                const SizedBox(height: 12),
-                // Rate plan
-                TextField(
-                  controller: planCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Rate Plan Keyword *',
-                    hintText: 'e.g. ProPlus Install Bundle Plan [1250]',
-                    helperText:
-                        'Case-insensitive substring of the Rate Plan column',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Your cost
-                TextField(
-                  controller: costCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d*\.?\d{0,5}')),
-                  ],
-                  decoration: const InputDecoration(
-                    labelText: 'Your Cost (what Geotab charges you)',
-                    prefixText: r'$ ',
-                    hintText: '0.00  (blank = use Standard Plans)',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Customer price
-                TextField(
-                  controller: priceCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d*\.?\d{0,5}')),
-                  ],
-                  decoration: const InputDecoration(
-                    labelText: 'Customer Price *',
-                    prefixText: r'$ ',
-                    hintText: '0.00',
-                    helperText: 'What you bill this customer per device/month',
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Notes
-                TextField(
-                  controller: notesCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Notes (optional)',
-                    hintText: 'e.g. special contract rate',
-                    isDense: true,
-                  ),
-                ),
+                const Icon(Icons.tune, size: 18, color: AppTheme.amber),
+                const SizedBox(width: 8),
+                Text(isNew ? 'Add Override' : 'Edit Override'),
               ],
             ),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              final name  = customerCtrl.text.trim();
-              final plan  = planCtrl.text.trim();
-              final cost  = double.tryParse(costCtrl.text.trim())  ?? 0.0;
-              final price = double.tryParse(priceCtrl.text.trim()) ?? 0.0;
-              if (name.isEmpty || plan.isEmpty) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(
-                      content: Text(
-                          'Customer name and Rate Plan Keyword are required.')),
-                );
-                return;
-              }
-              final o = CustomerRatePlanOverride(
-                customerName:  name,
-                ratePlan:      plan,
-                yourCost:      cost,
-                customerPrice: price,
-                notes:         notesCtrl.text.trim(),
-              );
-              await provider.saveRatePlanOverride(o);
-              if (ctx.mounted) Navigator.pop(ctx);
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(isNew
-                        ? 'Override added for $name'
-                        : 'Override updated for $name'),
-                    backgroundColor: AppTheme.teal,
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
-              }
-            },
-            child: Text(isNew ? 'Add' : 'Save'),
-          ),
-        ],
+            content: SizedBox(
+              width: 380,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── QB Item Picker (Option A) ─────────────────────────────
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppTheme.teal.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: AppTheme.teal.withValues(alpha: 0.2)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.search, size: 14,
+                                  color: AppTheme.teal),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'QB Item Picker (auto-fill Cost & Price)',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.teal,
+                                ),
+                              ),
+                              const Spacer(),
+                              if (ItemPriceListService.getAll().isEmpty)
+                                const Text(
+                                  '← Import Price List first',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: AppTheme.textSecondary,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          TextField(
+                            decoration: InputDecoration(
+                              isDense: true,
+                              hintText: 'Search QB items, e.g. "ProPlus", "GO Plan"…',
+                              hintStyle: const TextStyle(fontSize: 12),
+                              border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(6)),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 7, horizontal: 10),
+                              suffixIcon: qbItemQuery.isNotEmpty
+                                  ? IconButton(
+                                      icon: const Icon(Icons.clear, size: 14),
+                                      onPressed: () => setDialogState(
+                                          () => qbItemQuery = ''),
+                                    )
+                                  : null,
+                            ),
+                            onChanged: (v) =>
+                                setDialogState(() => qbItemQuery = v),
+                          ),
+                          if (qbSuggestions.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            ...qbSuggestions.map((item) {
+                              final isSelected = selectedQbItem == item;
+                              return InkWell(
+                                onTap: () {
+                                  setDialogState(() {
+                                    selectedQbItem = item;
+                                    qbItemQuery = item.item;
+                                  });
+                                  costCtrl.text = item.cost.toStringAsFixed(2);
+                                  priceCtrl.text = item.price.toStringAsFixed(2);
+                                },
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 3),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 7),
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? AppTheme.teal.withValues(alpha: 0.12)
+                                        : Colors.white,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: isSelected
+                                          ? AppTheme.teal
+                                          : AppTheme.divider,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              item.item,
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w600,
+                                                color: isSelected
+                                                    ? AppTheme.teal
+                                                    : AppTheme.textPrimary,
+                                              ),
+                                            ),
+                                            if (item.description.isNotEmpty)
+                                              Text(
+                                                item.description,
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  color: AppTheme.textSecondary,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            '\$${item.cost.toStringAsFixed(2)}',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppTheme.green,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          Text(
+                                            '\$${item.price.toStringAsFixed(2)}',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppTheme.teal,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ] else if (qbItemQuery.isNotEmpty &&
+                              ItemPriceListService.getAll().isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'No QB items match "$qbItemQuery"',
+                              style: const TextStyle(
+                                  fontSize: 10,
+                                  color: AppTheme.textSecondary,
+                                  fontStyle: FontStyle.italic),
+                            ),
+                          ],
+                          // Option C: manual copy button for selected item
+                          if (selectedQbItem != null) ...[
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Selected: ${selectedQbItem!.item}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.teal,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                GestureDetector(
+                                  onTap: () async {
+                                    await Clipboard.setData(
+                                      ClipboardData(
+                                          text: selectedQbItem!.item),
+                                    );
+                                    if (ctx2.mounted) {
+                                      ScaffoldMessenger.of(ctx2).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('QB item name copied!'),
+                                          backgroundColor: AppTheme.teal,
+                                          duration: Duration(seconds: 1),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.teal.withValues(
+                                          alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.content_copy,
+                                            size: 12, color: AppTheme.teal),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Copy Item Name',
+                                          style: TextStyle(
+                                              fontSize: 10,
+                                              color: AppTheme.teal,
+                                              fontWeight: FontWeight.w600),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // ── Customer name with autocomplete ───────────────────────
+                    Autocomplete<String>(
+                      optionsBuilder: (tv) {
+                        if (tv.text.isEmpty) return const [];
+                        final q = tv.text.toLowerCase();
+                        return qbNames
+                            .where((n) => n.toLowerCase().contains(q))
+                            .take(6);
+                      },
+                      onSelected: (v) => customerCtrl.text = v,
+                      fieldViewBuilder:
+                          (ctx2, fCtrl, fNode, onSub) => TextField(
+                        controller: fCtrl,
+                        focusNode: fNode,
+                        onChanged: (v) => customerCtrl.text = v,
+                        decoration: const InputDecoration(
+                          labelText: 'Customer Name *',
+                          hintText: 'Must match CSV exactly',
+                          helperText: 'Suggestions from QB customer list',
+                          isDense: true,
+                        ),
+                      ),
+                      initialValue: TextEditingValue(
+                          text: existing?.customerName ?? ''),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Rate plan keyword ─────────────────────────────────────
+                    TextField(
+                      controller: planCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Rate Plan Keyword *',
+                        hintText: 'e.g. ProPlus Install Bundle Plan [1250]',
+                        helperText:
+                            'Case-insensitive substring of the Rate Plan column',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Your cost ─────────────────────────────────────────────
+                    TextField(
+                      controller: costCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'^\d*\.?\d{0,5}')),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Your Cost (what Geotab charges you)',
+                        prefixText: r'$ ',
+                        hintText: '0.00  (blank = use Standard Plans)',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Customer price ────────────────────────────────────────
+                    TextField(
+                      controller: priceCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'^\d*\.?\d{0,5}')),
+                      ],
+                      decoration: const InputDecoration(
+                        labelText: 'Customer Price *',
+                        prefixText: r'$ ',
+                        hintText: '0.00',
+                        helperText: 'What you bill this customer per device/month',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Notes ─────────────────────────────────────────────────
+                    TextField(
+                      controller: notesCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Notes (optional)',
+                        hintText: 'e.g. special contract rate',
+                        isDense: true,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () async {
+                  final name  = customerCtrl.text.trim();
+                  final plan  = planCtrl.text.trim();
+                  final cost  = double.tryParse(costCtrl.text.trim())  ?? 0.0;
+                  final price = double.tryParse(priceCtrl.text.trim()) ?? 0.0;
+                  if (name.isEmpty || plan.isEmpty) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(
+                          content: Text(
+                              'Customer name and Rate Plan Keyword are required.')),
+                    );
+                    return;
+                  }
+                  final o = CustomerRatePlanOverride(
+                    customerName:  name,
+                    ratePlan:      plan,
+                    yourCost:      cost,
+                    customerPrice: price,
+                    notes:         notesCtrl.text.trim(),
+                  );
+                  await provider.saveRatePlanOverride(o);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(isNew
+                            ? 'Override added for $name'
+                            : 'Override updated for $name'),
+                        backgroundColor: AppTheme.teal,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                child: Text(isNew ? 'Add' : 'Save'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

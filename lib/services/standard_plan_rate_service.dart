@@ -9,11 +9,12 @@ class StandardPlanRateService {
   static final _defaults = [
     // ── Core Geotab plans ────────────────────────────────────────────────────
     StandardPlanRate(planKey: 'GO',              keyword: 'go',              yourCost: 12.60, customerPrice: 18.80, sortOrder:  0),
-    StandardPlanRate(planKey: 'ProPlus',         keyword: 'proplus',         yourCost: 19.00, customerPrice: 27.95, sortOrder:  1),
-    StandardPlanRate(planKey: 'Pro',             keyword: 'pro',             yourCost: 16.00, customerPrice: 24.95, sortOrder:  2),
-    StandardPlanRate(planKey: 'Regulatory',      keyword: 'regulatory',      yourCost: 11.50, customerPrice:  0.00, sortOrder:  3),
-    StandardPlanRate(planKey: 'Base',            keyword: 'base',            yourCost:  7.00, customerPrice:  0.00, sortOrder:  4),
-    StandardPlanRate(planKey: 'Suspend',         keyword: 'suspend',         yourCost:  5.75, customerPrice: 10.00, sortOrder:  5),
+    StandardPlanRate(planKey: 'GO Bundle',       keyword: 'go bundle',       yourCost: 14.60, customerPrice: 21.80, sortOrder:  1),
+    StandardPlanRate(planKey: 'ProPlus',         keyword: 'proplus',         yourCost: 19.00, customerPrice: 27.95, sortOrder:  2),
+    StandardPlanRate(planKey: 'Pro',             keyword: 'pro',             yourCost: 16.00, customerPrice: 24.95, sortOrder:  3),
+    StandardPlanRate(planKey: 'Regulatory',      keyword: 'regulatory',      yourCost: 11.50, customerPrice:  0.00, sortOrder:  4),
+    StandardPlanRate(planKey: 'Base',            keyword: 'base',            yourCost:  7.00, customerPrice:  0.00, sortOrder:  5),
+    StandardPlanRate(planKey: 'Suspend',         keyword: 'suspend',         yourCost:  5.75, customerPrice: 10.00, sortOrder:  6),
     // ── OEM integrations ─────────────────────────────────────────────────────
     StandardPlanRate(planKey: 'Ford OEM',        keyword: 'ford',            yourCost:  0.00, customerPrice:  0.00, sortOrder: 10),
     StandardPlanRate(planKey: 'GM OEM',          keyword: 'geotab gm',       yourCost:  0.00, customerPrice:  0.00, sortOrder: 11),
