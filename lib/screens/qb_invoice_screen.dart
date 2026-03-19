@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
@@ -617,6 +618,18 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     });
     // Restore previously imported CSVs so data survives page refresh / reopen
     WidgetsBinding.instance.addPostFrameCallback((_) => _restorePersistedCsvs());
+    // Re-run restore after any cloud pull completes so MyAdmin + QB CSVs
+    // are refreshed even if the pull happened after initState fired.
+    CloudSyncService.statusNotifier.addListener(_onSyncStatusChanged);
+  }
+
+  // Re-load CSVs from SharedPreferences whenever a cloud pull finishes.
+  // This ensures MyAdmin + QB data is current after a sync.
+  void _onSyncStatusChanged() {
+    if (CloudSyncService.status == SyncStatus.success ||
+        CloudSyncService.status == SyncStatus.idle) {
+      _restorePersistedCsvs();
+    }
   }
 
   // ── Restore persisted CSV data on startup ──────────────────────────────────
@@ -654,6 +667,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   @override
   void dispose() {
+    CloudSyncService.statusNotifier.removeListener(_onSyncStatusChanged);
     _tabCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
@@ -717,7 +731,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       });
 
       // Persist so the data survives page refresh / app reopen
-      CsvPersistService.saveMyAdmin(
+      await CsvPersistService.saveMyAdmin(
         content:    content,
         fileName:   file.name,
         reportDate: reportDate,
@@ -789,7 +803,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       });
 
       // Persist so the data survives page refresh / app reopen
-      CsvPersistService.saveQb(
+      await CsvPersistService.saveQb(
         content:  content,
         fileName: file.name,
       );
