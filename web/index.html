@@ -1,45 +1,19 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
-
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="Activation Tracker – Blue Arrow GPS">
-
-  <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="Activation Tracker">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
-  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
-
   <title>Activation Tracker</title>
   <link rel="manifest" href="manifest.json">
 
-  <!--
-    Google Sign-In: OAuth 2.0 Client ID meta tag (used by google_sign_in Flutter plugin).
-    AND the Google Identity Services script must be loaded for the web popup to work.
-  -->
-  <meta name="google-signin-client_id"
-        content="127481200033-mc2lspmv21bqii6eaarfop3n2ci5ueil.apps.googleusercontent.com">
-
-  <!-- Google Identity Services library — required for google_sign_in on web -->
+  <!-- Google Identity Services — required for Sign in with Google -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>

@@ -1,7 +1,5 @@
-// Login Screen
-// Shown when the user is not authenticated.
-// Presents a clean Blue Arrow branded sign-in page with a Google Sign-In button.
-// Only @bluearrowmail.com accounts are accepted — any other account shows an error.
+// Login Screen — uses Google Identity Services prompt() directly via JS interop.
+// No HtmlElementView needed — the GIS One Tap / popup is triggered programmatically.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -39,7 +37,8 @@ class _LoginCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.navyMid,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.teal.withValues(alpha: 0.3), width: 1),
+        border:
+            Border.all(color: AppTheme.teal.withValues(alpha: 0.3), width: 1),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.4),
@@ -53,7 +52,7 @@ class _LoginCard extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ── Logo / icon ───────────────────────────────────────────
+            // ── Logo ──────────────────────────────────────────────────
             Container(
               width: 72,
               height: 72,
@@ -104,11 +103,13 @@ class _LoginCard extends StatelessWidget {
             if (auth.errorMessage.isNotEmpty) ...[
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
                   color: AppTheme.red.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppTheme.red.withValues(alpha: 0.4)),
+                  border: Border.all(
+                      color: AppTheme.red.withValues(alpha: 0.4)),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -180,7 +181,7 @@ class _LoginCard extends StatelessWidget {
   }
 }
 
-// ── Google Sign-In button widget ──────────────────────────────────────────────
+// ── Google Sign-In button ─────────────────────────────────────────────────────
 
 class _GoogleSignInButton extends StatefulWidget {
   final VoidCallback onPressed;
@@ -196,15 +197,17 @@ class _GoogleSignInButtonState extends State<_GoogleSignInButton> {
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
-      onEnter:  (_) => setState(() => _hovering = true),
-      onExit:   (_) => setState(() => _hovering = false),
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit:  (_) => setState(() => _hovering = false),
       child: GestureDetector(
         onTap: widget.onPressed,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
           decoration: BoxDecoration(
-            color: _hovering ? Colors.white : Colors.white.withValues(alpha: 0.93),
+            color: _hovering
+                ? Colors.white
+                : Colors.white.withValues(alpha: 0.93),
             borderRadius: BorderRadius.circular(10),
             boxShadow: _hovering
                 ? [
@@ -219,7 +222,6 @@ class _GoogleSignInButtonState extends State<_GoogleSignInButton> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Google "G" logo
               _GoogleLogo(size: 20),
               const SizedBox(width: 12),
               const Text(
@@ -239,7 +241,6 @@ class _GoogleSignInButtonState extends State<_GoogleSignInButton> {
   }
 }
 
-/// Hand-drawn Google "G" logo using a CustomPainter — no image asset needed.
 class _GoogleLogo extends StatelessWidget {
   final double size;
   const _GoogleLogo({this.size = 24});
@@ -257,40 +258,37 @@ class _GoogleLogo extends StatelessWidget {
 class _GoogleLogoPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final cx = size.width  / 2;
+    final cx = size.width / 2;
     final cy = size.height / 2;
-    final r  = size.width  / 2;
+    final r  = size.width / 2;
 
-    // Blue segment (top-right)
     canvas.drawArc(
-      Rect.fromCircle(center: Offset(cx, cy), radius: r),
-      -1.05, 1.57, false,
-      Paint()..color = const Color(0xFF4285F4)..style = PaintingStyle.stroke..strokeWidth = size.width * 0.22,
-    );
-    // Red segment (top-left)
+        Rect.fromCircle(center: Offset(cx, cy), radius: r), -1.05, 1.57, false,
+        Paint()
+          ..color = const Color(0xFF4285F4)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = size.width * 0.22);
     canvas.drawArc(
-      Rect.fromCircle(center: Offset(cx, cy), radius: r),
-      -2.62, 1.57, false,
-      Paint()..color = const Color(0xFFEA4335)..style = PaintingStyle.stroke..strokeWidth = size.width * 0.22,
-    );
-    // Yellow segment (bottom-left)
+        Rect.fromCircle(center: Offset(cx, cy), radius: r), -2.62, 1.57, false,
+        Paint()
+          ..color = const Color(0xFFEA4335)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = size.width * 0.22);
     canvas.drawArc(
-      Rect.fromCircle(center: Offset(cx, cy), radius: r),
-      2.09, 1.05, false,
-      Paint()..color = const Color(0xFFFBBC05)..style = PaintingStyle.stroke..strokeWidth = size.width * 0.22,
-    );
-    // Green segment (bottom-right)
+        Rect.fromCircle(center: Offset(cx, cy), radius: r), 2.09, 1.05, false,
+        Paint()
+          ..color = const Color(0xFFFBBC05)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = size.width * 0.22);
     canvas.drawArc(
-      Rect.fromCircle(center: Offset(cx, cy), radius: r),
-      3.14, 1.05, false,
-      Paint()..color = const Color(0xFF34A853)..style = PaintingStyle.stroke..strokeWidth = size.width * 0.22,
-    );
-
-    // Horizontal bar of the G
+        Rect.fromCircle(center: Offset(cx, cy), radius: r), 3.14, 1.05, false,
+        Paint()
+          ..color = const Color(0xFF34A853)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = size.width * 0.22);
     canvas.drawRect(
-      Rect.fromLTWH(cx, cy - size.height * 0.11, r * 0.85, size.height * 0.22),
-      Paint()..color = const Color(0xFF4285F4),
-    );
+        Rect.fromLTWH(cx, cy - size.height * 0.11, r * 0.85, size.height * 0.22),
+        Paint()..color = const Color(0xFF4285F4));
   }
 
   @override

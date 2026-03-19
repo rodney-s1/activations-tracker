@@ -1,27 +1,49 @@
 // Authentication Service
-// Handles Google Sign-In with @bluearrowmail.com domain restriction.
-// Uses the google_sign_in package (wraps Google Identity Services on web).
+// Uses Google Identity Services (GIS) JavaScript API directly via dart:js_interop.
+// No Flutter plugin needed — works natively on Flutter Web.
 //
 // Domain enforcement:
-//   • Only accounts ending in @bluearrowmail.com are permitted.
-//   • Any other Google account is signed out immediately with a clear error.
+//   • Only @bluearrowmail.com accounts are permitted.
+//   • Any other Google account is rejected with a clear error message.
 //
-// The signed-in user's email is used as the Cloud Sync userId so each
-// employee's data is stored under their own path in Firebase RTDB.
+// Flow:
+//   1. GIS renders a "Sign in with Google" button (or triggers One Tap prompt).
+//   2. On success, Google returns a JWT credential (id_token).
+//   3. We decode the JWT payload to extract email, name, picture.
+//   4. Domain check: reject non-@bluearrowmail.com accounts immediately.
+//   5. Store user in memory + cache email in SharedPreferences for UX continuity.
 
+import 'dart:convert';
+import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const String kAllowedDomain = 'bluearrowmail.com';
+const String kAllowedDomain   = 'bluearrowmail.com';
+const String kGoogleClientId  =
+    '127481200033-mc2lspmv21bqii6eaarfop3n2ci5ueil.apps.googleusercontent.com';
 
-// SharedPreferences key — persists the last signed-in email so the app can
-// show the user's name on subsequent launches before the token is refreshed.
 const String _kCachedEmail       = 'auth_cached_email';
 const String _kCachedDisplayName = 'auth_cached_display_name';
 const String _kCachedPhotoUrl    = 'auth_cached_photo_url';
+
+// ── JS interop declarations ───────────────────────────────────────────────────
+
+@JS('google.accounts.id.initialize')
+external void _gisInitialize(JSObject config);
+
+@JS('google.accounts.id.prompt')
+external void _gisPrompt([JSFunction? momentListener]);
+
+@JS('google.accounts.id.renderButton')
+external void _gisRenderButton(JSObject element, JSObject options);
+
+@JS('google.accounts.id.disableAutoSelect')
+external void _gisDisableAutoSelect();
+
+@JS('document.getElementById')
+external JSObject? _getElementById(String id);
 
 // ── AuthUser value object ─────────────────────────────────────────────────────
 
@@ -29,7 +51,7 @@ class AuthUser {
   final String email;
   final String displayName;
   final String photoUrl;
-  final String idToken; // Google ID token — used as Firebase RTDB auth token
+  final String idToken;
 
   const AuthUser({
     required this.email,
@@ -38,57 +60,50 @@ class AuthUser {
     required this.idToken,
   });
 
-  /// The sanitised email prefix used as the Cloud Sync userId.
-  /// e.g. "john.smith@bluearrowmail.com" → "john.smith_bluearrowmail.com"
+  /// Sanitised email used as Cloud Sync userId path.
+  /// e.g. "john@bluearrowmail.com" → "john_bluearrowmail.com"
   String get syncUserId =>
-      email.toLowerCase().replaceAll('@', '_').replaceAll(RegExp(r'[^a-z0-9._-]'), '_');
+      email.toLowerCase()
+          .replaceAll('@', '_')
+          .replaceAll(RegExp(r'[^a-z0-9._-]'), '_');
 
-  bool get isBlueArrow =>
-      email.toLowerCase().endsWith('@$kAllowedDomain');
+  bool get isBlueArrow => email.toLowerCase().endsWith('@$kAllowedDomain');
 }
 
 // ── AuthService ───────────────────────────────────────────────────────────────
 
 class AuthService extends ChangeNotifier {
-  // ── Singleton ──────────────────────────────────────────────────────────────
+  // Singleton
   static final AuthService instance = AuthService._();
   AuthService._();
 
-  // ── Google Sign-In instance ───────────────────────────────────────────────
-  // clientId must be passed explicitly for google_sign_in 6.x on web.
-  // hostedDomain restricts the account picker to @bluearrowmail.com accounts.
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    clientId: '127481200033-mc2lspmv21bqii6eaarfop3n2ci5ueil.apps.googleusercontent.com',
-    scopes: ['email', 'profile', 'openid'],
-    hostedDomain: kAllowedDomain,
-  );
-
-  // ── State ─────────────────────────────────────────────────────────────────
   AuthUser? _currentUser;
-  bool      _isLoading  = false;
-  String    _errorMsg   = '';
+  bool      _isLoading = false;
+  String    _errorMsg  = '';
 
   AuthUser? get currentUser  => _currentUser;
   bool      get isSignedIn   => _currentUser != null;
   bool      get isLoading    => _isLoading;
   String    get errorMessage => _errorMsg;
 
-  // ── Initialise ────────────────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────────────
 
-  /// Call once in main() — attempts silent sign-in to restore session.
   Future<void> init() async {
     _isLoading = true;
     notifyListeners();
 
+    // Initialise GIS with our callback — called automatically on One Tap or
+    // after renderButton click.
     try {
-      // Try to restore a previous session silently (no UI popup).
-      final account = await _googleSignIn.signInSilently();
-      if (account != null) {
-        await _handleAccount(account, silent: true);
-      }
+      _gisInitialize({
+        'client_id': kGoogleClientId,
+        'callback': _handleCredentialResponse.toJS,
+        'auto_select': false,
+        'cancel_on_tap_outside': true,
+        'hosted_domain': kAllowedDomain,
+      }.jsify()! as JSObject);
     } catch (e) {
-      if (kDebugMode) debugPrint('[AuthService] Silent sign-in failed: $e');
-      // Non-fatal — user will see the login screen
+      debugPrint('[AuthService] GIS init error: $e');
     }
 
     _isLoading = false;
@@ -97,87 +112,118 @@ class AuthService extends ChangeNotifier {
 
   // ── Sign In ───────────────────────────────────────────────────────────────
 
-  /// Triggers the Google account picker popup.
-  /// Returns true on success, false on failure/domain mismatch.
+  /// Called by the LoginScreen button — triggers the One Tap / popup flow.
   Future<bool> signIn() async {
     _setLoading(true);
     _errorMsg = '';
+    notifyListeners();
 
+    // GIS handles the popup; result comes back via _handleCredentialResponse.
+    // We prompt and then wait — the callback will call notifyListeners() when done.
     try {
-      final account = await _googleSignIn.signIn();
-      if (account == null) {
-        // User dismissed the popup
-        _setLoading(false);
-        return false;
-      }
-      return await _handleAccount(account);
+      _gisPrompt(null);
     } catch (e) {
-      // Show the real error so we can diagnose it
-      final msg = e.toString();
-      if (msg.contains('popup_closed') || msg.contains('popup_blocked')) {
-        _errorMsg = 'Popup was blocked or closed. Please allow popups for this site and try again.';
-      } else if (msg.contains('access_denied')) {
-        _errorMsg = 'Access denied. Make sure your Google Cloud OAuth consent screen is configured correctly.';
-      } else if (msg.contains('origin')) {
-        _errorMsg = 'Origin not authorized. Add this URL to Authorized JavaScript Origins in Google Cloud Console.';
-      } else {
-        _errorMsg = 'Sign-in error: $msg';
-      }
-      debugPrint('[AuthService] signIn error: $e');
+      _errorMsg = 'Could not open Google sign-in. Error: $e';
       _setLoading(false);
       return false;
+    }
+
+    // Return true optimistically; actual auth state set in callback.
+    return true;
+  }
+
+  /// Renders the official Google Sign-In button inside the element with [elementId].
+  void renderButton(String elementId) {
+    try {
+      final el = _getElementById(elementId);
+      if (el == null) return;
+      _gisRenderButton(el, {
+        'theme': 'outline',
+        'size': 'large',
+        'width': 320,
+        'text': 'signin_with',
+        'shape': 'rectangular',
+        'logo_alignment': 'left',
+      }.jsify()! as JSObject);
+    } catch (e) {
+      debugPrint('[AuthService] renderButton error: $e');
     }
   }
 
   // ── Sign Out ──────────────────────────────────────────────────────────────
 
   Future<void> signOut() async {
-    try {
-      await _googleSignIn.signOut();
-    } catch (_) {}
+    try { _gisDisableAutoSelect(); } catch (_) {}
     _currentUser = null;
     _errorMsg    = '';
     await _clearCache();
     notifyListeners();
   }
 
-  // ── Internal helpers ──────────────────────────────────────────────────────
+  // ── GIS credential callback ───────────────────────────────────────────────
 
-  Future<bool> _handleAccount(GoogleSignInAccount account, {bool silent = false}) async {
-    final email = account.email.toLowerCase();
-
-    // ── Domain enforcement ─────────────────────────────────────────────────
-    if (!email.endsWith('@$kAllowedDomain')) {
-      await _googleSignIn.signOut();
-      _errorMsg = 'Access restricted to @$kAllowedDomain accounts.\n'
-          '"$email" is not authorised.';
-      _setLoading(false);
-      return false;
-    }
-
-    // ── Retrieve ID token ──────────────────────────────────────────────────
-    String idToken = '';
+  /// Called by Google Identity Services when the user completes sign-in.
+  /// [response] is a JS object with a `credential` field (JWT id_token).
+  void _handleCredentialResponse(JSObject response) {
     try {
-      final auth = await account.authentication;
-      idToken = auth.idToken ?? '';
+      final credential = (response as JSAny).dartify() as Map?;
+      final idToken = credential?['credential'] as String? ?? '';
+
+      if (idToken.isEmpty) {
+        _errorMsg = 'Sign-in failed: no credential received.';
+        _setLoading(false);
+        return;
+      }
+
+      // Decode JWT payload (middle section between the two dots).
+      final parts = idToken.split('.');
+      if (parts.length != 3) {
+        _errorMsg = 'Sign-in failed: invalid token format.';
+        _setLoading(false);
+        return;
+      }
+
+      // Base64url decode the payload
+      String payload = parts[1];
+      // Pad to multiple of 4
+      while (payload.length % 4 != 0) { payload += '='; }
+      final decoded = utf8.decode(base64Url.decode(payload));
+      final claims  = json.decode(decoded) as Map<String, dynamic>;
+
+      final email   = (claims['email']   as String? ?? '').toLowerCase();
+      final name    = claims['name']     as String? ?? email.split('@').first;
+      final picture = claims['picture']  as String? ?? '';
+
+      // Domain enforcement
+      if (!email.endsWith('@$kAllowedDomain')) {
+        _errorMsg = 'Access restricted to @$kAllowedDomain accounts.\n'
+            '"$email" is not authorised.';
+        _setLoading(false);
+        // Force sign out of the Google session too
+        try { _gisDisableAutoSelect(); } catch (_) {}
+        return;
+      }
+
+      _currentUser = AuthUser(
+        email:       email,
+        displayName: name,
+        photoUrl:    picture,
+        idToken:     idToken,
+      );
+
+      _persistCache(_currentUser!);
+      _errorMsg = '';
+      _setLoading(false);
+      notifyListeners();
+
     } catch (e) {
-      if (kDebugMode) debugPrint('[AuthService] Could not get idToken: $e');
-      // Continue without token — RTDB rules won't work but app still loads
+      _errorMsg = 'Sign-in error: $e';
+      _setLoading(false);
+      debugPrint('[AuthService] _handleCredentialResponse error: $e');
     }
-
-    _currentUser = AuthUser(
-      email:       email,
-      displayName: account.displayName ?? email.split('@').first,
-      photoUrl:    account.photoUrl    ?? '',
-      idToken:     idToken,
-    );
-
-    await _persistCache(_currentUser!);
-    _errorMsg = '';
-    _setLoading(false);
-    notifyListeners();
-    return true;
   }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   void _setLoading(bool v) {
     _isLoading = v;
@@ -202,7 +248,6 @@ class AuthService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Read the cached email from SharedPreferences (available before init completes).
   static Future<String?> getCachedEmail() async {
     try {
       final prefs = await SharedPreferences.getInstance();
