@@ -32,6 +32,7 @@ import '../models/customer_plan_code.dart';
 import '../models/serial_filter_rule.dart';
 import '../services/standard_plan_rate_service.dart';
 import '../services/customer_plan_code_service.dart';
+import '../services/customer_rate_plan_override_service.dart';
 import '../services/filter_settings_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
@@ -229,6 +230,7 @@ class CloudSyncService {
     try {
       final rates     = StandardPlanRateService.getAll();
       final codes     = CustomerPlanCodeService.getAll();
+      final overrides = CustomerRatePlanOverrideService.getAll();
       final rules     = FilterSettingsService.getAllRules();
       final customers = QbCustomerService.getAll();
       final keywords  = QbIgnoreKeywordService.getAll();
@@ -261,8 +263,23 @@ class CloudSyncService {
       });
       if (r2 != null) { _setStatus(SyncStatus.error); _lastError = r2; return r2; }
 
-      // ── 3. Serial filter rules ────────────────────────────────────
-      final r3 = await _putNode('serial_filter_rules', {
+      // ── 3. Rate Plan Overrides ────────────────────────────────────
+      final r3 = await _putNode('rate_plan_overrides', {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'count': overrides.length,
+        'data': overrides.map((o) => {
+          'customerName':  o.customerName,
+          'ratePlan':      o.ratePlan,
+          'customerPrice': o.customerPrice,
+          'yourCost':      o.yourCost,
+          'notes':         o.notes,
+          'lastUpdated':   o.lastUpdated?.toIso8601String() ?? '',
+        }).toList(),
+      });
+      if (r3 != null) { _setStatus(SyncStatus.error); _lastError = r3; return r3; }
+
+      // ── 4. Serial filter rules ────────────────────────────────────
+      final r4 = await _putNode('serial_filter_rules', {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': rules.length,
         'data': rules.map((r) => {
@@ -272,27 +289,27 @@ class CloudSyncService {
           'isSystem':   r.isSystem,
         }).toList(),
       });
-      if (r3 != null) { _setStatus(SyncStatus.error); _lastError = r3; return r3; }
+      if (r4 != null) { _setStatus(SyncStatus.error); _lastError = r4; return r4; }
 
-      // ── 4. Imported CSV files (non-fatal) ─────────────────────────
+      // ── 5. Imported CSV files (non-fatal) ─────────────────────────
       final csvMap = await CsvPersistService.getAllRaw();
       final hasCsv = csvMap.values.any((v) => v.isNotEmpty);
       if (hasCsv) {
-        final r4 = await _putNode('imported_csvs', {
+        final r5csv = await _putNode('imported_csvs', {
           'updatedAt': DateTime.now().toIso8601String(),
           ...csvMap,
         });
-        if (r4 != null && kDebugMode) {
-          debugPrint('[CloudSync] CSV backup warning (non-fatal): $r4');
+        if (r5csv != null && kDebugMode) {
+          debugPrint('[CloudSync] CSV backup warning (non-fatal): $r5csv');
         }
       }
 
-      // ── 5. QB Customer list ──────────────────────────────────────────────────────────────────────────
+      // ── 6. QB Customer list ───────────────────────────────────────
       // Always push customers (even if empty) so Firebase always reflects
       // the authoritative current state. The pull side will only overwrite
       // local data if the cloud list is non-empty, so an accidental empty
       // push here won't wipe other devices — but it does keep Firebase current.
-      final r5 = await _putNode('qb_customers', {
+      final r6 = await _putNode('qb_customers', {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': customers.length,
         'data': customers.map((c) => {
@@ -305,12 +322,12 @@ class CloudSyncService {
           'jobType':   c.jobType,
         }).toList(),
       });
-      if (r5 != null && kDebugMode) {
-        debugPrint('[CloudSync] QB customer backup warning (non-fatal): $r5');
+      if (r6 != null && kDebugMode) {
+        debugPrint('[CloudSync] QB customer backup warning (non-fatal): $r6');
       }
 
-      // ── 6. QB Ignore Keywords ─────────────────────────────────────
-      final r6 = await _putNode('qb_ignore_keywords', {
+      // ── 7. QB Ignore Keywords ─────────────────────────────────────
+      final r7 = await _putNode('qb_ignore_keywords', {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': keywords.length,
         'data': keywords.map((k) => {
@@ -318,8 +335,8 @@ class CloudSyncService {
           'isDefault': k.isDefault,
         }).toList(),
       });
-      if (r6 != null && kDebugMode) {
-        debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r6');
+      if (r7 != null && kDebugMode) {
+        debugPrint('[CloudSync] QB ignore keywords warning (non-fatal): $r7');
       }
 
       await _recordLastSync();
@@ -359,11 +376,11 @@ class CloudSyncService {
     }
   }
 
-  // ── Pull — 6 parallel GET calls ───────────────────────────────────────────
+  // ── Pull — 7 parallel GET calls ───────────────────────────────────────────
   //
-  // Indices: 0=standard_plan_rates  1=customer_plan_codes
-  //          2=serial_filter_rules  3=imported_csvs
-  //          4=qb_customers         5=qb_ignore_keywords
+  // Indices: 0=standard_plan_rates  1=customer_plan_codes  2=rate_plan_overrides
+  //          3=serial_filter_rules  4=imported_csvs
+  //          5=qb_customers         6=qb_ignore_keywords
 
   static Future<Map<String, dynamic>> pullAll() async {
     if (!_configured) return {'error': 'Firebase not configured'};
@@ -373,10 +390,11 @@ class CloudSyncService {
       final responses = await Future.wait([
         http.get(Uri.parse(_nodeUrl('standard_plan_rates')), headers: _headers),  // 0
         http.get(Uri.parse(_nodeUrl('customer_plan_codes')), headers: _headers),  // 1
-        http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),  // 2
-        http.get(Uri.parse(_nodeUrl('imported_csvs')),       headers: _headers),  // 3
-        http.get(Uri.parse(_nodeUrl('qb_customers')),        headers: _headers),  // 4
-        http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')),  headers: _headers),  // 5
+        http.get(Uri.parse(_nodeUrl('rate_plan_overrides')), headers: _headers),  // 2
+        http.get(Uri.parse(_nodeUrl('serial_filter_rules')), headers: _headers),  // 3
+        http.get(Uri.parse(_nodeUrl('imported_csvs')),       headers: _headers),  // 4
+        http.get(Uri.parse(_nodeUrl('qb_customers')),        headers: _headers),  // 5
+        http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')),  headers: _headers),  // 6
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -417,9 +435,24 @@ class CloudSyncService {
         counts['customerPlanCodes'] = list.length;
       }
 
-      // ── 2. Serial filter rules ────────────────────────────────────
+      // ── 2. Rate Plan Overrides ────────────────────────────────────
       if (responses[2].statusCode == 200 && responses[2].body != 'null') {
-        final node = jsonDecode(responses[2].body) as Map<String, dynamic>;
+        try {
+          final node = jsonDecode(responses[2].body) as Map<String, dynamic>;
+          final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
+          if (list.isNotEmpty) {
+            await CustomerRatePlanOverrideService.restoreFromCloud(list);
+            counts['ratePlanOverrides'] = list.length;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] Rate plan overrides restore warning: $e');
+          // Non-fatal
+        }
+      }
+
+      // ── 3. Serial filter rules ────────────────────────────────────
+      if (responses[3].statusCode == 200 && responses[3].body != 'null') {
+        final node = jsonDecode(responses[3].body) as Map<String, dynamic>;
         final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
         await FilterSettingsService.box.clear();
         for (final item in list) {
@@ -433,10 +466,10 @@ class CloudSyncService {
         counts['serialFilterRules'] = list.length;
       }
 
-      // ── 3. Imported CSV files (non-fatal) ─────────────────────────
-      if (responses[3].statusCode == 200 && responses[3].body != 'null') {
+      // ── 4. Imported CSV files (non-fatal) ─────────────────────────
+      if (responses[4].statusCode == 200 && responses[4].body != 'null') {
         try {
-          final node = jsonDecode(responses[3].body) as Map<String, dynamic>;
+          final node = jsonDecode(responses[4].body) as Map<String, dynamic>;
           await CsvPersistService.restoreFromMap(node);
           counts['importedCsvs'] = 1;
         } catch (e) {
@@ -444,16 +477,16 @@ class CloudSyncService {
         }
       }
 
-      // ── 4. QB Customer list ───────────────────────────────────────
+      // ── 5. QB Customer list ───────────────────────────────────────
       // CRITICAL SAFETY RULE: Only overwrite local customers if Firebase has
       // a NON-EMPTY list. If the cloud node is empty or null, leave local
       // Hive data intact — this prevents the list from disappearing when:
       //   • The cloud node was never populated on this device
       //   • A race condition left an empty node
       //   • The node was accidentally cleared
-      if (responses[4].statusCode == 200 && responses[4].body != 'null') {
+      if (responses[5].statusCode == 200 && responses[5].body != 'null') {
         try {
-          final node = jsonDecode(responses[4].body) as Map<String, dynamic>;
+          final node = jsonDecode(responses[5].body) as Map<String, dynamic>;
           final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
           if (list.isNotEmpty) {
             await QbCustomerService.clear();
@@ -477,10 +510,10 @@ class CloudSyncService {
         }
       }
 
-      // ── 5. QB Ignore Keywords ─────────────────────────────────────
-      if (responses[5].statusCode == 200 && responses[5].body != 'null') {
+      // ── 6. QB Ignore Keywords ─────────────────────────────────────
+      if (responses[6].statusCode == 200 && responses[6].body != 'null') {
         try {
-          final node = jsonDecode(responses[5].body) as Map<String, dynamic>;
+          final node = jsonDecode(responses[6].body) as Map<String, dynamic>;
           final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
           if (list.isNotEmpty) {
             await QbIgnoreKeywordService.restoreFromList(list);
@@ -540,6 +573,7 @@ class CloudSyncService {
     try {
       final rates     = StandardPlanRateService.getAll();
       final codes     = CustomerPlanCodeService.getAll();
+      final overrides = CustomerRatePlanOverrideService.getAll();
       final rules     = FilterSettingsService.getAllRules();
       final customers = QbCustomerService.getAll();
       final keywords  = QbIgnoreKeywordService.getAll();
@@ -565,6 +599,18 @@ class CloudSyncService {
             'customerPrice': c.customerPrice,
             'notes':         c.notes,
             'requiredRpc':   c.requiredRpc,
+          }).toList(),
+        }),
+        _putNode('rate_plan_overrides', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': overrides.length,
+          'data': overrides.map((o) => {
+            'customerName':  o.customerName,
+            'ratePlan':      o.ratePlan,
+            'customerPrice': o.customerPrice,
+            'yourCost':      o.yourCost,
+            'notes':         o.notes,
+            'lastUpdated':   o.lastUpdated?.toIso8601String() ?? '',
           }).toList(),
         }),
         _putNode('serial_filter_rules', {

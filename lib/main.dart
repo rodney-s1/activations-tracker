@@ -14,6 +14,7 @@ import 'services/qb_customer_service.dart';
 import 'services/qb_ignore_keyword_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/csv_persist_service.dart';
+import 'services/customer_rate_plan_override_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_shell.dart';
 import 'utils/app_theme.dart';
@@ -29,6 +30,7 @@ void main() async {
   await QbCustomerService.init();
   await QbIgnoreKeywordService.init();
   await CloudSyncService.init();
+  await CustomerRatePlanOverrideService.init();
 
   // Initialise Google Sign-In — attempts silent restore of previous session.
   await AuthService.instance.init();
@@ -45,8 +47,7 @@ void main() async {
     ..startSyncCountdown();
 
   CloudSyncService.onPeriodicPullComplete = () {
-    provider.loadPricingData();
-    provider.notifyQbCustomersChanged();
+    provider.loadPricingData(); // refreshes standardRates, planCodes, overrides, qbCustomers
   };
 
   if (AuthService.instance.isSignedIn) {

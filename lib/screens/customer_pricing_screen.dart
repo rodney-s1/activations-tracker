@@ -1,7 +1,8 @@
 // Customer Pricing Screen
-// Two tabs:
-//   1. Standard Plan Rates — your Geotab costs per plan keyword
-//   2. Customer Plan Codes — per-customer special rate codes & what you charge them
+// Three tabs:
+//   1. Standard Plan Rates  — your Geotab costs per plan keyword
+//   2. Customer Plan Codes  — per-customer special rate codes & what you charge them
+//   3. Rate Plan Overrides  — per-customer, per-plan cost+price overrides
 
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -11,6 +12,7 @@ import 'package:provider/provider.dart';
 
 import '../models/standard_plan_rate.dart';
 import '../models/customer_plan_code.dart';
+import '../models/customer_rate_plan_override.dart';
 import '../services/app_provider.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -29,7 +31,7 @@ class _CustomerPricingScreenState extends State<CustomerPricingScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -61,6 +63,7 @@ class _CustomerPricingScreenState extends State<CustomerPricingScreen>
           tabs: const [
             Tab(icon: Icon(Icons.list_alt, size: 18), text: 'Standard Plans'),
             Tab(icon: Icon(Icons.manage_accounts, size: 18), text: 'Customer Codes'),
+            Tab(icon: Icon(Icons.tune, size: 18), text: 'Overrides'),
           ],
         ),
       ),
@@ -69,6 +72,7 @@ class _CustomerPricingScreenState extends State<CustomerPricingScreen>
         children: const [
           _StandardPlanRatesTab(),
           _CustomerPlanCodesTab(),
+          _RatePlanOverridesTab(),
         ],
       ),
     );
@@ -1242,6 +1246,511 @@ class _CodeRow extends StatelessWidget {
 }
 
 // ── Helper widget for import result dialog ────────────────────────────────────
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 3 — Rate Plan Overrides
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Per-customer, per-rate-plan price override.  Lets you set a custom
+// "your cost" and "customer price" for a specific customer + rate-plan
+// combination, bypassing the Standard Plan Rates table entirely.
+//
+// Match logic (case-insensitive substring):
+//   customerName  must match the Active Database / Customer field in the CSV
+//   ratePlan      must be a substring of the Rate Plan field in the CSV
+
+class _RatePlanOverridesTab extends StatefulWidget {
+  const _RatePlanOverridesTab();
+
+  @override
+  State<_RatePlanOverridesTab> createState() => _RatePlanOverridesTabState();
+}
+
+class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
+  String _search = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<AppProvider>();
+    final all = provider.ratePlanOverrides; // reactive — updates on cloud sync
+    final q   = _search.trim().toLowerCase();
+    final overrides = q.isEmpty
+        ? all
+        : all
+            .where((o) =>
+                o.customerName.toLowerCase().contains(q) ||
+                o.ratePlan.toLowerCase().contains(q))
+            .toList();
+
+    return Column(
+      children: [
+        // ── Info banner ───────────────────────────────────────────────────
+        Container(
+          margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppTheme.navyAccent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: AppTheme.navyAccent.withValues(alpha: 0.2)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.info_outline,
+                  size: 15, color: AppTheme.navyAccent),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Overrides bypass Standard Plans. '
+                  'Set a custom cost & price for a specific customer + rate plan.',
+                  style: TextStyle(
+                      fontSize: 11, color: AppTheme.navyAccent),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Search + Add ──────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: 'Search customer or rate plan…',
+                    prefixIcon:
+                        const Icon(Icons.search, size: 16),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 8, horizontal: 10),
+                  ),
+                  onChanged: (v) => setState(() => _search = v),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  textStyle: const TextStyle(fontSize: 13),
+                ),
+                onPressed: () => _showOverrideDialog(context, provider, null),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Count badge ───────────────────────────────────────────────────
+        if (all.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${overrides.length} override${overrides.length == 1 ? '' : 's'}',
+                style: const TextStyle(
+                    fontSize: 11, color: AppTheme.textSecondary),
+              ),
+            ),
+          ),
+
+        // ── List ─────────────────────────────────────────────────────────
+        Expanded(
+          child: overrides.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.tune,
+                          size: 48,
+                          color: AppTheme.textSecondary
+                              .withValues(alpha: 0.3)),
+                      const SizedBox(height: 12),
+                      Text(
+                        q.isEmpty
+                            ? 'No overrides yet.\nTap Add to create one.'
+                            : 'No overrides match "$_search".',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            color: AppTheme.textSecondary),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+                  itemCount: overrides.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 6),
+                  itemBuilder: (ctx, i) {
+                    final o = overrides[i];
+                    return _OverrideTile(
+                      item: o,
+                      onEdit: () =>
+                          _showOverrideDialog(context, provider, o),
+                      onDelete: () =>
+                          _confirmDelete(context, provider, o),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  // ── Add / Edit dialog ─────────────────────────────────────────────────────
+
+  Future<void> _showOverrideDialog(
+    BuildContext context,
+    AppProvider provider,
+    CustomerRatePlanOverride? existing,
+  ) async {
+    final isNew = existing == null;
+    final customerCtrl =
+        TextEditingController(text: existing?.customerName ?? '');
+    final planCtrl =
+        TextEditingController(text: existing?.ratePlan ?? '');
+    final costCtrl = TextEditingController(
+        text: existing != null && existing.yourCost > 0
+            ? existing.yourCost.toStringAsFixed(2)
+            : '');
+    final priceCtrl = TextEditingController(
+        text: existing != null
+            ? existing.customerPrice.toStringAsFixed(2)
+            : '');
+    final notesCtrl =
+        TextEditingController(text: existing?.notes ?? '');
+
+    // Build QB customer suggestion list
+    final qbNames = provider.qbCustomers.map((c) => c.name).toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isNew ? 'Add Override' : 'Edit Override'),
+        content: SizedBox(
+          width: 360,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Customer name with autocomplete
+                Autocomplete<String>(
+                  optionsBuilder: (tv) {
+                    if (tv.text.isEmpty) return const [];
+                    final q = tv.text.toLowerCase();
+                    return qbNames
+                        .where((n) => n.toLowerCase().contains(q))
+                        .take(6);
+                  },
+                  onSelected: (v) => customerCtrl.text = v,
+                  fieldViewBuilder:
+                      (ctx2, fCtrl, fNode, onSub) => TextField(
+                    controller: fCtrl,
+                    focusNode: fNode,
+                    onChanged: (v) => customerCtrl.text = v,
+                    decoration: const InputDecoration(
+                      labelText: 'Customer Name *',
+                      hintText: 'Must match CSV exactly',
+                      helperText: 'Suggestions from QB customer list',
+                      isDense: true,
+                    ),
+                  ),
+                  initialValue: TextEditingValue(
+                      text: existing?.customerName ?? ''),
+                ),
+                const SizedBox(height: 12),
+                // Rate plan
+                TextField(
+                  controller: planCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Rate Plan Keyword *',
+                    hintText: 'e.g. ProPlus Install Bundle Plan [1250]',
+                    helperText:
+                        'Case-insensitive substring of the Rate Plan column',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Your cost
+                TextField(
+                  controller: costCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(
+                        RegExp(r'^\d*\.?\d{0,5}')),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Your Cost (what Geotab charges you)',
+                    prefixText: r'$ ',
+                    hintText: '0.00  (blank = use Standard Plans)',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Customer price
+                TextField(
+                  controller: priceCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(
+                        RegExp(r'^\d*\.?\d{0,5}')),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Customer Price *',
+                    prefixText: r'$ ',
+                    hintText: '0.00',
+                    helperText: 'What you bill this customer per device/month',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Notes
+                TextField(
+                  controller: notesCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Notes (optional)',
+                    hintText: 'e.g. special contract rate',
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final name  = customerCtrl.text.trim();
+              final plan  = planCtrl.text.trim();
+              final cost  = double.tryParse(costCtrl.text.trim())  ?? 0.0;
+              final price = double.tryParse(priceCtrl.text.trim()) ?? 0.0;
+              if (name.isEmpty || plan.isEmpty) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(
+                      content: Text(
+                          'Customer name and Rate Plan Keyword are required.')),
+                );
+                return;
+              }
+              final o = CustomerRatePlanOverride(
+                customerName:  name,
+                ratePlan:      plan,
+                yourCost:      cost,
+                customerPrice: price,
+                notes:         notesCtrl.text.trim(),
+              );
+              await provider.saveRatePlanOverride(o);
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(isNew
+                        ? 'Override added for $name'
+                        : 'Override updated for $name'),
+                    backgroundColor: AppTheme.teal,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            child: Text(isNew ? 'Add' : 'Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Delete confirmation ───────────────────────────────────────────────────
+
+  void _confirmDelete(
+    BuildContext context,
+    AppProvider provider,
+    CustomerRatePlanOverride o,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Override?'),
+        content: Text(
+            'Remove override for\n"${o.customerName}"\n→ "${o.ratePlan}"?\n\n'
+            'Pricing will fall back to Standard Plans.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.red),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await provider.deleteRatePlanOverride(o);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Override deleted'),
+                    backgroundColor: AppTheme.red,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Override list tile ────────────────────────────────────────────────────────
+
+class _OverrideTile extends StatelessWidget {
+  final CustomerRatePlanOverride item;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const _OverrideTile({
+    required this.item,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Icon
+            Container(
+              margin: const EdgeInsets.only(top: 2, right: 10),
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppTheme.amber.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.tune,
+                  size: 16, color: AppTheme.amber),
+            ),
+            // Text content
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.customerName,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: AppTheme.textPrimary),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    item.ratePlan,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.textSecondary,
+                        fontStyle: FontStyle.italic),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      if (item.yourCost > 0) ...[
+                        const Icon(Icons.arrow_downward,
+                            size: 11, color: AppTheme.green),
+                        const SizedBox(width: 2),
+                        Text(
+                          'Cost: ${Formatters.currency(item.yourCost)}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.green,
+                              fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      const Icon(Icons.arrow_upward,
+                          size: 11, color: AppTheme.teal),
+                      const SizedBox(width: 2),
+                      Text(
+                        'Price: ${Formatters.currency(item.customerPrice)}',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.teal,
+                            fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                  if (item.notes.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      item.notes,
+                      style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.textSecondary,
+                          fontStyle: FontStyle.italic),
+                    ),
+                  ],
+                  if (item.lastUpdated != null)
+                    Text(
+                      'Updated ${Formatters.dateShort(item.lastUpdated)}',
+                      style: const TextStyle(
+                          fontSize: 9, color: AppTheme.textSecondary),
+                    ),
+                ],
+              ),
+            ),
+            // Action buttons
+            Column(
+              children: [
+                InkWell(
+                  onTap: onEdit,
+                  borderRadius: BorderRadius.circular(6),
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(Icons.edit_outlined,
+                        size: 16, color: AppTheme.teal),
+                  ),
+                ),
+                InkWell(
+                  onTap: onDelete,
+                  borderRadius: BorderRadius.circular(6),
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(Icons.delete_outline,
+                        size: 16, color: AppTheme.red),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Helper widget for import result dialog ────────────────────────────────────
+
 
 class _ImportResultRow extends StatelessWidget {
   final IconData icon;
