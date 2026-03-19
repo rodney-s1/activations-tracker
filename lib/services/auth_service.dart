@@ -55,11 +55,12 @@ class AuthService extends ChangeNotifier {
   AuthService._();
 
   // ── Google Sign-In instance ───────────────────────────────────────────────
-  // clientId is set via web/index.html meta tag (see setup instructions).
-  // scopes: email + profile are sufficient for domain check + display name.
+  // clientId must be passed explicitly for google_sign_in 6.x on web.
+  // hostedDomain restricts the account picker to @bluearrowmail.com accounts.
   final GoogleSignIn _googleSignIn = GoogleSignIn(
+    clientId: '127481200033-mc2lspmv21bqii6eaarfop3n2ci5ueil.apps.googleusercontent.com',
     scopes: ['email', 'profile', 'openid'],
-    hostedDomain: kAllowedDomain, // restricts the Google account picker to @bluearrowmail.com
+    hostedDomain: kAllowedDomain,
   );
 
   // ── State ─────────────────────────────────────────────────────────────────
