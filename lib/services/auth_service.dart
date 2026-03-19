@@ -112,8 +112,18 @@ class AuthService extends ChangeNotifier {
       }
       return await _handleAccount(account);
     } catch (e) {
-      _errorMsg = 'Sign-in failed. Please try again.';
-      if (kDebugMode) debugPrint('[AuthService] signIn error: $e');
+      // Show the real error so we can diagnose it
+      final msg = e.toString();
+      if (msg.contains('popup_closed') || msg.contains('popup_blocked')) {
+        _errorMsg = 'Popup was blocked or closed. Please allow popups for this site and try again.';
+      } else if (msg.contains('access_denied')) {
+        _errorMsg = 'Access denied. Make sure your Google Cloud OAuth consent screen is configured correctly.';
+      } else if (msg.contains('origin')) {
+        _errorMsg = 'Origin not authorized. Add this URL to Authorized JavaScript Origins in Google Cloud Console.';
+      } else {
+        _errorMsg = 'Sign-in error: $msg';
+      }
+      debugPrint('[AuthService] signIn error: $e');
       _setLoading(false);
       return false;
     }
