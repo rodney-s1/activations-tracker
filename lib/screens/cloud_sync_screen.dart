@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
+import '../services/auth_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -58,10 +59,14 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
   Future<void> _loadSaved() async {
     final cfg = await CloudSyncService.readConfig();
     if (!mounted) return;
+    // Auto-populate userId from signed-in Google account if not already set
+    final authUser = AuthService.instance.currentUser;
+    final savedUserId = cfg['userId'] ?? '';
+    final autoUserId = authUser?.syncUserId ?? '';
     setState(() {
       _dbUrlCtrl.text  = cfg['dbUrl']   ?? '';
       _apiKeyCtrl.text = cfg['apiKey']  ?? '';
-      _userIdCtrl.text = cfg['userId']  ?? '';
+      _userIdCtrl.text = savedUserId.isNotEmpty ? savedUserId : autoUserId;
       _enabled         = cfg['enabled'] == 'true';
       _autoSync        = cfg['autoSync'] != 'false';
       _saved           = _dbUrlCtrl.text.isNotEmpty;

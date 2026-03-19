@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/app_provider.dart';
+import '../services/auth_service.dart';
 import '../utils/app_theme.dart';
 import 'dashboard_screen.dart';
 import 'history_screen.dart';
@@ -84,6 +85,8 @@ class _MainShellState extends State<MainShell> {
         index: _currentIndex,
         children: _pages,
       ),
+      // User identity bar at top
+      appBar: _UserBar(email: AuthService.instance.currentUser?.email ?? ''),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: AppTheme.navyDark,
@@ -183,6 +186,120 @@ class _MainShellState extends State<MainShell> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── User identity bar ─────────────────────────────────────────────────────────
+
+class _UserBar extends StatelessWidget implements PreferredSizeWidget {
+  final String email;
+  const _UserBar({required this.email});
+
+  @override
+  Size get preferredSize => const Size.fromHeight(38);
+
+  @override
+  Widget build(BuildContext context) {
+    final user = AuthService.instance.currentUser;
+    final initials = user != null && user.displayName.isNotEmpty
+        ? user.displayName.trim().split(' ').map((w) => w.isNotEmpty ? w[0] : '').take(2).join().toUpperCase()
+        : (email.isNotEmpty ? email[0].toUpperCase() : '?');
+
+    return Container(
+      height: 38,
+      color: AppTheme.navyMid,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const Icon(Icons.location_on, size: 14, color: AppTheme.tealLight),
+          const SizedBox(width: 6),
+          const Text(
+            'Activation Tracker',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.tealLight,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const Spacer(),
+          // Avatar
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: AppTheme.teal.withValues(alpha: 0.25),
+            backgroundImage: (user?.photoUrl.isNotEmpty == true)
+                ? NetworkImage(user!.photoUrl)
+                : null,
+            child: (user?.photoUrl.isNotEmpty != true)
+                ? Text(initials,
+                    style: const TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.tealLight))
+                : null,
+          ),
+          const SizedBox(width: 7),
+          Flexible(
+            child: Text(
+              email,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.65),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          // Sign out button
+          Tooltip(
+            message: 'Sign out',
+            child: InkWell(
+              onTap: () => _confirmSignOut(context),
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.logout,
+                        size: 13,
+                        color: Colors.white.withValues(alpha: 0.5)),
+                    const SizedBox(width: 3),
+                    Text('Sign out',
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.white.withValues(alpha: 0.5))),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmSignOut(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Sign Out?'),
+        content: Text('Sign out of $email?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              AuthService.instance.signOut();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            child: const Text('Sign Out'),
+          ),
+        ],
       ),
     );
   }

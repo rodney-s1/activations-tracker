@@ -4,6 +4,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 import 'services/app_provider.dart';
+import 'services/auth_service.dart';
 import 'services/history_service.dart';
 import 'services/filter_settings_service.dart';
 import 'services/customer_rate_service.dart';
@@ -13,6 +14,7 @@ import 'services/qb_customer_service.dart';
 import 'services/qb_ignore_keyword_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/csv_persist_service.dart';
+import 'screens/login_screen.dart';
 import 'screens/main_shell.dart';
 import 'utils/app_theme.dart';
 
@@ -26,83 +28,77 @@ void main() async {
   await CustomerPlanCodeService.init();
   await QbCustomerService.init();
   await QbIgnoreKeywordService.init();
-  await CloudSyncService.init(); // load saved Firebase config (if any)
+  await CloudSyncService.init();
 
-  // Auto-pull from Firebase on startup if configured.
-  // This restores all settings AND imported CSVs after a browser storage clear
-  // or first load on a new device — silently in background.
-  if (CloudSyncService.isConfigured) {
-    await CloudSyncService.pullAll();
+  // Initialise Google Sign-In — attempts silent restore of previous session.
+  await AuthService.instance.init();
+
+  // Only pull cloud data / seed defaults if user is already signed in.
+  if (AuthService.instance.isSignedIn) {
+    await _initAppData();
   }
 
-  // ── Seed bundled QB Customer List on first install ────────────────────────
-  // If no QB Customer List has ever been imported (neither in Hive nor in
-  // SharedPreferences), load the bundled 3-18-2026 CSV from app assets.
-  // On subsequent launches the persisted CSV or cloud-pulled data takes over.
-  await _seedBundledQbCustomerList();
-
-  // Build provider first so restorePersistedData can notify listeners
   final provider = AppProvider()
     ..initHistory()
     ..loadCustomerRates()
     ..loadPricingData()
     ..startSyncCountdown();
 
-  // Wire periodic pull callback so pulled data refreshes the UI automatically
   CloudSyncService.onPeriodicPullComplete = () {
     provider.loadPricingData();
     provider.notifyQbCustomersChanged();
   };
 
-  // Restore last imported Activations CSV (if any) from local storage.
-  // This runs AFTER cloud pull so cloud data takes precedence.
-  await provider.restorePersistedData();
+  if (AuthService.instance.isSignedIn) {
+    await provider.restorePersistedData();
+  }
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: provider,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: provider),
+        ChangeNotifierProvider.value(value: AuthService.instance),
+      ],
       child: const ActivationTrackerApp(),
     ),
   );
 }
 
+/// Runs cloud pull + QB seed — called after confirmed sign-in.
+Future<void> _initAppData() async {
+  if (CloudSyncService.isConfigured) {
+    await CloudSyncService.pullAll();
+  }
+  await _seedBundledQbCustomerList();
+}
+
 /// Seed the bundled QB Customer List from assets on first install.
-/// Only runs if the Hive box is empty AND no persisted CSV exists.
-/// This guarantees CUA flags are always set correctly from day one.
 Future<void> _seedBundledQbCustomerList() async {
   try {
-    // Check if we already have data (Hive or persisted CSV)
     if (QbCustomerService.box.isNotEmpty) return;
     final existing = await CsvPersistService.loadQbCustomerList();
     if (existing != null && existing.content.isNotEmpty) {
-      // Re-import from persisted CSV (handles browser-clear scenario)
       await QbCustomerService.importFromCsv(existing.content);
       return;
     }
-
-    // No data anywhere — load bundled CSV from assets
-    final csvContent = await rootBundle
-        .loadString('assets/data/qb_customer_list.csv');
+    final csvContent =
+        await rootBundle.loadString('assets/data/qb_customer_list.csv');
     if (csvContent.isNotEmpty) {
       await QbCustomerService.importFromCsv(csvContent);
-      // Persist so it survives next browser clear
       await CsvPersistService.saveQbCustomerList(
         content: csvContent,
         fileName: 'QB Customer List 3-18-2026.csv',
       );
-      if (const bool.fromEnvironment('dart.vm.product') == false) {
-        // ignore: avoid_print
-        print('[main] Seeded ${QbCustomerService.box.length} QB customers from bundled asset');
-      }
     }
   } catch (e) {
-    // Non-fatal — user can always import manually via Settings
     if (const bool.fromEnvironment('dart.vm.product') == false) {
       // ignore: avoid_print
       print('[main] Could not seed bundled QB customer list: $e');
     }
   }
 }
+
+// ── Root App Widget ───────────────────────────────────────────────────────────
 
 class ActivationTrackerApp extends StatelessWidget {
   const ActivationTrackerApp({super.key});
@@ -113,7 +109,129 @@ class ActivationTrackerApp extends StatelessWidget {
       title: 'Activation Tracker',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.theme,
-      home: const MainShell(),
+      home: const _AuthGate(),
+    );
+  }
+}
+
+// ── Auth Gate ─────────────────────────────────────────────────────────────────
+// Watches AuthService and routes to LoginScreen or MainShell accordingly.
+// When a user successfully signs in, it also runs the first-time data init
+// (cloud pull + QB seed) so data is available immediately after login.
+
+class _AuthGate extends StatefulWidget {
+  const _AuthGate();
+
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  bool _dataInitDone = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // If already signed in from silent restore, mark data as ready
+    // (it was loaded in main() above).
+    if (AuthService.instance.isSignedIn) {
+      _dataInitDone = true;
+    }
+    // Listen for sign-in events to trigger data init
+    AuthService.instance.addListener(_onAuthChanged);
+  }
+
+  @override
+  void dispose() {
+    AuthService.instance.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    final auth = AuthService.instance;
+    if (auth.isSignedIn && !_dataInitDone) {
+      _dataInitDone = true;
+      // Run data init after first successful login (not silent restore)
+      _initAfterLogin();
+    }
+    if (!auth.isSignedIn) {
+      setState(() => _dataInitDone = false);
+    }
+  }
+
+  Future<void> _initAfterLogin() async {
+    await _initAppData();
+    if (!mounted) return;
+    final provider = context.read<AppProvider>();
+    provider.loadPricingData();
+    provider.notifyQbCustomersChanged();
+    await provider.restorePersistedData();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthService>();
+
+    if (auth.isLoading) {
+      // Startup silent-sign-in in progress — show branded splash
+      return const _SplashScreen();
+    }
+
+    if (!auth.isSignedIn) {
+      return const LoginScreen();
+    }
+
+    return const MainShell();
+  }
+}
+
+// ── Splash Screen (shown during silent sign-in check) ────────────────────────
+
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppTheme.navyDark,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: AppTheme.teal.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: AppTheme.teal.withValues(alpha: 0.4), width: 1.5),
+              ),
+              child: const Icon(Icons.location_on,
+                  size: 36, color: AppTheme.tealLight),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Activation Tracker',
+              style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white),
+            ),
+            const SizedBox(height: 32),
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                valueColor:
+                    AlwaysStoppedAnimation<Color>(AppTheme.tealLight),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
