@@ -1,17 +1,18 @@
-// 2-Tier Pricing Engine
-//
-// Tier 1 — Standard Plan Rates  (keyword match on rate plan name → your cost)
-// Tier 2 — Customer Plan Codes  (customer + plan code match → customer's price)
+// 3-Tier Pricing Engine
 //
 // Resolution order for a given device:
-//   1. Customer has a specific plan code that matches → check requiredRpc → use customerPrice
-//   2. Standard plan keyword matches → use yourCost (what Geotab charges you)
-//   3. Fall back to the raw CSV monthly cost
+//   Tier 0 — Rate Plan Overrides  (customer name + plan substring → exact cost + price)
+//   Tier 1 — Customer Plan Codes  (customer name + plan code → customer price)
+//   Tier 2 — Standard Plan Rates  (keyword match on rate plan name → your cost)
+//   Tier 3 — CSV fallback
+//
+// Rate Plan Overrides take highest priority — they let you set both "your cost"
+// and "customer price" for a specific customer + rate-plan combination,
+// bypassing all other tiers entirely.
 //
 // requiredRpc: if set on a CustomerPlanCode, the discounted price only applies
 // when the device's Rate Plan column contains that RPC substring (case-insensitive).
-// If the device is MISSING that RPC, Geotab hasn't applied the discount to you,
-// so the device is flagged as 'missing RPC' and billed at full price.
+// If the device is MISSING that RPC, the device is flagged and billed at full price.
 //
 // "Missing code" flag: if a customer has ANY CustomerPlanCode entries AND
 // none of them match a device's rate plan, that device is flagged so you
@@ -20,8 +21,9 @@
 import '../models/activation_record.dart';
 import '../models/standard_plan_rate.dart';
 import '../models/customer_plan_code.dart';
+import '../models/customer_rate_plan_override.dart';
 
-enum PriceSource { customerCode, standardPlan, csvFallback }
+enum PriceSource { ratePlanOverride, customerCode, standardPlan, csvFallback }
 
 class PriceResult {
   final double yourCost;       // what Geotab charges you (used for proration math)
@@ -44,10 +46,12 @@ class PriceResult {
 class PricingEngine {
   final List<StandardPlanRate> standardRates;
   final List<CustomerPlanCode> customerCodes;
+  final List<CustomerRatePlanOverride> ratePlanOverrides;
 
   PricingEngine({
     required this.standardRates,
     required this.customerCodes,
+    this.ratePlanOverrides = const [],
   });
 
   /// Resolve pricing for a single device record.
@@ -60,7 +64,31 @@ class PricingEngine {
     final customerNameNorm = cleanCustomer.toLowerCase();
     final ratePlanNorm = record.ratePlan.trim().toLowerCase();
 
-    // ── Tier 2: Customer-specific plan codes ─────────────────────
+    // ── Tier 0: Rate Plan Overrides (highest priority) ────────────
+    // Matches customer name (exact, after stripping) + rate plan substring.
+    if (ratePlanOverrides.isNotEmpty) {
+      for (final ov in ratePlanOverrides) {
+        final ovCustomerNorm = _stripCustomerSuffix(ov.customerName.trim()).toLowerCase();
+        final ovPlanNorm = ov.ratePlan.trim().toLowerCase();
+        final nameMatches = ovCustomerNorm == customerNameNorm;
+        final planMatches = ovPlanNorm.isNotEmpty && ratePlanNorm.contains(ovPlanNorm);
+
+        if (nameMatches && planMatches) {
+          // Use override yourCost if set (> 0), else fall back to standard cost
+          final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
+          final resolvedCost = (ov.yourCost > 0) ? ov.yourCost : stdCost;
+          return PriceResult(
+            yourCost: resolvedCost,
+            customerPrice: ov.customerPrice,
+            source: PriceSource.ratePlanOverride,
+            matchedRule: 'Rate plan override: "${ov.ratePlan}"'
+                '${ov.notes.isNotEmpty ? ' (${ov.notes})' : ''}',
+          );
+        }
+      }
+    }
+
+    // ── Tier 1: Customer-specific plan codes ─────────────────────
     final customerSpecificCodes = customerCodes
         .where((c) =>
             c.customerName.trim().toLowerCase() == customerNameNorm)
@@ -81,10 +109,6 @@ class PricingEngine {
         final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
 
         // ── Check requiredRpc ────────────────────────────────────────────
-        // If the rule has a required RPC, the discount only applies when the
-        // device's rate plan contains that RPC string (case-insensitive).
-        // If the device is missing it, Geotab hasn't applied the discount to
-        // us, so we can't pass it on — flag it and fall back to full cost.
         final rpcRequired = matched.requiredRpc.trim();
         if (rpcRequired.isNotEmpty &&
             !ratePlanNorm.contains(rpcRequired.toLowerCase())) {
@@ -119,7 +143,7 @@ class PricingEngine {
       }
     }
 
-    // ── Tier 1: Standard plan keyword match ───────────────────────
+    // ── Tier 2: Standard plan keyword match ───────────────────────
     final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
     if (stdCost != record.monthlyCost) {
       final matched = _matchedStandardRate(ratePlanNorm);

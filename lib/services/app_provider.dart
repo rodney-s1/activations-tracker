@@ -136,6 +136,7 @@ class AppProvider extends ChangeNotifier {
   PricingEngine get _pricingEngine => PricingEngine(
         standardRates: _standardRates,
         customerCodes: _customerPlanCodes,
+        ratePlanOverrides: _ratePlanOverrides,
       );
 
   // ── CSV Import ────────────────────────────────────────────────────────────

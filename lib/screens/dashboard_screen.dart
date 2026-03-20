@@ -23,6 +23,61 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _isRefreshing = false;
 
+  // ── Date range filter ──────────────────────────────────────────────
+  DateTime? _filterFrom;
+  DateTime? _filterTo;
+
+  /// Returns groups filtered by active date range.
+  /// A group is included if it has at least one device whose billingStart
+  /// falls within [_filterFrom, _filterTo] (inclusive, date-only).
+  List<dynamic> _applyDateFilter(List<dynamic> groups) {
+    if (_filterFrom == null && _filterTo == null) return groups;
+    return groups.where((g) {
+      return g.devices.any((d) {
+        final bs = d.billingStart;
+        if (bs == null) return false;
+        final day = DateTime(bs.year, bs.month, bs.day);
+        if (_filterFrom != null && day.isBefore(_filterFrom!)) return false;
+        if (_filterTo != null && day.isAfter(_filterTo!)) return false;
+        return true;
+      });
+    }).toList();
+  }
+
+  Future<void> _pickDate(BuildContext context, bool isFrom) async {
+    final initial = isFrom
+        ? (_filterFrom ?? DateTime.now())
+        : (_filterTo ?? DateTime.now());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      helpText: isFrom ? 'Filter FROM date' : 'Filter TO date',
+      builder: (ctx, child) => Theme(
+        data: Theme.of(ctx).copyWith(
+          colorScheme: const ColorScheme.light(
+            primary: AppTheme.navyAccent,
+            onPrimary: Colors.white,
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        final d = DateTime(picked.year, picked.month, picked.day);
+        if (isFrom) {
+          _filterFrom = d;
+          if (_filterTo != null && _filterTo!.isBefore(d)) _filterTo = null;
+        } else {
+          _filterTo = d;
+          if (_filterFrom != null && _filterFrom!.isAfter(d)) _filterFrom = null;
+        }
+      });
+    }
+  }
+
   Future<void> _importCsv(BuildContext context) async {
     final provider = context.read<AppProvider>();
 
@@ -689,8 +744,115 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Widget _buildDateRangeFilter(BuildContext context) {
+    final hasFilter = _filterFrom != null || _filterTo != null;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: hasFilter
+            ? AppTheme.navyAccent.withValues(alpha: 0.07)
+            : const Color(0xFFF1F5F9),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: hasFilter
+              ? AppTheme.navyAccent.withValues(alpha: 0.30)
+              : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.date_range, size: 15, color: AppTheme.navyAccent),
+          const SizedBox(width: 6),
+          const Text(
+            'Billing date:',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          _DateChip(
+            label: _filterFrom != null ? Formatters.date(_filterFrom) : 'From',
+            isSet: _filterFrom != null,
+            onTap: () => _pickDate(context, true),
+            onClear: _filterFrom != null
+                ? () => setState(() => _filterFrom = null)
+                : null,
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              '→',
+              style: TextStyle(
+                fontSize: 12,
+                color: hasFilter ? AppTheme.navyAccent : AppTheme.textSecondary,
+              ),
+            ),
+          ),
+          _DateChip(
+            label: _filterTo != null ? Formatters.date(_filterTo) : 'To',
+            isSet: _filterTo != null,
+            onTap: () => _pickDate(context, false),
+            onClear: _filterTo != null
+                ? () => setState(() => _filterTo = null)
+                : null,
+          ),
+          const Spacer(),
+          if (hasFilter)
+            Tooltip(
+              message: 'Clear date filter',
+              child: InkWell(
+                onTap: () => setState(() {
+                  _filterFrom = null;
+                  _filterTo = null;
+                }),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.red.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.filter_alt_off,
+                          size: 12, color: AppTheme.red),
+                      SizedBox(width: 4),
+                      Text(
+                        'Clear',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.red,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            const Text(
+              'Filter by billing start date',
+              style: TextStyle(
+                fontSize: 10,
+                color: AppTheme.textSecondary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildResults(BuildContext context, AppProvider provider) {
-    final groups = provider.filteredGroups;
+    final allGroups = provider.filteredGroups;
+    final groups = _applyDateFilter(allGroups);
     final result = provider.parseResult!;
     final blanks = provider.blankCustomerWarnings;
 
@@ -857,6 +1019,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
 
+        // ── Date range filter row ───────────────────────────────────
+        _buildDateRangeFilter(context),
+
         // ── Results count + clear ─────────────────────────────────
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -864,7 +1029,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               Text(
                 '${groups.length} customer${groups.length == 1 ? '' : 's'}'
-                ' · ${groups.fold(0, (s, g) => s + g.deviceCount)} devices',
+                ' · ${groups.fold<int>(0, (s, g) => s + g.deviceCount as int)} devices',
                 style: const TextStyle(
                   fontSize: 12,
                   color: AppTheme.textSecondary,
@@ -983,6 +1148,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Date chip widget ──────────────────────────────────────────────────────────
+
+class _DateChip extends StatelessWidget {
+  final String label;
+  final bool isSet;
+  final VoidCallback onTap;
+  final VoidCallback? onClear;
+
+  const _DateChip({
+    required this.label,
+    required this.isSet,
+    required this.onTap,
+    this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSet
+              ? AppTheme.navyAccent.withValues(alpha: 0.12)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSet
+                ? AppTheme.navyAccent.withValues(alpha: 0.45)
+                : const Color(0xFFCBD5E1),
+            width: isSet ? 1.2 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isSet ? Icons.event_available : Icons.calendar_today,
+              size: 12,
+              color: isSet ? AppTheme.navyAccent : AppTheme.textSecondary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isSet ? FontWeight.w700 : FontWeight.w500,
+                color: isSet ? AppTheme.navyAccent : AppTheme.textSecondary,
+              ),
+            ),
+            if (onClear != null) ...[
+              const SizedBox(width: 4),
+              GestureDetector(
+                onTap: onClear,
+                child: Icon(
+                  Icons.close,
+                  size: 11,
+                  color: AppTheme.navyAccent.withValues(alpha: 0.7),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
