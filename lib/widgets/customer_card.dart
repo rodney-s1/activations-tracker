@@ -795,9 +795,9 @@ class _CopyInvoiceLinesButtonState extends State<_CopyInvoiceLinesButton> {
   }
 }
 
-// ── Device row (standalone stateless widget) ─────────────────────────────────
+// ── Device row (stateful – has per-plan copy button) ─────────────────────────
 
-class _DeviceRow extends StatelessWidget {
+class _DeviceRow extends StatefulWidget {
   final ActivationRecord record;
   final bool completed;
   final Color? accentDotColor;
@@ -809,7 +809,40 @@ class _DeviceRow extends StatelessWidget {
   });
 
   @override
+  State<_DeviceRow> createState() => _DeviceRowState();
+}
+
+class _DeviceRowState extends State<_DeviceRow> {
+  bool _planCopied = false;
+
+  Future<void> _copyRatePlan(BuildContext context) async {
+    final planText = widget.record.ratePlan.isEmpty
+        ? widget.record.planMode
+        : widget.record.ratePlan;
+    if (planText.isEmpty) return;
+
+    await Clipboard.setData(ClipboardData(text: planText));
+    setState(() => _planCopied = true);
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Rate plan copied: "$planText"'),
+          backgroundColor: AppTheme.teal,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+
+    await Future.delayed(const Duration(seconds: 3));
+    if (mounted) setState(() => _planCopied = false);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final record = widget.record;
+    final completed = widget.completed;
+
     final daysInMonth = record.billingStart != null
         ? DateTime(record.billingStart!.year, record.billingStart!.month + 1, 0).day
         : 0;
@@ -817,9 +850,11 @@ class _DeviceRow extends StatelessWidget {
         ? daysInMonth - record.billingStart!.day + 1
         : 0;
 
-    final dotColor = accentDotColor ??
+    final dotColor = widget.accentDotColor ??
         (completed ? const Color(0xFF16A34A) : AppTheme.teal);
     final costColor = completed ? const Color(0xFF16A34A) : AppTheme.green;
+
+    final planText = record.ratePlan.isEmpty ? record.planMode : record.ratePlan;
 
     return Column(
       children: [
@@ -865,16 +900,59 @@ class _DeviceRow extends StatelessWidget {
                         ),
                       ],
                     ),
+                    // Rate plan row with inline copy button
                     Padding(
-                      padding: const EdgeInsets.only(left: 12),
-                      child: Text(
-                        record.ratePlan.isEmpty ? record.planMode : record.ratePlan,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: AppTheme.textSecondary,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                      padding: const EdgeInsets.only(left: 12, top: 1),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              planText,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.textSecondary,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (planText.isNotEmpty) ...[
+                            const SizedBox(width: 4),
+                            Tooltip(
+                              message: 'Copy rate plan name',
+                              child: InkWell(
+                                onTap: () => _copyRatePlan(context),
+                                borderRadius: BorderRadius.circular(4),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: _planCopied
+                                        ? const Color(0xFF16A34A)
+                                        : AppTheme.navyAccent.withValues(alpha: 0.08),
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: _planCopied
+                                          ? const Color(0xFF16A34A)
+                                          : AppTheme.navyAccent.withValues(alpha: 0.20),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: Icon(
+                                    _planCopied
+                                        ? Icons.check
+                                        : Icons.content_copy,
+                                    size: 10,
+                                    color: _planCopied
+                                        ? Colors.white
+                                        : AppTheme.navyAccent,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                     // Missing-code flag warning
