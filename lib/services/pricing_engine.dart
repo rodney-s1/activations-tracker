@@ -131,19 +131,29 @@ class PricingEngine {
               '${rpcRequired.isNotEmpty ? ' (RPC: $rpcRequired ✓)' : ''}',
         );
       } else {
-        // Customer has codes but NONE matched this plan — flag it.
-        // Still apply standard rate pricing (including customerPrice if set).
+        // Customer has codes configured but NONE matched this particular plan.
+        //
+        // Only raise the missingCode flag when there is NO standard rate covering
+        // this plan either — i.e., pricing would genuinely fall through to the
+        // raw CSV value.  If a standard rate DOES match, the device is priced
+        // correctly; the warning would just be noise (and confusing).
         final missedRate = _matchedStandardRate(ratePlanNorm);
         final stdCost = missedRate?.yourCost ?? record.monthlyCost;
         final stdCustomerPrice = (missedRate != null && missedRate.customerPrice > 0)
             ? missedRate.customerPrice
             : stdCost;
+
+        // Only flag as missingCode when no standard rate covers this plan
+        final shouldFlag = missedRate == null;
+
         return PriceResult(
           yourCost: stdCost,
-          customerPrice: stdCustomerPrice, // use rate's customerPrice even on missing-code flag
+          customerPrice: stdCustomerPrice,
           source: PriceSource.standardPlan,
-          matchedRule: 'MISSING CODE — no plan code matched "${record.ratePlan}"',
-          missingCode: true,
+          matchedRule: shouldFlag
+              ? 'MISSING CODE — no plan code matched "${record.ratePlan}"'
+              : 'Standard plan: ${missedRate.planKey} (no custom code for this plan)',
+          missingCode: shouldFlag,
         );
       }
     }
