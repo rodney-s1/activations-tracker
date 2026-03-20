@@ -143,6 +143,37 @@ class ActivationRecord {
     );
   }
 
+  /// Create a copy with a different monthlyCost (used by manual device overrides)
+  ActivationRecord copyWithMonthlyCost(double newMonthlyCost) {
+    return ActivationRecord(
+      device: device,
+      serialNumber: serialNumber,
+      imei: imei,
+      sim: sim,
+      account: account,
+      customer: customer,
+      planMode: planMode,
+      requestType: requestType,
+      requestedOn: requestedOn,
+      processedOn: processedOn,
+      activeFeatures: activeFeatures,
+      status: status,
+      comments: comments,
+      ratePlan: ratePlan,
+      monthlyCost: newMonthlyCost,
+      billingStart: billingStart,
+      expiring: expiring,
+      terminationReason: terminationReason,
+      terminationComment: terminationComment,
+      productCode: productCode,
+      assignedPO: assignedPO,
+      resolvedCustomerPrice: resolvedCustomerPrice,
+      priceMatchedRule: priceMatchedRule,
+      missingCodeFlag: missingCodeFlag,
+      missingRpcFlag: missingRpcFlag,
+    );
+  }
+
   /// Create a copy with a different customer name (used by renameCustomer)
   ActivationRecord copyWithCustomer(String newCustomer) {
     return ActivationRecord(

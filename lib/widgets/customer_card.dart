@@ -993,6 +993,167 @@ class _DeviceRow extends StatefulWidget {
 class _DeviceRowState extends State<_DeviceRow> {
   bool _planCopied = false;
 
+  /// Show the manual price override dialog.
+  Future<void> _showPriceEditDialog(BuildContext context) async {
+    final record = widget.record;
+    final provider = context.read<AppProvider>();
+    final existing = provider.devicePriceOverrides[record.serialNumber];
+
+    final costCtrl = TextEditingController(
+      text: existing != null && existing.yourCost > 0
+          ? existing.yourCost.toStringAsFixed(2)
+          : record.monthlyCost.toStringAsFixed(2),
+    );
+    final priceCtrl = TextEditingController(
+      text: existing != null && existing.customerPrice > 0
+          ? existing.customerPrice.toStringAsFixed(2)
+          : record.resolvedCustomerPrice.toStringAsFixed(2),
+    );
+
+    final hasExisting = existing != null;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.edit, size: 18, color: AppTheme.navyAccent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Override Price: ${record.serialNumber}',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Rate Plan: ${record.ratePlan.isEmpty ? record.planMode : record.ratePlan}',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  'Auto-priced: cost \$${record.monthlyCost.toStringAsFixed(2)}  ·  customer \$${record.resolvedCustomerPrice.toStringAsFixed(2)}',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: costCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Your Cost (Geotab → you) \$',
+                    helperText: 'Monthly cost Geotab charges you',
+                    isDense: true,
+                    prefixText: '\$ ',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: priceCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Customer Price (you → customer) \$',
+                    helperText: 'Monthly price you charge the customer',
+                    isDense: true,
+                    prefixText: '\$ ',
+                  ),
+                ),
+                if (hasExisting) ...[    
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF7ED),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 13, color: Color(0xFFB45309)),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Manual override active — tap Clear Override to restore auto-pricing',
+                            style: TextStyle(fontSize: 10, color: Color(0xFFB45309)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            if (hasExisting)
+              TextButton.icon(
+                onPressed: () async {
+                  await provider.clearDevicePriceOverride(record.serialNumber);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Override cleared for ${record.serialNumber}'),
+                        backgroundColor: AppTheme.teal,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.undo, size: 14),
+                label: const Text('Clear Override'),
+                style: TextButton.styleFrom(foregroundColor: AppTheme.red),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final cost = double.tryParse(costCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                final price = double.tryParse(priceCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                if (cost <= 0 && price <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Enter at least one value > 0')),
+                  );
+                  return;
+                }
+                await provider.setDevicePriceOverride(record.serialNumber, cost, price);
+                if (ctx.mounted) Navigator.pop(ctx);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Price override saved for ${record.serialNumber}'),
+                      backgroundColor: AppTheme.navyAccent,
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.navyAccent,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Save Override'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    costCtrl.dispose();
+    priceCtrl.dispose();
+  }
+
   Future<void> _copyRatePlan(BuildContext context) async {
     final planText = widget.record.ratePlan.isEmpty
         ? widget.record.planMode
@@ -1134,7 +1295,8 @@ class _DeviceRowState extends State<_DeviceRow> {
                       ),
                     ),
                     // Missing-code flag warning
-              if (record.missingCodeFlag)
+                    // Only show when pricing genuinely has no rule match (not suppressed by standard rate)
+              if (record.missingCodeFlag && !record.priceMatchedRule.startsWith('Standard plan') && !record.priceMatchedRule.startsWith('Manual'))
                 Padding(
                   padding: const EdgeInsets.only(left: 12, top: 2),
                   child: Row(
@@ -1146,6 +1308,25 @@ class _DeviceRowState extends State<_DeviceRow> {
                         style: TextStyle(
                           fontSize: 10,
                           color: const Color(0xFFB45309).withValues(alpha: 0.9),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                    // Manual override indicator
+              if (record.priceMatchedRule == 'Manual override')
+                Padding(
+                  padding: const EdgeInsets.only(left: 12, top: 2),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.edit, size: 10, color: AppTheme.navyAccent),
+                      const SizedBox(width: 3),
+                      Text(
+                        'Manual override',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.navyAccent.withValues(alpha: 0.85),
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1180,7 +1361,7 @@ class _DeviceRowState extends State<_DeviceRow> {
                   ),
                 ),
               ),
-              // Monthly cost (show customer price if different)
+              // Monthly cost + manual override button
               SizedBox(
                 width: 72,
                 child: Padding(
@@ -1188,17 +1369,45 @@ class _DeviceRowState extends State<_DeviceRow> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text(
-                        Formatters.currency(record.resolvedCustomerPrice),
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: record.resolvedCustomerPrice != record.monthlyCost
-                                ? AppTheme.teal
-                                : AppTheme.textSecondary,
-                            fontWeight: record.resolvedCustomerPrice != record.monthlyCost
-                                ? FontWeight.w700
-                                : FontWeight.normal),
-                        textAlign: TextAlign.right,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Price edit icon
+                          Tooltip(
+                            message: record.priceMatchedRule == 'Manual override'
+                                ? 'Edit manual price override'
+                                : 'Set manual price override',
+                            child: InkWell(
+                              onTap: () => _showPriceEditDialog(context),
+                              borderRadius: BorderRadius.circular(3),
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 3),
+                                child: Icon(
+                                  record.priceMatchedRule == 'Manual override'
+                                      ? Icons.edit
+                                      : Icons.edit_outlined,
+                                  size: 11,
+                                  color: record.priceMatchedRule == 'Manual override'
+                                      ? AppTheme.navyAccent
+                                      : AppTheme.textSecondary.withValues(alpha: 0.45),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Text(
+                            Formatters.currency(record.resolvedCustomerPrice),
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: record.resolvedCustomerPrice != record.monthlyCost
+                                    ? AppTheme.teal
+                                    : AppTheme.textSecondary,
+                                fontWeight: record.resolvedCustomerPrice != record.monthlyCost
+                                    ? FontWeight.w700
+                                    : FontWeight.normal),
+                            textAlign: TextAlign.right,
+                          ),
+                        ],
                       ),
                       if (record.resolvedCustomerPrice != record.monthlyCost)
                         Text(

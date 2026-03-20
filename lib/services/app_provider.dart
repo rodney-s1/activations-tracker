@@ -21,6 +21,7 @@ import '../services/pricing_engine.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/item_price_list_service.dart';
+import '../services/device_price_override_service.dart';
 export '../services/csv_parser_service.dart' show BlankCustomerRecord;
 
 enum AppState { idle, loading, loaded, error }
@@ -42,6 +43,11 @@ class AppProvider extends ChangeNotifier {
   List<CustomerPlanCode> _customerPlanCodes = [];
   List<QbCustomer> _qbCustomers = [];
   List<CustomerRatePlanOverride> _ratePlanOverrides = [];
+
+  // ── Manual per-device price overrides (serial → override) ─────────────
+  Map<String, DevicePriceOverride> _devicePriceOverrides = {};
+
+  Map<String, DevicePriceOverride> get devicePriceOverrides => _devicePriceOverrides;
 
   // ── Cloud sync countdown timer (updates UI every minute) ──────────────
   Timer? _countdownTimer;
@@ -81,7 +87,56 @@ class AppProvider extends ChangeNotifier {
   List<QbCustomer> get qbCustomers => _qbCustomers;
   List<CustomerRatePlanOverride> get ratePlanOverrides => _ratePlanOverrides;
 
+  /// Apply manual device price overrides on top of engine pricing.
+  /// Called at the end of repriceCurrent and loadCsv.
+  void _applyDeviceOverrides() {
+    if (_devicePriceOverrides.isEmpty) return;
+    _customerGroups = _customerGroups.map((group) {
+      final newDevices = group.devices.map((record) {
+        final ov = _devicePriceOverrides[record.serialNumber];
+        if (ov == null) return record;
+        return record.withResolvedPricing(
+          customerPrice: ov.customerPrice > 0 ? ov.customerPrice : record.resolvedCustomerPrice,
+          matchedRule: 'Manual override',
+          missingCode: false,
+          missingRpc: false,
+        ).copyWithMonthlyCost(ov.yourCost > 0 ? ov.yourCost : record.monthlyCost);
+      }).toList();
+      return CustomerGroup(customerName: group.customerName, devices: newDevices);
+    }).toList();
+  }
+
   bool get hasData => _parseResult != null && _customerGroups.isNotEmpty;
+
+  /// Load device price overrides from storage on startup.
+  Future<void> loadDevicePriceOverrides() async {
+    _devicePriceOverrides = await DevicePriceOverrideService.loadAll();
+    notifyListeners();
+  }
+
+  /// Set a manual price override for a specific device and immediately re-apply.
+  Future<void> setDevicePriceOverride(String serialNumber, double yourCost, double customerPrice) async {
+    final ov = DevicePriceOverride(
+      serialNumber: serialNumber,
+      yourCost: yourCost,
+      customerPrice: customerPrice,
+    );
+    await DevicePriceOverrideService.save(ov);
+    _devicePriceOverrides[serialNumber] = ov;
+    // Apply immediately to the loaded data
+    if (_state == AppState.loaded) {
+      _applyDeviceOverrides();
+      notifyListeners();
+    }
+  }
+
+  /// Clear the manual override for a device and re-price from rules.
+  Future<void> clearDevicePriceOverride(String serialNumber) async {
+    await DevicePriceOverrideService.clear(serialNumber);
+    _devicePriceOverrides.remove(serialNumber);
+    // Re-price from scratch without the override
+    repriceCurrent();
+  }
 
   /// Blank customer warnings from the last import
   List<BlankCustomerRecord> get blankCustomerWarnings =>
@@ -130,6 +185,7 @@ class AppProvider extends ChangeNotifier {
     _customerPlanCodes = CustomerPlanCodeService.getAll();
     _qbCustomers = QbCustomerService.getAll();
     _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    // Device price overrides are async — load separately via loadDevicePriceOverrides()
     notifyListeners();
   }
 
@@ -178,6 +234,9 @@ class AppProvider extends ChangeNotifier {
         content:  content,
         fileName: fileName,
       );
+
+      // Apply any manual device price overrides on top of engine pricing
+      _applyDeviceOverrides();
     } catch (e) {
       _state = AppState.error;
       _errorMessage = 'Failed to parse CSV: $e';
@@ -263,6 +322,9 @@ class AppProvider extends ChangeNotifier {
     }).toList();
 
     _customerGroups = repriced;
+
+    // Apply manual device price overrides last — they are always final
+    _applyDeviceOverrides();
 
     // Update the parse result's warning flags so banners reflect current state
     if (_parseResult != null) {

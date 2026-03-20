@@ -48,6 +48,9 @@ void main() async {
     ..loadPricingData()
     ..startSyncCountdown();
 
+  // Load manual device price overrides (async — must be awaited separately)
+  await provider.loadDevicePriceOverrides();
+
   CloudSyncService.onPeriodicPullComplete = () {
     provider.loadPricingData(); // refreshes standardRates, planCodes, overrides, qbCustomers
     provider.repriceCurrent();  // immediately re-price any loaded activations
