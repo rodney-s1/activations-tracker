@@ -430,7 +430,7 @@ class _CustomerCardState extends State<CustomerCard> {
 
           // ── Per-date groups with copy buttons ─────────────────────
           if (sortedDates.isEmpty)
-            ...g.devices.map((d) => _DeviceRow(record: d, completed: _completed))
+            ...g.devices.map((d) => _DeviceRow(record: d, completed: _completed, customerGroup: g))
           else
             ...sortedDates.map((date) {
               final devicesOnDate = g.devicesByBillingDate[date] ?? [];
@@ -748,6 +748,7 @@ class _DateGroupState extends State<_DateGroup> {
                 record: d,
                 completed: widget.completed || isProcessed,
                 accentDotColor: dotColor,
+                customerGroup: widget.group,
               )),
         ],
       ),
@@ -979,11 +980,13 @@ class _DeviceRow extends StatefulWidget {
   final ActivationRecord record;
   final bool completed;
   final Color? accentDotColor;
+  final CustomerGroup? customerGroup;
 
   const _DeviceRow({
     required this.record,
     required this.completed,
     this.accentDotColor,
+    this.customerGroup,
   });
 
   @override
@@ -998,6 +1001,15 @@ class _DeviceRowState extends State<_DeviceRow> {
     final record = widget.record;
     final provider = context.read<AppProvider>();
     final existing = provider.devicePriceOverrides[record.serialNumber];
+    final planText = record.ratePlan.isEmpty ? record.planMode : record.ratePlan;
+
+    // Count how many other devices in the same customer group share this exact rate plan
+    final CustomerGroup? group = widget.customerGroup;
+    final sameplanCount = group == null ? 0 :
+        group.devices.where((d) =>
+            d.serialNumber != record.serialNumber &&
+            (d.ratePlan.isEmpty ? d.planMode : d.ratePlan).trim().toLowerCase() ==
+                planText.trim().toLowerCase()).length;
 
     final costCtrl = TextEditingController(
       text: existing != null && existing.yourCost > 0
@@ -1011,6 +1023,7 @@ class _DeviceRowState extends State<_DeviceRow> {
     );
 
     final hasExisting = existing != null;
+    bool spreadToAll = sameplanCount > 0; // default ON when siblings exist
 
     await showDialog(
       context: context,
@@ -1030,67 +1043,123 @@ class _DeviceRowState extends State<_DeviceRow> {
             ],
           ),
           content: SizedBox(
-            width: 300,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Rate Plan: ${record.ratePlan.isEmpty ? record.planMode : record.ratePlan}',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  'Auto-priced: cost \$${record.monthlyCost.toStringAsFixed(2)}  ·  customer \$${record.resolvedCustomerPrice.toStringAsFixed(2)}',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: costCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'Your Cost (Geotab → you) \$',
-                    helperText: 'Monthly cost Geotab charges you',
-                    isDense: true,
-                    prefixText: '\$ ',
+            width: 320,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Rate Plan: $planText',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: priceCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'Customer Price (you → customer) \$',
-                    helperText: 'Monthly price you charge the customer',
-                    isDense: true,
-                    prefixText: '\$ ',
+                  Text(
+                    'Auto-priced: cost \$${record.monthlyCost.toStringAsFixed(2)}  ·  customer \$${record.resolvedCustomerPrice.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                   ),
-                ),
-                if (hasExisting) ...[    
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF7ED),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: costCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Your Cost (Geotab → you)',
+                      helperText: 'Monthly cost Geotab charges you',
+                      isDense: true,
+                      prefixText: '\$ ',
                     ),
-                    child: const Row(
-                      children: [
-                        Icon(Icons.info_outline, size: 13, color: Color(0xFFB45309)),
-                        SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            'Manual override active — tap Clear Override to restore auto-pricing',
-                            style: TextStyle(fontSize: 10, color: Color(0xFFB45309)),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: priceCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Customer Price (you → customer)',
+                      helperText: 'Monthly price you charge the customer',
+                      isDense: true,
+                      prefixText: '\$ ',
+                    ),
+                  ),
+
+                  // ── Spread to same-plan siblings ────────────────────
+                  if (sameplanCount > 0) ...[
+                    const SizedBox(height: 14),
+                    InkWell(
+                      onTap: () => setS(() => spreadToAll = !spreadToAll),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: spreadToAll
+                              ? AppTheme.navyAccent.withValues(alpha: 0.08)
+                              : const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: spreadToAll
+                                ? AppTheme.navyAccent.withValues(alpha: 0.35)
+                                : const Color(0xFFE2E8F0),
                           ),
                         ),
-                      ],
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: Checkbox(
+                                value: spreadToAll,
+                                onChanged: (v) => setS(() => spreadToAll = v ?? false),
+                                activeColor: AppTheme.navyAccent,
+                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Apply to all $sameplanCount other device${sameplanCount == 1 ? '' : 's'} on the same plan',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: spreadToAll
+                                      ? AppTheme.navyAccent
+                                      : AppTheme.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
+
+                  // ── Active override notice ───────────────────────────
+                  if (hasExisting) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF7ED),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                            color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.info_outline, size: 13, color: Color(0xFFB45309)),
+                          SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Manual override active — tap Clear Override to restore auto-pricing',
+                              style: TextStyle(fontSize: 10, color: Color(0xFFB45309)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
           actions: [
@@ -1119,22 +1188,35 @@ class _DeviceRowState extends State<_DeviceRow> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final cost = double.tryParse(costCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
-                final price = double.tryParse(priceCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                final cost = double.tryParse(
+                    costCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                final price = double.tryParse(
+                    priceCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
                 if (cost <= 0 && price <= 0) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Enter at least one value > 0')),
+                    const SnackBar(
+                        content: Text('Enter at least one value > 0')),
                   );
                   return;
                 }
-                await provider.setDevicePriceOverride(record.serialNumber, cost, price);
+                final count = await provider.setDevicePriceOverride(
+                  record.serialNumber,
+                  cost,
+                  price,
+                  spreadToSamePlan: spreadToAll && sameplanCount > 0,
+                  customerName: group?.customerName,
+                  ratePlan: planText,
+                );
                 if (ctx.mounted) Navigator.pop(ctx);
                 if (context.mounted) {
+                  final msg = count > 1
+                      ? 'Override applied to $count devices on $planText'
+                      : 'Price override saved for ${record.serialNumber}';
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Price override saved for ${record.serialNumber}'),
+                      content: Text(msg),
                       backgroundColor: AppTheme.navyAccent,
-                      duration: const Duration(seconds: 2),
+                      duration: const Duration(seconds: 3),
                     ),
                   );
                 }
