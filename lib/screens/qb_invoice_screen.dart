@@ -1049,33 +1049,35 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         // Find the parent summary by normKey
         final pi = summaries.indexWhere(
             (s) => _normKey(s.customerName) == parentNorm);
-        if (pi < 0) continue; // parent not in list yet — skip quietly
 
-        final child  = summaries[ci];
-        final parent = summaries[pi];
+        if (pi >= 0) {
+          final child  = summaries[ci];
+          final parent = summaries[pi];
 
-        // Merge child's billable device count + device list into the parent.
-        // The parent's CUA rule was already applied when its own summary was
-        // built, so we add the child's activeCount as-is (child falls under
-        // the parent's CUA umbrella per business rule).
-        summaries[pi] = QbCustomerSummary(
-          customerName:  parent.customerName,
-          billedCount:   parent.billedCount,
-          totalBilled:   parent.totalBilled,
-          qbLines:       parent.qbLines,
-          activeCount:   parent.activeCount + child.activeCount,
-          unknownCount:  parent.unknownCount + child.unknownCount,
-          hanoverCount:  parent.hanoverCount + child.hanoverCount,
-          hanoverCsQty:  parent.hanoverCsQty + child.hanoverCsQty,
-          cameraCount:   parent.cameraCount  + child.cameraCount,
-          geotabCount:   parent.geotabCount  + child.geotabCount,
-          goFocusCount:     parent.goFocusCount     + child.goFocusCount,
-          goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
-          activeDevices: [...parent.activeDevices, ...child.activeDevices],
-          isCua:    parent.isCua,
-          jobType:  parent.jobType,
-        );
-
+          // Merge child's billable device count + device list into the parent.
+          // The parent's CUA rule was already applied when its own summary was
+          // built, so we add the child's activeCount as-is (child falls under
+          // the parent's CUA umbrella per business rule).
+          summaries[pi] = QbCustomerSummary(
+            customerName:  parent.customerName,
+            billedCount:   parent.billedCount,
+            totalBilled:   parent.totalBilled,
+            qbLines:       parent.qbLines,
+            activeCount:   parent.activeCount + child.activeCount,
+            unknownCount:  parent.unknownCount + child.unknownCount,
+            hanoverCount:  parent.hanoverCount + child.hanoverCount,
+            hanoverCsQty:  parent.hanoverCsQty + child.hanoverCsQty,
+            cameraCount:   parent.cameraCount  + child.cameraCount,
+            geotabCount:   parent.geotabCount  + child.geotabCount,
+            goFocusCount:     parent.goFocusCount     + child.goFocusCount,
+            goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
+            activeDevices: [...parent.activeDevices, ...child.activeDevices],
+            isCua:    parent.isCua,
+            jobType:  parent.jobType,
+          );
+        }
+        // Whether or not the parent was found in the list, always remove the
+        // child row — it should never surface as a standalone verify entry.
         toRemove.add(ci);
       }
 

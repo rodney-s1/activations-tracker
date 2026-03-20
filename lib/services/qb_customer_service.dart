@@ -254,11 +254,31 @@ class QbCustomerService {
   /// Return a map of  normKey(childName) → normKey(parentName)
   /// for every customer that has a parent set.
   /// Used by QB Verify to merge child device counts into the parent row.
+  ///
+  /// Three keys are registered per child so the lookup succeeds regardless of
+  /// whether the summary customerName came from:
+  ///   (a) the full QB name   e.g. "Firgos Trucking Insurance:Amanah Logistics LLC"
+  ///   (b) the short QB name  e.g. "Amanah Logistics LLC"  (part after the last colon)
+  ///   (c) the MyAdmin name   e.g. "Amanah Logistics"      (may differ slightly)
+  ///
+  /// QB often prefixes child account names with "ParentName:" — stripping that
+  /// prefix gives the short name that MyAdmin and the verify-screen display name
+  /// are likely to match.
   static Map<String, String> getParentMapNormalized() {
     final result = <String, String>{};
     for (final c in _box!.values) {
       if (c.parentAccountName.trim().isEmpty) continue;
-      result[_normalizeName(c.name)] = _normalizeName(c.parentAccountName);
+      final parentNorm = _normalizeName(c.parentAccountName);
+
+      // (a) full QB name
+      result[_normalizeName(c.name)] = parentNorm;
+
+      // (b) short name — everything after the LAST colon, if one exists
+      final colonIdx = c.name.lastIndexOf(':');
+      if (colonIdx >= 0 && colonIdx < c.name.length - 1) {
+        final shortName = c.name.substring(colonIdx + 1).trim();
+        result[_normalizeName(shortName)] = parentNorm;
+      }
     }
     return result;
   }
