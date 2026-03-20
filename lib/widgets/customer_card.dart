@@ -4,8 +4,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
 import '../models/customer_group.dart';
 import '../models/activation_record.dart';
+import '../services/app_provider.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -36,6 +38,57 @@ class CustomerCard extends StatefulWidget {
 class _CustomerCardState extends State<CustomerCard> {
   bool _completed = false;
   final Set<DateTime> _localProcessed = {};
+
+  // ── Inline rename ─────────────────────────────────────────────────────────
+  bool _isEditing = false;
+  late TextEditingController _nameController;
+  final FocusNode _nameFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.group.customerName);
+  }
+
+  @override
+  void didUpdateWidget(CustomerCard old) {
+    super.didUpdateWidget(old);
+    // Keep controller in sync if provider renames the group externally
+    if (!_isEditing && old.group.customerName != widget.group.customerName) {
+      _nameController.text = widget.group.customerName;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
+
+  void _startEditing() {
+    _nameController.text = widget.group.customerName;
+    setState(() => _isEditing = true);
+    // Auto-select all text so user can overtype immediately
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _nameFocus.requestFocus();
+      _nameController.selection =
+          TextSelection(baseOffset: 0, extentOffset: _nameController.text.length);
+    });
+  }
+
+  void _saveEdit(BuildContext context) {
+    final newName = _nameController.text.trim();
+    if (newName.isNotEmpty && newName != widget.group.customerName) {
+      context.read<AppProvider>().renameCustomer(widget.group.customerName, newName);
+    }
+    setState(() => _isEditing = false);
+  }
+
+  void _cancelEdit() {
+    _nameController.text = widget.group.customerName;
+    setState(() => _isEditing = false);
+  }
 
   static const _completedBg   = Color(0xFFECFDF5); // very light green bg
   static const _completedBar  = Color(0xFF16A34A); // solid green accent bar
@@ -123,53 +176,142 @@ class _CustomerCardState extends State<CustomerCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              g.customerName,
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                                color: _completed
-                                    ? _completedBar
-                                    : AppTheme.textPrimary,
-                                decoration: _completed
-                                    ? TextDecoration.none
-                                    : null,
+                      // ── Name row: static view or inline editor ────────
+                      if (_isEditing)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _nameController,
+                                focusNode: _nameFocus,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary,
+                                ),
+                                decoration: InputDecoration(
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 6),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                    borderSide: const BorderSide(
+                                        color: AppTheme.navyAccent, width: 1.5),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                    borderSide: const BorderSide(
+                                        color: AppTheme.navyAccent, width: 1.5),
+                                  ),
+                                ),
+                                onSubmitted: (_) => _saveEdit(context),
                               ),
                             ),
-                          ),
-                          if (_completed) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: _completedBar,
+                            const SizedBox(width: 4),
+                            // Save
+                            Tooltip(
+                              message: 'Save name',
+                              child: InkWell(
+                                onTap: () => _saveEdit(context),
                                 borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.check,
-                                      size: 10, color: Colors.white),
-                                  SizedBox(width: 3),
-                                  Text(
-                                    'DONE',
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.white,
-                                      letterSpacing: 0.5,
-                                    ),
+                                child: Container(
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.navyAccent,
+                                    borderRadius: BorderRadius.circular(6),
                                   ),
-                                ],
+                                  child: const Icon(Icons.check,
+                                      size: 14, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            // Cancel
+                            Tooltip(
+                              message: 'Cancel',
+                              child: InkWell(
+                                onTap: _cancelEdit,
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFE2E8F0),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Icon(Icons.close,
+                                      size: 14,
+                                      color: AppTheme.textSecondary),
+                                ),
                               ),
                             ),
                           ],
-                        ],
-                      ),
+                        )
+                      else
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                g.customerName,
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: _completed
+                                      ? _completedBar
+                                      : AppTheme.textPrimary,
+                                  decoration: _completed
+                                      ? TextDecoration.none
+                                      : null,
+                                ),
+                              ),
+                            ),
+                            if (_completed) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: _completedBar,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.check,
+                                        size: 10, color: Colors.white),
+                                    SizedBox(width: 3),
+                                    Text(
+                                      'DONE',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.white,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            // Pencil edit icon
+                            const SizedBox(width: 6),
+                            Tooltip(
+                              message: 'Rename customer',
+                              child: InkWell(
+                                onTap: _startEditing,
+                                borderRadius: BorderRadius.circular(4),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(3),
+                                  child: Icon(
+                                    Icons.edit_outlined,
+                                    size: 13,
+                                    color: AppTheme.textSecondary
+                                        .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       const SizedBox(height: 4),
                       Row(
                         children: [

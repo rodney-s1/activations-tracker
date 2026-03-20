@@ -523,21 +523,11 @@ class AppProvider extends ChangeNotifier {
     }
 
     // ── Restore Activations CSV ────────────────────────────────────────────
-    final saved = await CsvPersistService.loadActivations();
-    if (saved == null || saved.content.isEmpty) return;
-
-    try {
-      loadPricingData();
-      final result = CsvParserService.parse(saved.content, _pricingEngine);
-      final groups = CsvParserService.groupByCustomer(result.records);
-      _parseResult     = result;
-      _customerGroups  = groups;
-      _currentFileName = saved.fileName;
-      _searchQuery     = '';
-      _state           = AppState.loaded;
-    } catch (_) {
-      // Silently ignore restore errors — user can re-import manually
-    }
+    // ⚠️  Intentionally NOT restoring the activations CSV on cold launch.
+    // The user wants a clean slate every time the app starts so stale data
+    // from a previous session doesn't auto-populate.  The persisted CSV is
+    // still saved (so Refresh still works within the same session) but we
+    // no longer auto-load it here.
     notifyListeners();
   }
 
@@ -551,6 +541,30 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
     CloudSyncService.pushSilent(); // push to cloud immediately
     return count;
+  }
+
+  // ── Customer Name Rename ─────────────────────────────────────────────────
+
+  /// Rename a customer group from [oldName] to [newName] in-memory, then
+  /// re-sort groups alphabetically.  The new name is persisted on the next
+  /// full refresh; invoice-line text also picks up the new name immediately.
+  void renameCustomer(String oldName, String newName) {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || trimmed == oldName) return;
+
+    _customerGroups = _customerGroups.map((g) {
+      if (g.customerName != oldName) return g;
+      // Rebuild the group with every device's customer field updated
+      final renamedDevices = g.devices.map((d) => d.copyWithCustomer(trimmed)).toList();
+      return CustomerGroup(customerName: trimmed, devices: renamedDevices);
+    }).toList();
+
+    // Re-sort alphabetically (case-insensitive), same as groupByCustomer
+    _customerGroups.sort(
+      (a, b) => a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()),
+    );
+
+    notifyListeners();
   }
 
   // ── Clear ─────────────────────────────────────────────────────────────────
