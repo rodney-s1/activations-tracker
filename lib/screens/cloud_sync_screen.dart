@@ -184,6 +184,7 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
 
     final provider = context.read<AppProvider>();
     provider.loadPricingData();
+    provider.repriceCurrent();         // re-price activations with pulled data
     provider.notifyQbCustomersChanged(); // refresh QB customer list from Hive
 
     if (result.containsKey('error')) {

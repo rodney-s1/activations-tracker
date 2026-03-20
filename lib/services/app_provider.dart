@@ -217,13 +217,41 @@ class AppProvider extends ChangeNotifier {
   /// data — without re-parsing the CSV. Called automatically after any pricing
   /// change (standard rates, plan codes, overrides) so the Activations page
   /// always reflects the latest settings immediately.
+  ///
+  /// Also rebuilds missingCodeFlags and missingRpcFlags so warning banners
+  /// clear automatically when the underlying issue is resolved.
   void repriceCurrent() {
     if (_state != AppState.loaded || _customerGroups.isEmpty) return;
 
     final engine = _pricingEngine;
+    final newMissingCodes = <MissingCodeFlag>[];
+    final newMissingRpcs  = <MissingRpcFlag>[];
+
     final repriced = _customerGroups.map((group) {
       final newDevices = group.devices.map((record) {
         final result = engine.resolve(record);
+
+        // Rebuild warning flags live
+        if (result.missingCode) {
+          newMissingCodes.add(MissingCodeFlag(
+            customerName: record.customer,
+            serialNumber: record.serialNumber,
+            ratePlan: record.ratePlan,
+          ));
+        }
+        if (result.missingRpc) {
+          newMissingRpcs.add(MissingRpcFlag(
+            customerName: record.customer,
+            serialNumber: record.serialNumber,
+            ratePlan: record.ratePlan,
+            requiredRpc: result.matchedRule.contains('"')
+                ? RegExp(r'MISSING RPC "([^"]+)"')
+                        .firstMatch(result.matchedRule)
+                        ?.group(1) ?? ''
+                : '',
+          ));
+        }
+
         return record.withResolvedPricing(
           customerPrice: result.customerPrice,
           matchedRule: result.matchedRule,
@@ -235,6 +263,22 @@ class AppProvider extends ChangeNotifier {
     }).toList();
 
     _customerGroups = repriced;
+
+    // Update the parse result's warning flags so banners reflect current state
+    if (_parseResult != null) {
+      _parseResult = CsvParseResult(
+        reportName: _parseResult!.reportName,
+        reportDate: _parseResult!.reportDate,
+        dateFrom: _parseResult!.dateFrom,
+        dateTo: _parseResult!.dateTo,
+        records: _parseResult!.records, // raw records unchanged
+        skippedReasons: _parseResult!.skippedReasons,
+        blankCustomers: _parseResult!.blankCustomers,
+        missingCodeFlags: newMissingCodes,
+        missingRpcFlags: newMissingRpcs,
+      );
+    }
+
     notifyListeners();
   }
 
@@ -324,8 +368,9 @@ class AppProvider extends ChangeNotifier {
     final counts =
         await CustomerPlanCodeService.importFromQbSalesCsvPreserveCase(csvContent);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
+    repriceCurrent(); // bulk import → immediately re-price activations
     notifyListeners();
-    CloudSyncService.pushSilent(); // push updated plan codes to cloud
+    CloudSyncService.pushSilent();
     return counts;
   }
 
@@ -400,8 +445,10 @@ class AppProvider extends ChangeNotifier {
   // ── Filter Settings ─────────────────────────────────────────────────────
 
   void refreshFilterRules() {
-    notifyListeners();
-    CloudSyncService.pushSilent(); // persist filter rule changes to cloud
+    // Filter rule changes affect which devices are shown — trigger a full
+    // re-parse so the correct rows are included/excluded immediately.
+    refreshCurrentData();
+    CloudSyncService.pushSilent();
   }
 
   /// Called after QB ignore keywords change to push to cloud.
