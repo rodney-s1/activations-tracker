@@ -213,7 +213,31 @@ class AppProvider extends ChangeNotifier {
     _history = HistoryService.getAllSessions();
   }
 
-  // ── Customer Rates (legacy rate book) ──────────────────────────────────────
+  /// Re-price all currently loaded activation records with the latest pricing
+  /// data — without re-parsing the CSV. Called automatically after any pricing
+  /// change (standard rates, plan codes, overrides) so the Activations page
+  /// always reflects the latest settings immediately.
+  void repriceCurrent() {
+    if (_state != AppState.loaded || _customerGroups.isEmpty) return;
+
+    final engine = _pricingEngine;
+    final repriced = _customerGroups.map((group) {
+      final newDevices = group.devices.map((record) {
+        final result = engine.resolve(record);
+        return record.withResolvedPricing(
+          customerPrice: result.customerPrice,
+          matchedRule: result.matchedRule,
+          missingCode: result.missingCode,
+          missingRpc: result.missingRpc,
+        );
+      }).toList();
+      return CustomerGroup(customerName: group.customerName, devices: newDevices);
+    }).toList();
+
+    _customerGroups = repriced;
+    notifyListeners();
+  }
+
 
   void loadCustomerRates() {
     _customerRates = CustomerRateService.getAllRates();
@@ -244,13 +268,15 @@ class AppProvider extends ChangeNotifier {
   Future<void> saveStandardRate(StandardPlanRate rate) async {
     await StandardPlanRateService.update(rate);
     _standardRates = StandardPlanRateService.getAll();
+    repriceCurrent();
     notifyListeners();
-    CloudSyncService.pushSilent(); // persist change to cloud immediately
+    CloudSyncService.pushSilent();
   }
 
   Future<void> addStandardRate(StandardPlanRate rate) async {
     await StandardPlanRateService.add(rate);
     _standardRates = StandardPlanRateService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -258,6 +284,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> deleteStandardRate(StandardPlanRate rate) async {
     await StandardPlanRateService.delete(rate);
     _standardRates = StandardPlanRateService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -265,6 +292,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> resetStandardRates() async {
     await StandardPlanRateService.resetToDefaults();
     _standardRates = StandardPlanRateService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -274,6 +302,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> saveCustomerPlanCode(CustomerPlanCode code) async {
     await CustomerPlanCodeService.save(code);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -281,6 +310,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> deleteCustomerPlanCode(CustomerPlanCode code) async {
     await CustomerPlanCodeService.delete(code);
     _customerPlanCodes = CustomerPlanCodeService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -304,6 +334,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> saveRatePlanOverride(CustomerRatePlanOverride o) async {
     await CustomerRatePlanOverrideService.save(o);
     _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -311,6 +342,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> deleteRatePlanOverride(CustomerRatePlanOverride o) async {
     await CustomerRatePlanOverrideService.delete(o);
     _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    repriceCurrent();
     notifyListeners();
     CloudSyncService.pushSilent();
   }
@@ -383,16 +415,30 @@ class AppProvider extends ChangeNotifier {
   /// Re-parse the current CSV content with fresh pricing & filter settings.
   /// This is a lightweight "soft refresh" — no file pick needed.
   Future<void> refreshCurrentData() async {
-    if (_parseResult == null) return;
+    if (_parseResult == null && _state != AppState.loaded) return;
 
-    // We need the original raw content. It's stored in the last history session.
-    // Grab it from the most recent session that matches the current filename.
-    final session = _history.firstWhere(
-      (s) => s.fileName == _currentFileName,
-      orElse: () => _history.first,
-    );
+    // 1. Try to find the raw CSV in the in-memory history
+    String? rawContent;
+    if (_history.isNotEmpty) {
+      try {
+        final session = _history.firstWhere(
+          (s) => s.fileName == _currentFileName,
+          orElse: () => _history.first,
+        );
+        rawContent = session.rawCsvContent;
+      } catch (_) {}
+    }
 
-    await loadCsv(_currentFileName, session.rawCsvContent);
+    // 2. Fall back to CsvPersistService (covers app-restored sessions)
+    if (rawContent == null || rawContent.isEmpty) {
+      final saved = await CsvPersistService.loadActivations();
+      if (saved != null && saved.content.isNotEmpty) {
+        rawContent = saved.content;
+      }
+    }
+
+    if (rawContent == null || rawContent.isEmpty) return;
+    await loadCsv(_currentFileName, rawContent);
   }
 
   /// On startup: restore the last imported Activations CSV from local storage

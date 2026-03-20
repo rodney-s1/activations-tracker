@@ -50,6 +50,7 @@ void main() async {
 
   CloudSyncService.onPeriodicPullComplete = () {
     provider.loadPricingData(); // refreshes standardRates, planCodes, overrides, qbCustomers
+    provider.repriceCurrent();  // immediately re-price any loaded activations
   };
 
   if (AuthService.instance.isSignedIn) {
