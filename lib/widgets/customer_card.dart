@@ -997,19 +997,44 @@ class _DeviceRowState extends State<_DeviceRow> {
   bool _planCopied = false;
 
   /// Show the manual price override dialog.
+  ///
+  /// Siblings (same customer, same rate plan) are classified into four buckets:
+  ///   • clean     – same price, no flags, no existing override → included by default
+  ///   • outlier   – different resolvedCustomerPrice → excluded by default, shown with warning
+  ///   • flagged   – missingCodeFlag or missingRpcFlag → excluded by default, shown with warning
+  ///   • overridden – already has a manual override → excluded by default, shown with warning
   Future<void> _showPriceEditDialog(BuildContext context) async {
     final record = widget.record;
     final provider = context.read<AppProvider>();
     final existing = provider.devicePriceOverrides[record.serialNumber];
     final planText = record.ratePlan.isEmpty ? record.planMode : record.ratePlan;
+    final basePrice = record.resolvedCustomerPrice;
 
-    // Count how many other devices in the same customer group share this exact rate plan
+    // ── Classify siblings ──────────────────────────────────────────────────
     final CustomerGroup? group = widget.customerGroup;
-    final sameplanCount = group == null ? 0 :
-        group.devices.where((d) =>
-            d.serialNumber != record.serialNumber &&
-            (d.ratePlan.isEmpty ? d.planMode : d.ratePlan).trim().toLowerCase() ==
-                planText.trim().toLowerCase()).length;
+
+    // Each entry: { 'record': ActivationRecord, 'bucket': 'clean'|'outlier'|'flagged'|'overridden' }
+    final siblings = <Map<String, dynamic>>[];
+
+    if (group != null) {
+      for (final d in group.devices) {
+        if (d.serialNumber == record.serialNumber) continue;
+        final dPlan = (d.ratePlan.isEmpty ? d.planMode : d.ratePlan).trim().toLowerCase();
+        if (dPlan != planText.trim().toLowerCase()) continue;
+
+        String bucket;
+        if (provider.devicePriceOverrides.containsKey(d.serialNumber)) {
+          bucket = 'overridden';
+        } else if (d.missingCodeFlag || d.missingRpcFlag) {
+          bucket = 'flagged';
+        } else if (d.resolvedCustomerPrice != basePrice) {
+          bucket = 'outlier';
+        } else {
+          bucket = 'clean';
+        }
+        siblings.add({'record': d, 'bucket': bucket, 'included': bucket == 'clean'});
+      }
+    }
 
     final costCtrl = TextEditingController(
       text: existing != null && existing.yourCost > 0
@@ -1023,105 +1048,223 @@ class _DeviceRowState extends State<_DeviceRow> {
     );
 
     final hasExisting = existing != null;
-    bool spreadToAll = sameplanCount > 0; // default ON when siblings exist
+    final hasSiblings = siblings.isNotEmpty;
+    final cleanCount = siblings.where((s) => s['bucket'] == 'clean').length;
+    final outlierCount = siblings.where((s) => s['bucket'] == 'outlier').length;
+    final flaggedCount = siblings.where((s) => s['bucket'] == 'flagged').length;
+    final overriddenCount = siblings.where((s) => s['bucket'] == 'overridden').length;
 
     await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          title: Row(
-            children: [
-              const Icon(Icons.edit, size: 18, color: AppTheme.navyAccent),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Override Price: ${record.serialNumber}',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          content: SizedBox(
-            width: 320,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Rate Plan: $planText',
-                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                    maxLines: 2,
+        builder: (ctx, setS) {
+          final includedCount = siblings.where((s) => s['included'] == true).length;
+
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit, size: 18, color: AppTheme.navyAccent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Override Price: ${record.serialNumber}',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
                     overflow: TextOverflow.ellipsis,
                   ),
-                  Text(
-                    'Auto-priced: cost \$${record.monthlyCost.toStringAsFixed(2)}  ·  customer \$${record.resolvedCustomerPrice.toStringAsFixed(2)}',
-                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: costCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Your Cost (Geotab → you)',
-                      helperText: 'Monthly cost Geotab charges you',
-                      isDense: true,
-                      prefixText: '\$ ',
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 360,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── Plan / auto-price summary ──────────────────────
+                    Text(
+                      'Rate Plan: $planText',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: priceCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Customer Price (you → customer)',
-                      helperText: 'Monthly price you charge the customer',
-                      isDense: true,
-                      prefixText: '\$ ',
+                    Text(
+                      'Auto-priced: cost \$${record.monthlyCost.toStringAsFixed(2)}  ·  customer \$${record.resolvedCustomerPrice.toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                     ),
-                  ),
+                    const SizedBox(height: 16),
 
-                  // ── Spread to same-plan siblings ────────────────────
-                  if (sameplanCount > 0) ...[
-                    const SizedBox(height: 14),
-                    InkWell(
-                      onTap: () => setS(() => spreadToAll = !spreadToAll),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    // ── Cost / price fields ────────────────────────────
+                    TextField(
+                      controller: costCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Your Cost (Geotab → you)',
+                        helperText: 'Monthly cost Geotab charges you',
+                        isDense: true,
+                        prefixText: '\$ ',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: priceCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Customer Price (you → customer)',
+                        helperText: 'Monthly price you charge the customer',
+                        isDense: true,
+                        prefixText: '\$ ',
+                      ),
+                    ),
+
+                    // ── Sibling section ────────────────────────────────
+                    if (hasSiblings) ...[
+                      const SizedBox(height: 18),
+                      const Divider(height: 1),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Other devices on this plan',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.navyAccent.withValues(alpha: 0.85),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+
+                      // ── Clean siblings ─────────────────────────────
+                      if (cleanCount > 0) ...[
+                        _siblingHeader(
+                          icon: Icons.check_circle_outline,
+                          color: AppTheme.teal,
+                          label: '$cleanCount matching device${cleanCount == 1 ? '' : 's'} — same price, no issues',
+                          trailing: TextButton(
+                            onPressed: () => setS(() {
+                              for (final s in siblings) {
+                                if (s['bucket'] == 'clean') s['included'] = true;
+                              }
+                            }),
+                            style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                minimumSize: const Size(40, 24),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                foregroundColor: AppTheme.teal),
+                            child: const Text('All', style: TextStyle(fontSize: 10)),
+                          ),
+                        ),
+                        ...siblings.where((s) => s['bucket'] == 'clean').map((s) =>
+                          _siblingRow(
+                            s['record'] as ActivationRecord,
+                            s['included'] as bool,
+                            onChanged: (v) => setS(() => s['included'] = v),
+                            subtext: '\$${(s['record'] as ActivationRecord).resolvedCustomerPrice.toStringAsFixed(2)} / mo',
+                            checkColor: AppTheme.teal,
+                          ),
+                        ),
+                      ],
+
+                      // ── Outlier siblings ───────────────────────────
+                      if (outlierCount > 0) ...[
+                        const SizedBox(height: 8),
+                        _siblingHeader(
+                          icon: Icons.warning_amber_rounded,
+                          color: const Color(0xFFD97706),
+                          label: '$outlierCount device${outlierCount == 1 ? '' : 's'} with a different price — excluded by default',
+                        ),
+                        ...siblings.where((s) => s['bucket'] == 'outlier').map((s) {
+                          final d = s['record'] as ActivationRecord;
+                          return _siblingRow(
+                            d,
+                            s['included'] as bool,
+                            onChanged: (v) => setS(() => s['included'] = v),
+                            subtext: 'currently \$${d.resolvedCustomerPrice.toStringAsFixed(2)} / mo  ≠  \$${basePrice.toStringAsFixed(2)}',
+                            subColor: const Color(0xFFD97706),
+                            checkColor: const Color(0xFFD97706),
+                          );
+                        }),
+                      ],
+
+                      // ── Flagged siblings ───────────────────────────
+                      if (flaggedCount > 0) ...[
+                        const SizedBox(height: 8),
+                        _siblingHeader(
+                          icon: Icons.error_outline,
+                          color: AppTheme.red,
+                          label: '$flaggedCount device${flaggedCount == 1 ? '' : 's'} with pricing warnings — excluded by default',
+                        ),
+                        ...siblings.where((s) => s['bucket'] == 'flagged').map((s) {
+                          final d = s['record'] as ActivationRecord;
+                          final reason = d.missingCodeFlag ? 'missing plan code' : 'missing RPC';
+                          return _siblingRow(
+                            d,
+                            s['included'] as bool,
+                            onChanged: (v) => setS(() => s['included'] = v),
+                            subtext: reason,
+                            subColor: AppTheme.red,
+                            checkColor: AppTheme.red,
+                          );
+                        }),
+                      ],
+
+                      // ── Already-overridden siblings ────────────────
+                      if (overriddenCount > 0) ...[
+                        const SizedBox(height: 8),
+                        _siblingHeader(
+                          icon: Icons.lock_outline,
+                          color: AppTheme.textSecondary,
+                          label: '$overriddenCount device${overriddenCount == 1 ? '' : 's'} already have a manual override — excluded by default',
+                        ),
+                        ...siblings.where((s) => s['bucket'] == 'overridden').map((s) {
+                          final d = s['record'] as ActivationRecord;
+                          final ov = provider.devicePriceOverrides[d.serialNumber];
+                          final ovStr = ov != null ? '\$${ov.customerPrice.toStringAsFixed(2)}' : '?';
+                          return _siblingRow(
+                            d,
+                            s['included'] as bool,
+                            onChanged: (v) => setS(() => s['included'] = v),
+                            subtext: 'override: $ovStr / mo',
+                            subColor: AppTheme.textSecondary,
+                            checkColor: AppTheme.textSecondary,
+                          );
+                        }),
+                      ],
+
+                      // ── Summary ────────────────────────────────────
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                         decoration: BoxDecoration(
-                          color: spreadToAll
-                              ? AppTheme.navyAccent.withValues(alpha: 0.08)
-                              : const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(8),
+                          color: includedCount > 0
+                              ? AppTheme.navyAccent.withValues(alpha: 0.07)
+                              : const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(7),
                           border: Border.all(
-                            color: spreadToAll
-                                ? AppTheme.navyAccent.withValues(alpha: 0.35)
+                            color: includedCount > 0
+                                ? AppTheme.navyAccent.withValues(alpha: 0.25)
                                 : const Color(0xFFE2E8F0),
                           ),
                         ),
                         child: Row(
                           children: [
-                            SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: Checkbox(
-                                value: spreadToAll,
-                                onChanged: (v) => setS(() => spreadToAll = v ?? false),
-                                activeColor: AppTheme.navyAccent,
-                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                visualDensity: VisualDensity.compact,
-                              ),
+                            Icon(
+                              includedCount > 0
+                                  ? Icons.check_circle
+                                  : Icons.radio_button_unchecked,
+                              size: 13,
+                              color: includedCount > 0
+                                  ? AppTheme.navyAccent
+                                  : AppTheme.textSecondary,
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 6),
                             Expanded(
                               child: Text(
-                                'Apply to all $sameplanCount other device${sameplanCount == 1 ? '' : 's'} on the same plan',
+                                includedCount == 0
+                                    ? 'Override will apply to this device only'
+                                    : 'Override will apply to this device + $includedCount other${includedCount == 1 ? '' : 's'}',
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
-                                  color: spreadToAll
+                                  color: includedCount > 0
                                       ? AppTheme.navyAccent
                                       : AppTheme.textSecondary,
                                 ),
@@ -1130,110 +1273,185 @@ class _DeviceRowState extends State<_DeviceRow> {
                           ],
                         ),
                       ),
-                    ),
-                  ],
+                    ],
 
-                  // ── Active override notice ───────────────────────────
-                  if (hasExisting) ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFF7ED),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.info_outline, size: 13, color: Color(0xFFB45309)),
-                          SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              'Manual override active — tap Clear Override to restore auto-pricing',
-                              style: TextStyle(fontSize: 10, color: Color(0xFFB45309)),
+                    // ── Active override notice ─────────────────────────
+                    if (hasExisting) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF7ED),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.info_outline, size: 13, color: Color(0xFFB45309)),
+                            SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Manual override active — tap Clear Override to restore auto-pricing',
+                                style: TextStyle(fontSize: 10, color: Color(0xFFB45309)),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
-          ),
-          actions: [
-            if (hasExisting)
-              TextButton.icon(
+            actions: [
+              if (hasExisting)
+                TextButton.icon(
+                  onPressed: () async {
+                    await provider.clearDevicePriceOverride(record.serialNumber);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Override cleared for ${record.serialNumber}'),
+                          backgroundColor: AppTheme.teal,
+                          duration: const Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.undo, size: 14),
+                  label: const Text('Clear Override'),
+                  style: TextButton.styleFrom(foregroundColor: AppTheme.red),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
                 onPressed: () async {
-                  await provider.clearDevicePriceOverride(record.serialNumber);
+                  final cost = double.tryParse(
+                      costCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                  final price = double.tryParse(
+                      priceCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
+                  if (cost <= 0 && price <= 0) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Enter at least one value > 0')),
+                    );
+                    return;
+                  }
+                  final includedSerials = siblings
+                      .where((s) => s['included'] == true)
+                      .map((s) => (s['record'] as ActivationRecord).serialNumber)
+                      .toList();
+                  final count = await provider.setDevicePriceOverride(
+                    record.serialNumber,
+                    cost,
+                    price,
+                    extraSerials: includedSerials,
+                  );
                   if (ctx.mounted) Navigator.pop(ctx);
                   if (context.mounted) {
+                    final msg = count > 1
+                        ? 'Override applied to $count devices on $planText'
+                        : 'Price override saved for ${record.serialNumber}';
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('Override cleared for ${record.serialNumber}'),
-                        backgroundColor: AppTheme.teal,
-                        duration: const Duration(seconds: 2),
+                        content: Text(msg),
+                        backgroundColor: AppTheme.navyAccent,
+                        duration: const Duration(seconds: 3),
                       ),
                     );
                   }
                 },
-                icon: const Icon(Icons.undo, size: 14),
-                label: const Text('Clear Override'),
-                style: TextButton.styleFrom(foregroundColor: AppTheme.red),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.navyAccent,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Save Override'),
               ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final cost = double.tryParse(
-                    costCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
-                final price = double.tryParse(
-                    priceCtrl.text.replaceAll('\$', '').trim()) ?? 0.0;
-                if (cost <= 0 && price <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('Enter at least one value > 0')),
-                  );
-                  return;
-                }
-                final count = await provider.setDevicePriceOverride(
-                  record.serialNumber,
-                  cost,
-                  price,
-                  spreadToSamePlan: spreadToAll && sameplanCount > 0,
-                  customerName: group?.customerName,
-                  ratePlan: planText,
-                );
-                if (ctx.mounted) Navigator.pop(ctx);
-                if (context.mounted) {
-                  final msg = count > 1
-                      ? 'Override applied to $count devices on $planText'
-                      : 'Price override saved for ${record.serialNumber}';
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(msg),
-                      backgroundColor: AppTheme.navyAccent,
-                      duration: const Duration(seconds: 3),
-                    ),
-                  );
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.navyAccent,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Save Override'),
-            ),
-          ],
-        ),
+            ],
+          );
+        },
       ),
     );
 
     costCtrl.dispose();
     priceCtrl.dispose();
+  }
+
+  /// A small labelled section header for sibling groups.
+  Widget _siblingHeader({
+    required IconData icon,
+    required Color color,
+    required String label,
+    Widget? trailing,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (trailing != null) trailing,
+        ],
+      ),
+    );
+  }
+
+  /// A single sibling device row with a checkbox.
+  Widget _siblingRow(
+    ActivationRecord d,
+    bool included, {
+    required ValueChanged<bool> onChanged,
+    required String subtext,
+    Color? subColor,
+    required Color checkColor,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 2),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: Checkbox(
+              value: included,
+              onChanged: (v) => onChanged(v ?? false),
+              activeColor: checkColor,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  d.serialNumber,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+                Text(
+                  subtext,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: subColor ?? AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _copyRatePlan(BuildContext context) async {

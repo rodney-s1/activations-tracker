@@ -114,20 +114,65 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Set a manual price override for a specific device and immediately re-apply.
-  Future<void> setDevicePriceOverride(String serialNumber, double yourCost, double customerPrice) async {
-    final ov = DevicePriceOverride(
-      serialNumber: serialNumber,
-      yourCost: yourCost,
-      customerPrice: customerPrice,
-    );
-    await DevicePriceOverrideService.save(ov);
-    _devicePriceOverrides[serialNumber] = ov;
+  /// Set a manual price override for a device.
+  ///
+  /// The primary device ([serialNumber]) is always overridden.
+  /// Pass [extraSerials] to also override a caller-selected list of sibling
+  /// devices (the dialog builds this list after filtering out outliers, flagged
+  /// devices, and devices that already have overrides).
+  ///
+  /// The legacy [spreadToSamePlan] / [customerName] / [ratePlan] path is kept
+  /// for backwards-compatibility but is no longer used by the dialog.
+  Future<int> setDevicePriceOverride(
+    String serialNumber,
+    double yourCost,
+    double customerPrice, {
+    List<String> extraSerials = const [],
+    // legacy params kept for compat
+    bool spreadToSamePlan = false,
+    String? customerName,
+    String? ratePlan,
+  }) async {
+    // Build the list of serials to override (always includes the target serial)
+    final seriesToOverride = <String>{serialNumber};
+
+    // Prefer the explicit list from the dialog
+    if (extraSerials.isNotEmpty) {
+      seriesToOverride.addAll(extraSerials);
+    } else if (spreadToSamePlan && customerName != null && ratePlan != null && _state == AppState.loaded) {
+      // Legacy fallback: collect all serials on the same plan
+      final planNorm = ratePlan.trim().toLowerCase();
+      for (final group in _customerGroups) {
+        if (group.customerName == customerName) {
+          for (final d in group.devices) {
+            if (d.serialNumber != serialNumber &&
+                d.ratePlan.trim().toLowerCase() == planNorm) {
+              seriesToOverride.add(d.serialNumber);
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // Save all overrides
+    for (final s in seriesToOverride) {
+      final ov = DevicePriceOverride(
+        serialNumber: s,
+        yourCost: yourCost,
+        customerPrice: customerPrice,
+      );
+      await DevicePriceOverrideService.save(ov);
+      _devicePriceOverrides[s] = ov;
+    }
+
     // Apply immediately to the loaded data
     if (_state == AppState.loaded) {
       _applyDeviceOverrides();
       notifyListeners();
     }
+
+    return seriesToOverride.length; // how many devices were updated
   }
 
   /// Clear the manual override for a device and re-price from rules.
