@@ -1043,7 +1043,30 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
       for (int ci = 0; ci < summaries.length; ci++) {
         final childNorm = _normKey(summaries[ci].customerName);
-        final parentNorm = parentMap[childNorm];
+
+        // Look up in parentMap.  Try three progressively-stripped variants so
+        // MyAdmin name differences don't block the match:
+        //   1. Full normalised name           e.g. "amanah logistics - richard cooper"
+        //   2. Dash-contact stripped           e.g. "amanah logistics"
+        //      (MyAdmin appends " - Contact Name"; QB name never has this)
+        //   3. Legal-suffix stripped of (2)    e.g. strip trailing llc/inc etc.
+        String? parentNorm = parentMap[childNorm];
+        if (parentNorm == null) {
+          // Strip " - Contact Name" suffix (space-dash-space + anything)
+          final dashIdx = childNorm.indexOf(' - ');
+          if (dashIdx > 0) {
+            final dashStripped = childNorm.substring(0, dashIdx).trim();
+            parentNorm = parentMap[dashStripped];
+            // Also try stripping legal suffix from the dash-stripped name
+            if (parentNorm == null) {
+              final noLegal = dashStripped.replaceFirst(
+                  RegExp(r'\s+(llc|inc\.?|corp\.?|co\.?|ltd\.?|l\.l\.c\.?)$',
+                      caseSensitive: false),
+                  '').trim();
+              if (noLegal != dashStripped) parentNorm = parentMap[noLegal];
+            }
+          }
+        }
         if (parentNorm == null) continue; // not a child account
 
         // Find the parent summary by normKey

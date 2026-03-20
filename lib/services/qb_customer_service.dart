@@ -318,10 +318,31 @@ class QbCustomerService {
       result[_normalizeName(c.name)] = parentNorm;
 
       // (b) short name — everything after the LAST colon, if one exists
+      //     e.g. "Firgos Trucking Insurance:Amanah Logistics LLC"
+      //          → shortName = "Amanah Logistics LLC"
       final colonIdx = c.name.lastIndexOf(':');
+      String? shortName;
       if (colonIdx >= 0 && colonIdx < c.name.length - 1) {
-        final shortName = c.name.substring(colonIdx + 1).trim();
+        shortName = c.name.substring(colonIdx + 1).trim();
         result[_normalizeName(shortName)] = parentNorm;
+      }
+
+      // (c) legal-suffix-stripped variants of (a) and (b)
+      //     MyAdmin often omits "LLC", "Inc", "Corp" etc. from the customer
+      //     name, so "Amanah Logistics LLC" in QB may appear as just
+      //     "Amanah Logistics" in MyAdmin.
+      final legalSuffixRe = RegExp(
+          r'\s+(llc|inc\.?|corp\.?|co\.?|ltd\.?|l\.l\.c\.?)$',
+          caseSensitive: false);
+      final baseA = _normalizeName(c.name).replaceFirst(legalSuffixRe, '').trim();
+      if (baseA.isNotEmpty && baseA != _normalizeName(c.name)) {
+        result[baseA] = parentNorm;
+      }
+      if (shortName != null) {
+        final baseB = _normalizeName(shortName).replaceFirst(legalSuffixRe, '').trim();
+        if (baseB.isNotEmpty && baseB != _normalizeName(shortName)) {
+          result[baseB] = parentNorm;
+        }
       }
     }
     return result;
