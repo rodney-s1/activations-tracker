@@ -395,6 +395,30 @@ class _QbCustomerTileState extends State<_QbCustomerTile> {
                         fontStyle: FontStyle.italic,
                       ),
                     ),
+                  // Parent account badge
+                  if (customer.parentAccountName.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Row(
+                        children: [
+                          Icon(Icons.account_tree_outlined,
+                              size: 11,
+                              color: AppTheme.navyAccent.withValues(alpha: 0.7)),
+                          const SizedBox(width: 3),
+                          Expanded(
+                            child: Text(
+                              'Bills under: ${customer.parentAccountName}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.navyAccent.withValues(alpha: 0.85),
+                                fontWeight: FontWeight.w600,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -477,10 +501,211 @@ class _QbCustomerTileState extends State<_QbCustomerTile> {
                 ),
               ),
             ),
+            // Parent account assignment button
+            const SizedBox(width: 4),
+            Tooltip(
+              message: customer.parentAccountName.isEmpty
+                  ? 'Assign parent account\n(child devices roll up to parent in QB Verify)'
+                  : 'Parent: ${customer.parentAccountName}\nTap to change or remove',
+              child: GestureDetector(
+                onTap: () => _showParentDialog(context),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: customer.parentAccountName.isNotEmpty
+                        ? AppTheme.navyAccent.withValues(alpha: 0.12)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: customer.parentAccountName.isNotEmpty
+                          ? AppTheme.navyAccent.withValues(alpha: 0.45)
+                          : AppTheme.textSecondary.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Icon(
+                    customer.parentAccountName.isNotEmpty
+                        ? Icons.account_tree
+                        : Icons.account_tree_outlined,
+                    size: 14,
+                    color: customer.parentAccountName.isNotEmpty
+                        ? AppTheme.navyAccent
+                        : AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  /// Dialog to assign or clear the parent account.
+  Future<void> _showParentDialog(BuildContext context) async {
+    final customer = widget.customer;
+    final allCustomers = QbCustomerService.getAll()
+        .where((c) => c.name != customer.name) // exclude self
+        .map((c) => c.name)
+        .toList();
+
+    final searchCtrl = TextEditingController();
+    String? selected = customer.parentAccountName.isEmpty
+        ? null
+        : customer.parentAccountName;
+    List<String> filtered = List.from(allCustomers);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.account_tree_outlined,
+                  size: 16, color: AppTheme.navyAccent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Parent Account for ${customer.name}',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 320,
+            height: 360,
+            child: Column(
+              children: [
+                Text(
+                  'Devices under this account will be counted '
+                  'under the parent\'s QB Verify row. '
+                  'This account will be hidden from the verify list.',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: searchCtrl,
+                  decoration: const InputDecoration(
+                    hintText: 'Search customers…',
+                    prefixIcon: Icon(Icons.search, size: 16),
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                  ),
+                  onChanged: (v) => setS(() {
+                    final q = v.trim().toLowerCase();
+                    filtered = allCustomers
+                        .where((n) => n.toLowerCase().contains(q))
+                        .toList();
+                  }),
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: filtered.isEmpty
+                      ? const Center(
+                          child: Text('No customers found',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary)))
+                      : ListView.builder(
+                          itemCount: filtered.length,
+                          itemBuilder: (_, i) {
+                            final name = filtered[i];
+                            final isSelected = name == selected;
+                            return InkWell(
+                              onTap: () => setS(() => selected = name),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 8),
+                                margin: const EdgeInsets.only(bottom: 2),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? AppTheme.navyAccent
+                                          .withValues(alpha: 0.1)
+                                      : null,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: isSelected
+                                      ? Border.all(
+                                          color: AppTheme.navyAccent
+                                              .withValues(alpha: 0.4))
+                                      : null,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        name,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: isSelected
+                                              ? FontWeight.w700
+                                              : FontWeight.normal,
+                                          color: isSelected
+                                              ? AppTheme.navyAccent
+                                              : AppTheme.textPrimary,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isSelected)
+                                      const Icon(Icons.check_circle,
+                                          size: 14,
+                                          color: AppTheme.navyAccent),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            if (customer.parentAccountName.isNotEmpty)
+              TextButton.icon(
+                onPressed: () async {
+                  final provider = context.read<AppProvider>();
+                  await QbCustomerService.clearParent(customer.name);
+                  if (mounted) setState(() {});
+                  provider.notifyQbCustomersChanged();
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                icon: const Icon(Icons.link_off, size: 14),
+                label: const Text('Remove Parent'),
+                style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.red),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: selected == null
+                  ? null
+                  : () async {
+                      final provider = context.read<AppProvider>();
+                      await QbCustomerService.setParent(
+                          customer.name, selected!);
+                      if (mounted) setState(() {});
+                      provider.notifyQbCustomersChanged();
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.navyAccent,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    searchCtrl.dispose();
   }
 }
 

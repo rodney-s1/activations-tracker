@@ -1033,6 +1033,58 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
     }
 
+    // ── Parent-child account roll-up ──────────────────────────────────────────
+    // Child accounts have devices in MyAdmin but the monthly invoice goes to the
+    // parent.  Roll each child's activeCount into its parent's summary row,
+    // then remove the child row so it never surfaces as a false "activeOnly" alarm.
+    final parentMap = QbCustomerService.getParentMapNormalized();
+    if (parentMap.isNotEmpty) {
+      final toRemove = <int>{}; // indices of child summaries to drop
+
+      for (int ci = 0; ci < summaries.length; ci++) {
+        final childNorm = _normKey(summaries[ci].customerName);
+        final parentNorm = parentMap[childNorm];
+        if (parentNorm == null) continue; // not a child account
+
+        // Find the parent summary by normKey
+        final pi = summaries.indexWhere(
+            (s) => _normKey(s.customerName) == parentNorm);
+        if (pi < 0) continue; // parent not in list yet — skip quietly
+
+        final child  = summaries[ci];
+        final parent = summaries[pi];
+
+        // Merge child's billable device count + device list into the parent.
+        // The parent's CUA rule was already applied when its own summary was
+        // built, so we add the child's activeCount as-is (child falls under
+        // the parent's CUA umbrella per business rule).
+        summaries[pi] = QbCustomerSummary(
+          customerName:  parent.customerName,
+          billedCount:   parent.billedCount,
+          totalBilled:   parent.totalBilled,
+          qbLines:       parent.qbLines,
+          activeCount:   parent.activeCount + child.activeCount,
+          unknownCount:  parent.unknownCount + child.unknownCount,
+          hanoverCount:  parent.hanoverCount + child.hanoverCount,
+          hanoverCsQty:  parent.hanoverCsQty + child.hanoverCsQty,
+          cameraCount:   parent.cameraCount  + child.cameraCount,
+          geotabCount:   parent.geotabCount  + child.geotabCount,
+          goFocusCount:     parent.goFocusCount     + child.goFocusCount,
+          goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
+          activeDevices: [...parent.activeDevices, ...child.activeDevices],
+          isCua:    parent.isCua,
+          jobType:  parent.jobType,
+        );
+
+        toRemove.add(ci);
+      }
+
+      // Remove child rows in reverse order so indices stay valid
+      for (final idx in toRemove.toList().reversed) {
+        summaries.removeAt(idx);
+      }
+    }
+
     // Sort: issues first, then alphabetically
     summaries.sort((a, b) {
       final aOk = a.status == VerifyStatus.match ? 1 : 0;

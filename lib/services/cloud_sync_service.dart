@@ -315,13 +315,14 @@ class CloudSyncService {
         'updatedAt': DateTime.now().toIso8601String(),
         'count': customers.length,
         'data': customers.map((c) => {
-          'name':      c.name,
-          'accountNo': c.accountNo,
-          'email':     c.email,
-          'phone':     c.phone,
-          'address':   c.address,
-          'isCua':     c.isCua,
-          'jobType':   c.jobType,
+          'name':              c.name,
+          'accountNo':         c.accountNo,
+          'email':             c.email,
+          'phone':             c.phone,
+          'address':           c.address,
+          'isCua':             c.isCua,
+          'jobType':           c.jobType,
+          'parentAccountName': c.parentAccountName,
         }).toList(),
       });
       if (r6 != null && kDebugMode) {
@@ -513,13 +514,14 @@ class CloudSyncService {
             await QbCustomerService.clear();
             for (final item in list) {
               await QbCustomerService.box.add(QbCustomer(
-                name:      item['name']?.toString()      ?? '',
-                accountNo: item['accountNo']?.toString() ?? '',
-                email:     item['email']?.toString()     ?? '',
-                phone:     item['phone']?.toString()     ?? '',
-                address:   item['address']?.toString()   ?? '',
-                isCua:     item['isCua']    as bool?     ?? false,
-                jobType:   item['jobType']?.toString()   ?? '',
+                name:              item['name']?.toString()              ?? '',
+                accountNo:         item['accountNo']?.toString()         ?? '',
+                email:             item['email']?.toString()             ?? '',
+                phone:             item['phone']?.toString()             ?? '',
+                address:           item['address']?.toString()           ?? '',
+                isCua:             item['isCua']    as bool?             ?? false,
+                jobType:           item['jobType']?.toString()           ?? '',
+                parentAccountName: item['parentAccountName']?.toString() ?? '',
               ));
             }
             counts['qbCustomers'] = list.length;
@@ -665,13 +667,14 @@ class CloudSyncService {
           'updatedAt': DateTime.now().toIso8601String(),
           'count': customers.length,
           'data': customers.map((c) => {
-            'name':      c.name,
-            'accountNo': c.accountNo,
-            'email':     c.email,
-            'phone':     c.phone,
-            'address':   c.address,
-            'isCua':     c.isCua,
-            'jobType':   c.jobType,
+            'name':              c.name,
+            'accountNo':         c.accountNo,
+            'email':             c.email,
+            'phone':             c.phone,
+            'address':           c.address,
+            'isCua':             c.isCua,
+            'jobType':           c.jobType,
+            'parentAccountName': c.parentAccountName,
           }).toList(),
         }),
         _putNode('qb_ignore_keywords', {

@@ -32,6 +32,13 @@ class QbCustomer extends HiveObject {
   @HiveField(6, defaultValue: '')
   String jobType;
 
+  /// Name of the parent QB customer that receives this account's monthly invoice.
+  /// Empty string = top-level account (default).
+  /// When set, this account's devices roll up into the parent's QB Verify count
+  /// and this row is suppressed from the verify list to prevent false activeOnly warnings.
+  @HiveField(7, defaultValue: '')
+  String parentAccountName;
+
   QbCustomer({
     required this.name,
     this.accountNo = '',
@@ -40,5 +47,6 @@ class QbCustomer extends HiveObject {
     this.address = '',
     this.isCua = false,
     this.jobType = '',
+    this.parentAccountName = '',
   });
 }

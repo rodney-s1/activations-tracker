@@ -17,20 +17,21 @@ class QbCustomerAdapter extends TypeAdapter<QbCustomer> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return QbCustomer(
-      name:      fields[0] as String,
-      accountNo: fields[1] as String,
-      email:     fields[2] as String,
-      phone:     fields[3] as String,
-      address:   fields[4] as String,
-      isCua:     fields[5] == null ? false : fields[5] as bool,
-      jobType:   fields[6] as String? ?? '',
+      name:              fields[0] as String,
+      accountNo:         fields[1] as String,
+      email:             fields[2] as String,
+      phone:             fields[3] as String,
+      address:           fields[4] as String,
+      isCua:             fields[5] == null ? false : fields[5] as bool,
+      jobType:           fields[6] as String? ?? '',
+      parentAccountName: fields[7] as String? ?? '',
     );
   }
 
   @override
   void write(BinaryWriter writer, QbCustomer obj) {
     writer
-      ..writeByte(7)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.name)
       ..writeByte(1)
@@ -44,7 +45,9 @@ class QbCustomerAdapter extends TypeAdapter<QbCustomer> {
       ..writeByte(5)
       ..write(obj.isCua)
       ..writeByte(6)
-      ..write(obj.jobType);
+      ..write(obj.jobType)
+      ..writeByte(7)
+      ..write(obj.parentAccountName);
   }
 
   @override

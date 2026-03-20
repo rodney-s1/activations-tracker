@@ -233,4 +233,33 @@ class QbCustomerService {
   }
 
   static Future<void> clear() => _box!.clear();
+
+  // ── Parent account assignment ───────────────────────────────────────────────
+
+  /// Set [childName]'s parent to [parentName].
+  /// Pass an empty string for [parentName] to clear the relationship.
+  static Future<void> setParent(String childName, String parentName) async {
+    for (final c in _box!.values) {
+      if (c.name == childName) {
+        c.parentAccountName = parentName;
+        await c.save();
+        return;
+      }
+    }
+  }
+
+  /// Remove the parent assignment from [childName] (makes it a top-level account).
+  static Future<void> clearParent(String childName) => setParent(childName, '');
+
+  /// Return a map of  normKey(childName) → normKey(parentName)
+  /// for every customer that has a parent set.
+  /// Used by QB Verify to merge child device counts into the parent row.
+  static Map<String, String> getParentMapNormalized() {
+    final result = <String, String>{};
+    for (final c in _box!.values) {
+      if (c.parentAccountName.trim().isEmpty) continue;
+      result[_normalizeName(c.name)] = _normalizeName(c.parentAccountName);
+    }
+    return result;
+  }
 }
