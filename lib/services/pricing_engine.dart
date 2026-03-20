@@ -131,11 +131,16 @@ class PricingEngine {
               '${rpcRequired.isNotEmpty ? ' (RPC: $rpcRequired ✓)' : ''}',
         );
       } else {
-        // Customer has codes but NONE matched this plan — flag it
-        final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
+        // Customer has codes but NONE matched this plan — flag it.
+        // Still apply standard rate pricing (including customerPrice if set).
+        final missedRate = _matchedStandardRate(ratePlanNorm);
+        final stdCost = missedRate?.yourCost ?? record.monthlyCost;
+        final stdCustomerPrice = (missedRate != null && missedRate.customerPrice > 0)
+            ? missedRate.customerPrice
+            : stdCost;
         return PriceResult(
           yourCost: stdCost,
-          customerPrice: stdCost, // temporary fallback, flagged
+          customerPrice: stdCustomerPrice, // use rate's customerPrice even on missing-code flag
           source: PriceSource.standardPlan,
           matchedRule: 'MISSING CODE — no plan code matched "${record.ratePlan}"',
           missingCode: true,
@@ -144,14 +149,22 @@ class PricingEngine {
     }
 
     // ── Tier 2: Standard plan keyword match ───────────────────────
-    final stdCost = _resolveStandardCost(ratePlanNorm, record.monthlyCost);
-    if (stdCost != record.monthlyCost) {
-      final matched = _matchedStandardRate(ratePlanNorm);
+    // Always prefer the stored standard rate over the raw CSV value.
+    // If customerPrice is set (> 0) on the rate, use it; otherwise charge
+    // the same as yourCost (cost-pass-through).
+    final matched2 = _matchedStandardRate(ratePlanNorm);
+    if (matched2 != null) {
+      final resolvedCost = matched2.yourCost > 0
+          ? matched2.yourCost
+          : record.monthlyCost;
+      final resolvedCustomerPrice = matched2.customerPrice > 0
+          ? matched2.customerPrice
+          : resolvedCost;
       return PriceResult(
-        yourCost: stdCost,
-        customerPrice: stdCost, // no customer override → your cost IS what you charge
+        yourCost: resolvedCost,
+        customerPrice: resolvedCustomerPrice,
         source: PriceSource.standardPlan,
-        matchedRule: 'Standard plan: ${matched?.planKey ?? ""}',
+        matchedRule: 'Standard plan: ${matched2.planKey}',
       );
     }
 
@@ -166,7 +179,10 @@ class PricingEngine {
 
   double _resolveStandardCost(String ratePlanNorm, double fallback) {
     final match = _matchedStandardRate(ratePlanNorm);
-    return match?.yourCost ?? fallback;
+    // Return the stored yourCost if it's been set (> 0), otherwise use the CSV fallback.
+    // This ensures that updating a standard rate's yourCost is always reflected.
+    if (match != null) return match.yourCost > 0 ? match.yourCost : fallback;
+    return fallback;
   }
 
   StandardPlanRate? _matchedStandardRate(String ratePlanNorm) {
