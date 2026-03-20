@@ -246,6 +246,14 @@ class CsvParserService {
       try {
         var record = ActivationRecord.fromCsvRow(cols);
 
+        // ── Skip rows where 'Processed On' (col 9) is blank ───────────
+        // These are not yet processed activations and should be ignored.
+        if (record.processedOn == null) {
+          skipped.add(
+              '${record.serialNumber}: skipped (blank Processed On)');
+          continue;
+        }
+
         // ── Blank customer name detection ──────────────────────────
         if (record.customer.trim().isEmpty) {
           blankCustomers.add(BlankCustomerRecord(

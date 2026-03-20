@@ -1084,7 +1084,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     if (index == groups.length) {
                       return _buildGrandTotal(provider);
                     }
-                    return CustomerCard(group: groups[index]);
+                    return CustomerCard(
+                      group: groups[index],
+                      filterFrom: _filterFrom,
+                      filterTo: _filterTo,
+                    );
                   },
                 ),
         ),

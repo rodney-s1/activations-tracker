@@ -16,10 +16,17 @@ class CustomerCard extends StatefulWidget {
   /// Rows matching these dates will be visually dimmed and skipped in "copy all".
   final Set<DateTime> processedDates;
 
+  /// Optional date range filter from the dashboard.
+  /// Only date groups whose date falls within [filterFrom, filterTo] are shown.
+  final DateTime? filterFrom;
+  final DateTime? filterTo;
+
   const CustomerCard({
     super.key,
     required this.group,
     this.processedDates = const {},
+    this.filterFrom,
+    this.filterTo,
   });
 
   @override
@@ -40,7 +47,17 @@ class _CustomerCardState extends State<CustomerCard> {
   Widget build(BuildContext context) {
     final g = widget.group;
     final accent = _completed ? _completedBar : AppTheme.navyAccent;
-    final sortedDates = g.sortedBillingDates;
+
+    // Apply date range filter: only show date-groups within [filterFrom, filterTo]
+    final allDates = g.sortedBillingDates;
+    final sortedDates = (widget.filterFrom == null && widget.filterTo == null)
+        ? allDates
+        : allDates.where((date) {
+            final day = DateTime(date.year, date.month, date.day);
+            if (widget.filterFrom != null && day.isBefore(widget.filterFrom!)) return false;
+            if (widget.filterTo != null && day.isAfter(widget.filterTo!)) return false;
+            return true;
+          }).toList();
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
@@ -157,11 +174,30 @@ class _CustomerCardState extends State<CustomerCard> {
                       Row(
                         children: [
                           _badge(
-                            '${g.deviceCount} device${g.deviceCount == 1 ? '' : 's'}',
+                            () {
+                              // Show filtered device count when date filter is active
+                              final filteredCount = sortedDates.isEmpty
+                                  ? g.deviceCount
+                                  : sortedDates.fold<int>(0, (sum, d) =>
+                                      sum + (g.devicesByBillingDate[d]?.length ?? 0));
+                              return '$filteredCount device${filteredCount == 1 ? '' : 's'}';
+                            }(),
                             _completed ? _completedBar : AppTheme.teal,
                           ),
                           const SizedBox(width: 8),
-                          if (g.earliestBillingStart != null) ...[
+                          if (sortedDates.isNotEmpty) ...[
+                            Icon(Icons.calendar_today,
+                                size: 12,
+                                color: AppTheme.textSecondary),
+                            const SizedBox(width: 3),
+                            Text(
+                              'From ${Formatters.date(sortedDates.first)}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppTheme.textSecondary,
+                              ),
+                            ),
+                          ] else if (g.earliestBillingStart != null) ...[
                             Icon(Icons.calendar_today,
                                 size: 12,
                                 color: AppTheme.textSecondary),
