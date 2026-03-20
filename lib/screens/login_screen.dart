@@ -69,7 +69,7 @@ class _LoginCard extends StatelessWidget {
 
             // ── App name ──────────────────────────────────────────────
             const Text(
-              'Activation Tracker',
+              'Billing Tracker',
               style: TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.w800,
@@ -79,7 +79,7 @@ class _LoginCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Blue Arrow GPS',
+              'BlueArrow Telematics, Inc.',
               style: TextStyle(
                 fontSize: 14,
                 color: AppTheme.tealLight,
