@@ -46,6 +46,25 @@ class QbCustomerService {
     // Strip BOM if present
     if (content.startsWith('\uFEFF')) content = content.substring(1);
 
+    // ── Preserve parent-account assignments across re-imports ─────────────────
+    // importFromCsv clears the box, which would destroy any parentAccountName
+    // values the user set via the UI.  Snapshot them first (keyed by normalised
+    // name) and re-apply them after the new records have been written.
+    final savedParents = <String, String>{};
+    for (final c in _box!.values) {
+      if (c.parentAccountName.trim().isNotEmpty) {
+        savedParents[_normalizeName(c.name)] = c.parentAccountName;
+        // Also save under the short name (after colon) so both QB and MyAdmin
+        // variant names are covered after the re-import.
+        final colonIdx = c.name.lastIndexOf(':');
+        if (colonIdx >= 0 && colonIdx < c.name.length - 1) {
+          final shortName = c.name.substring(colonIdx + 1).trim();
+          savedParents[_normalizeName(shortName)] = c.parentAccountName;
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     await _box!.clear();
     int count = 0;
 
@@ -147,6 +166,31 @@ class QbCustomerService {
       ));
       count++;
     }
+
+    // ── Restore preserved parent assignments ──────────────────────────────────
+    if (savedParents.isNotEmpty) {
+      for (final c in _box!.values) {
+        // Try to match the freshly-imported record against the snapshot.
+        // We check both the full name and the short name (after colon).
+        String? restoredParent = savedParents[_normalizeName(c.name)];
+        if (restoredParent == null) {
+          final colonIdx = c.name.lastIndexOf(':');
+          if (colonIdx >= 0 && colonIdx < c.name.length - 1) {
+            final shortName = c.name.substring(colonIdx + 1).trim();
+            restoredParent = savedParents[_normalizeName(shortName)];
+          }
+        }
+        if (restoredParent != null && restoredParent.trim().isNotEmpty) {
+          c.parentAccountName = restoredParent;
+          await c.save();
+        }
+      }
+      if (kDebugMode) {
+        debugPrint('[QbCustomerService] Restored ${savedParents.length} '
+            'parent-account assignment(s) after re-import');
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     if (kDebugMode) debugPrint('[QbCustomerService] Imported $count customers');
     return count;
