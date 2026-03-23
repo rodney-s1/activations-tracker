@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/app_provider.dart';
 export '../services/csv_parser_service.dart' show MissingCodeFlag;
@@ -103,6 +104,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       if (context.mounted) {
+        // Clear all customer completion states when a fresh CSV is loaded —
+        // a new month's data means everything starts unchecked again.
+        final prefs = await SharedPreferences.getInstance();
+        final keysToRemove = prefs.getKeys()
+            .where((k) => k.startsWith('completed_v1_'))
+            .toList();
+        for (final k in keysToRemove) {
+          await prefs.remove(k);
+        }
+
         await provider.loadCsv(file.name, content);
         // Show blank customer warning after import
         if (context.mounted) {
@@ -1085,6 +1096,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       return _buildGrandTotal(provider);
                     }
                     return CustomerCard(
+                      key: ValueKey(groups[index].customerName),
                       group: groups[index],
                       filterFrom: _filterFrom,
                       filterTo: _filterTo,

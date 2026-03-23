@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/customer_group.dart';
 import '../models/activation_record.dart';
 import '../services/app_provider.dart';
@@ -44,10 +45,31 @@ class _CustomerCardState extends State<CustomerCard> {
   late TextEditingController _nameController;
   final FocusNode _nameFocus = FocusNode();
 
+  // ── Completion persistence ────────────────────────────────────────────────
+  /// SharedPreferences key for this customer's completed state.
+  String get _prefKey =>
+      'completed_v1_${widget.group.customerName.replaceAll(RegExp(r'[^\w]'), '_')}';
+
+  Future<void> _loadCompleted() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _completed = prefs.getBool(_prefKey) ?? false;
+      });
+    }
+  }
+
+  Future<void> _saveCompleted(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefKey, value);
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.group.customerName);
+    _loadCompleted(); // restore persisted state
   }
 
   @override
@@ -154,7 +176,11 @@ class _CustomerCardState extends State<CustomerCard> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      onChanged: (v) => setState(() => _completed = v ?? false),
+                      onChanged: (v) {
+                        final newVal = v ?? false;
+                        setState(() => _completed = newVal);
+                        _saveCompleted(newVal);
+                      },
                     ),
                   ),
                 ),
