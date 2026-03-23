@@ -1557,11 +1557,16 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
     final notesCtrl =
         TextEditingController(text: existing?.notes ?? '');
 
-    // QB item picker state (inside StatefulBuilder)
+    // QB item picker state
     String qbItemQuery = '';
     QbItem? selectedQbItem;
 
-    // Build QB customer suggestion list
+    // Bulk mode state — only available when adding new overrides
+    bool bulkMode = false;
+    final Set<String> bulkSelected = {};
+    String bulkSearch = '';
+
+    // QB customer list sorted alphabetically
     final qbNames = provider.qbCustomers.map((c) => c.name).toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
@@ -1569,7 +1574,191 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx2, setDialogState) {
-          final qbSuggestions = ItemPriceListService.search(qbItemQuery, limit: 6);
+          final qbSuggestions =
+              ItemPriceListService.search(qbItemQuery, limit: 6);
+
+          // Filtered customer list for bulk mode search
+          final filteredNames = bulkSearch.isEmpty
+              ? qbNames
+              : qbNames
+                  .where((n) =>
+                      n.toLowerCase().contains(bulkSearch.toLowerCase()))
+                  .toList();
+
+          // ── shared QB item picker ─────────────────────────────────────────
+          Widget qbPicker = Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppTheme.teal.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border:
+                  Border.all(color: AppTheme.teal.withValues(alpha: 0.2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  const Icon(Icons.search, size: 14, color: AppTheme.teal),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'QB Item Picker (auto-fill Cost & Price)',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.teal),
+                  ),
+                  const Spacer(),
+                  if (ItemPriceListService.getAll().isEmpty)
+                    const Text('← Import Price List first',
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: AppTheme.textSecondary,
+                            fontStyle: FontStyle.italic)),
+                ]),
+                const SizedBox(height: 6),
+                TextField(
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: 'Search QB items, e.g. "ProPlus", "GO Plan"…',
+                    hintStyle: const TextStyle(fontSize: 12),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(6)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 7, horizontal: 10),
+                    suffixIcon: qbItemQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 14),
+                            onPressed: () =>
+                                setDialogState(() => qbItemQuery = ''))
+                        : null,
+                  ),
+                  onChanged: (v) => setDialogState(() => qbItemQuery = v),
+                ),
+                if (qbSuggestions.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  ...qbSuggestions.map((item) {
+                    final isSel = selectedQbItem?.item == item.item;
+                    return InkWell(
+                      onTap: () {
+                        setDialogState(() {
+                          selectedQbItem = item;
+                          qbItemQuery = item.item;
+                        });
+                        costCtrl.text = item.cost.toStringAsFixed(2);
+                        priceCtrl.text = item.price.toStringAsFixed(2);
+                        if (planCtrl.text.trim().isEmpty) {
+                          planCtrl.text = item.item;
+                        }
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 3),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: isSel
+                              ? AppTheme.teal.withValues(alpha: 0.12)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: isSel
+                                  ? AppTheme.teal
+                                  : AppTheme.divider),
+                        ),
+                        child: Row(children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.item,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: isSel
+                                            ? AppTheme.teal
+                                            : AppTheme.textPrimary)),
+                                if (item.description.isNotEmpty)
+                                  Text(item.description,
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          color: AppTheme.textSecondary),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                              ],
+                            ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('\$${item.cost.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.green,
+                                      fontWeight: FontWeight.w600)),
+                              Text('\$${item.price.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.teal,
+                                      fontWeight: FontWeight.w700)),
+                            ],
+                          ),
+                        ]),
+                      ),
+                    );
+                  }),
+                ] else if (qbItemQuery.isNotEmpty &&
+                    ItemPriceListService.getAll().isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text('No QB items match "$qbItemQuery"',
+                      style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.textSecondary,
+                          fontStyle: FontStyle.italic)),
+                ],
+                if (selectedQbItem != null) ...[
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(
+                      child: Text('Selected: ${selectedQbItem!.item}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.teal,
+                              fontWeight: FontWeight.w600),
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    const SizedBox(width: 6),
+                    GestureDetector(
+                      onTap: () async {
+                        await Clipboard.setData(
+                            ClipboardData(text: selectedQbItem!.item));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.teal.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.content_copy,
+                                size: 12, color: AppTheme.teal),
+                            SizedBox(width: 4),
+                            Text('Copy Item Name',
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    color: AppTheme.teal,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ]),
+                ],
+              ],
+            ),
+          );
 
           return AlertDialog(
             title: Row(
@@ -1577,261 +1766,270 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                 const Icon(Icons.tune, size: 18, color: AppTheme.amber),
                 const SizedBox(width: 8),
                 Text(isNew ? 'Add Override' : 'Edit Override'),
+                const Spacer(),
+                // Bulk toggle — only shown when adding new
+                if (isNew)
+                  Tooltip(
+                    message:
+                        'Apply one QB item to multiple customers at once',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () => setDialogState(() {
+                        bulkMode = !bulkMode;
+                        bulkSelected.clear();
+                        bulkSearch = '';
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: bulkMode
+                              ? AppTheme.amber.withValues(alpha: 0.15)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                              color: bulkMode
+                                  ? AppTheme.amber
+                                  : AppTheme.divider),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              bulkMode
+                                  ? Icons.group
+                                  : Icons.group_outlined,
+                              size: 14,
+                              color: bulkMode
+                                  ? AppTheme.amber
+                                  : AppTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              'Bulk',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: bulkMode
+                                      ? AppTheme.amber
+                                      : AppTheme.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
             content: SizedBox(
-              width: 380,
+              width: 420,
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ── QB Item Picker (Option A) ─────────────────────────────
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppTheme.teal.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: AppTheme.teal.withValues(alpha: 0.2)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.search, size: 14,
-                                  color: AppTheme.teal),
-                              const SizedBox(width: 6),
-                              const Text(
-                                'QB Item Picker (auto-fill Cost & Price)',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.teal,
-                                ),
-                              ),
-                              const Spacer(),
-                              if (ItemPriceListService.getAll().isEmpty)
-                                const Text(
-                                  '← Import Price List first',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: AppTheme.textSecondary,
-                                    fontStyle: FontStyle.italic,
-                                  ),
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          TextField(
-                            decoration: InputDecoration(
-                              isDense: true,
-                              hintText: 'Search QB items, e.g. "ProPlus", "GO Plan"…',
-                              hintStyle: const TextStyle(fontSize: 12),
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(6)),
-                              contentPadding: const EdgeInsets.symmetric(
-                                  vertical: 7, horizontal: 10),
-                              suffixIcon: qbItemQuery.isNotEmpty
-                                  ? IconButton(
-                                      icon: const Icon(Icons.clear, size: 14),
-                                      onPressed: () => setDialogState(
-                                          () => qbItemQuery = ''),
-                                    )
-                                  : null,
-                            ),
-                            onChanged: (v) =>
-                                setDialogState(() => qbItemQuery = v),
-                          ),
-                          if (qbSuggestions.isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            ...qbSuggestions.map((item) {
-                              final isSelected = selectedQbItem == item;
-                              return InkWell(
-                                onTap: () {
-                                  setDialogState(() {
-                                    selectedQbItem = item;
-                                    qbItemQuery = item.item;
-                                  });
-                                  costCtrl.text = item.cost.toStringAsFixed(2);
-                                  priceCtrl.text = item.price.toStringAsFixed(2);
-                                },
-                                borderRadius: BorderRadius.circular(6),
-                                child: Container(
-                                  margin: const EdgeInsets.only(bottom: 3),
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 10, vertical: 7),
-                                  decoration: BoxDecoration(
-                                    color: isSelected
-                                        ? AppTheme.teal.withValues(alpha: 0.12)
-                                        : Colors.white,
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: isSelected
-                                          ? AppTheme.teal
-                                          : AppTheme.divider,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              item.item,
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w600,
-                                                color: isSelected
-                                                    ? AppTheme.teal
-                                                    : AppTheme.textPrimary,
-                                              ),
-                                            ),
-                                            if (item.description.isNotEmpty)
-                                              Text(
-                                                item.description,
-                                                style: const TextStyle(
-                                                  fontSize: 10,
-                                                  color: AppTheme.textSecondary,
-                                                ),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                      Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.end,
-                                        children: [
-                                          Text(
-                                            '\$${item.cost.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              color: AppTheme.green,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                          Text(
-                                            '\$${item.price.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                              color: AppTheme.teal,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            }),
-                          ] else if (qbItemQuery.isNotEmpty &&
-                              ItemPriceListService.getAll().isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'No QB items match "$qbItemQuery"',
-                              style: const TextStyle(
-                                  fontSize: 10,
-                                  color: AppTheme.textSecondary,
-                                  fontStyle: FontStyle.italic),
-                            ),
-                          ],
-                          // Option C: manual copy button for selected item
-                          if (selectedQbItem != null) ...[
-                            const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    'Selected: ${selectedQbItem!.item}',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: AppTheme.teal,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                GestureDetector(
-                                  onTap: () async {
-                                    await Clipboard.setData(
-                                      ClipboardData(
-                                          text: selectedQbItem!.item),
-                                    );
-                                    if (ctx2.mounted) {
-                                      ScaffoldMessenger.of(ctx2).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('QB item name copied!'),
-                                          backgroundColor: AppTheme.teal,
-                                          duration: Duration(seconds: 1),
-                                        ),
-                                      );
-                                    }
-                                  },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: AppTheme.teal.withValues(
-                                          alpha: 0.1),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.content_copy,
-                                            size: 12, color: AppTheme.teal),
-                                        SizedBox(width: 4),
-                                        Text(
-                                          'Copy Item Name',
-                                          style: TextStyle(
-                                              fontSize: 10,
-                                              color: AppTheme.teal,
-                                              fontWeight: FontWeight.w600),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
+                    // ── QB Item Picker ────────────────────────────────────────
+                    qbPicker,
                     const SizedBox(height: 14),
 
-                    // ── Customer name with autocomplete ───────────────────────
-                    Autocomplete<String>(
-                      optionsBuilder: (tv) {
-                        if (tv.text.isEmpty) return const [];
-                        final q = tv.text.toLowerCase();
-                        return qbNames
-                            .where((n) => n.toLowerCase().contains(q))
-                            .take(6);
-                      },
-                      onSelected: (v) => customerCtrl.text = v,
-                      fieldViewBuilder:
-                          (ctx2, fCtrl, fNode, onSub) => TextField(
-                        controller: fCtrl,
-                        focusNode: fNode,
-                        onChanged: (v) => customerCtrl.text = v,
-                        decoration: const InputDecoration(
-                          labelText: 'Customer Name *',
-                          hintText: 'Must match CSV exactly',
-                          helperText: 'Suggestions from QB customer list',
-                          isDense: true,
+                    if (!bulkMode) ...[
+                      // ── SINGLE mode: Customer name autocomplete ───────────
+                      Autocomplete<String>(
+                        optionsBuilder: (tv) {
+                          if (tv.text.isEmpty) return const [];
+                          final q = tv.text.toLowerCase();
+                          return qbNames
+                              .where((n) => n.toLowerCase().contains(q))
+                              .take(6);
+                        },
+                        onSelected: (v) => customerCtrl.text = v,
+                        fieldViewBuilder:
+                            (ctx2, fCtrl, fNode, onSub) => TextField(
+                          controller: fCtrl,
+                          focusNode: fNode,
+                          onChanged: (v) => customerCtrl.text = v,
+                          decoration: const InputDecoration(
+                            labelText: 'Customer Name *',
+                            hintText: 'Must match CSV exactly',
+                            helperText: 'Suggestions from QB customer list',
+                            isDense: true,
+                          ),
+                        ),
+                        initialValue: TextEditingValue(
+                            text: existing?.customerName ?? ''),
+                      ),
+                    ] else ...[
+                      // ── BULK mode: multi-customer checklist ───────────────
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppTheme.amber.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color:
+                                  AppTheme.amber.withValues(alpha: 0.3)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              const Icon(Icons.group,
+                                  size: 14, color: AppTheme.amber),
+                              const SizedBox(width: 6),
+                              const Text('Select Customers',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.amber)),
+                              const Spacer(),
+                              if (bulkSelected.isNotEmpty)
+                                Text('${bulkSelected.length} selected',
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        color: AppTheme.amber,
+                                        fontWeight: FontWeight.w600)),
+                            ]),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'All selected customers get the same '
+                              'QB item, cost, price & rate plan keyword.',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: AppTheme.textSecondary),
+                            ),
+                            const SizedBox(height: 8),
+                            // Search within customer list
+                            TextField(
+                              decoration: InputDecoration(
+                                isDense: true,
+                                hintText: 'Filter customers…',
+                                hintStyle:
+                                    const TextStyle(fontSize: 12),
+                                prefixIcon: const Icon(Icons.search,
+                                    size: 16),
+                                border: OutlineInputBorder(
+                                    borderRadius:
+                                        BorderRadius.circular(6)),
+                                contentPadding:
+                                    const EdgeInsets.symmetric(
+                                        vertical: 7, horizontal: 10),
+                                suffixIcon: bulkSearch.isNotEmpty
+                                    ? IconButton(
+                                        icon: const Icon(Icons.clear,
+                                            size: 14),
+                                        onPressed: () => setDialogState(
+                                            () => bulkSearch = ''))
+                                    : null,
+                              ),
+                              onChanged: (v) =>
+                                  setDialogState(() => bulkSearch = v),
+                            ),
+                            const SizedBox(height: 4),
+                            // Select all / deselect all row
+                            Row(children: [
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap),
+                                onPressed: () => setDialogState(
+                                    () => bulkSelected.addAll(filteredNames)),
+                                child: const Text('Select all',
+                                    style: TextStyle(fontSize: 11)),
+                              ),
+                              const Text(' · ',
+                                  style: TextStyle(
+                                      color: AppTheme.textSecondary)),
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap),
+                                onPressed: () => setDialogState(() =>
+                                    bulkSelected
+                                        .removeAll(filteredNames)),
+                                child: const Text('Deselect all',
+                                    style: TextStyle(fontSize: 11)),
+                              ),
+                            ]),
+                            const SizedBox(height: 4),
+                            // Scrollable checklist
+                            SizedBox(
+                              height: 200,
+                              child: filteredNames.isEmpty
+                                  ? const Center(
+                                      child: Text('No customers found',
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              color: AppTheme
+                                                  .textSecondary)))
+                                  : ListView.builder(
+                                      itemCount: filteredNames.length,
+                                      itemBuilder: (_, i) {
+                                        final name = filteredNames[i];
+                                        final checked =
+                                            bulkSelected.contains(name);
+                                        return InkWell(
+                                          onTap: () =>
+                                              setDialogState(() {
+                                            checked
+                                                ? bulkSelected.remove(name)
+                                                : bulkSelected.add(name);
+                                          }),
+                                          child: Padding(
+                                            padding:
+                                                const EdgeInsets.symmetric(
+                                                    vertical: 1),
+                                            child: Row(children: [
+                                              Checkbox(
+                                                value: checked,
+                                                onChanged: (_) =>
+                                                    setDialogState(() {
+                                                  checked
+                                                      ? bulkSelected
+                                                          .remove(name)
+                                                      : bulkSelected
+                                                          .add(name);
+                                                }),
+                                                materialTapTargetSize:
+                                                    MaterialTapTargetSize
+                                                        .shrinkWrap,
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                activeColor:
+                                                    AppTheme.amber,
+                                              ),
+                                              Expanded(
+                                                child: Text(name,
+                                                    style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: checked
+                                                            ? AppTheme
+                                                                .amber
+                                                            : AppTheme
+                                                                .textPrimary,
+                                                        fontWeight: checked
+                                                            ? FontWeight
+                                                                .w600
+                                                            : FontWeight
+                                                                .normal),
+                                                    overflow: TextOverflow
+                                                        .ellipsis),
+                                              ),
+                                            ]),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ],
                         ),
                       ),
-                      initialValue: TextEditingValue(
-                          text: existing?.customerName ?? ''),
-                    ),
+                    ],
                     const SizedBox(height: 12),
 
                     // ── Rate plan keyword ─────────────────────────────────────
@@ -1839,7 +2037,8 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                       controller: planCtrl,
                       decoration: const InputDecoration(
                         labelText: 'Rate Plan Keyword *',
-                        hintText: 'e.g. ProPlus Install Bundle Plan [1250]',
+                        hintText:
+                            'e.g. ProPlus Install Bundle Plan [1250]',
                         helperText:
                             'Case-insensitive substring of the Rate Plan column',
                         isDense: true,
@@ -1878,7 +2077,8 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                         labelText: 'Customer Price *',
                         prefixText: r'$ ',
                         hintText: '0.00',
-                        helperText: 'What you bill this customer per device/month',
+                        helperText:
+                            'What you bill this customer per device/month',
                         isDense: true,
                       ),
                     ),
@@ -1903,40 +2103,77 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                   child: const Text('Cancel')),
               ElevatedButton(
                 onPressed: () async {
-                  final name  = customerCtrl.text.trim();
-                  final plan  = planCtrl.text.trim();
-                  final cost  = double.tryParse(costCtrl.text.trim())  ?? 0.0;
-                  final price = double.tryParse(priceCtrl.text.trim()) ?? 0.0;
-                  if (name.isEmpty || plan.isEmpty) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(
-                      const SnackBar(
-                          content: Text(
-                              'Customer name and Rate Plan Keyword are required.')),
+                  final plan = planCtrl.text.trim();
+                  final cost =
+                      double.tryParse(costCtrl.text.trim()) ?? 0.0;
+                  final price =
+                      double.tryParse(priceCtrl.text.trim()) ?? 0.0;
+                  final notes = notesCtrl.text.trim();
+
+                  if (bulkMode) {
+                    // ── Bulk save ────────────────────────────────────────
+                    if (bulkSelected.isEmpty || plan.isEmpty) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Select at least one customer and enter a Rate Plan Keyword.')));
+                      return;
+                    }
+                    for (final name in bulkSelected) {
+                      await provider.saveRatePlanOverride(
+                        CustomerRatePlanOverride(
+                          customerName: name,
+                          ratePlan: plan,
+                          yourCost: cost,
+                          customerPrice: price,
+                          notes: notes,
+                        ),
+                      );
+                    }
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(
+                            'Override added for ${bulkSelected.length} customer${bulkSelected.length == 1 ? "" : "s"}'),
+                        backgroundColor: AppTheme.teal,
+                        duration: const Duration(seconds: 3),
+                      ));
+                    }
+                  } else {
+                    // ── Single save ──────────────────────────────────────
+                    final name = customerCtrl.text.trim();
+                    if (name.isEmpty || plan.isEmpty) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Customer name and Rate Plan Keyword are required.')));
+                      return;
+                    }
+                    final o = CustomerRatePlanOverride(
+                      customerName: name,
+                      ratePlan: plan,
+                      yourCost: cost,
+                      customerPrice: price,
+                      notes: notes,
                     );
-                    return;
-                  }
-                  final o = CustomerRatePlanOverride(
-                    customerName:  name,
-                    ratePlan:      plan,
-                    yourCost:      cost,
-                    customerPrice: price,
-                    notes:         notesCtrl.text.trim(),
-                  );
-                  await provider.saveRatePlanOverride(o);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
+                    await provider.saveRatePlanOverride(o);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                         content: Text(isNew
                             ? 'Override added for $name'
                             : 'Override updated for $name'),
                         backgroundColor: AppTheme.teal,
                         duration: const Duration(seconds: 2),
-                      ),
-                    );
+                      ));
+                    }
                   }
                 },
-                child: Text(isNew ? 'Add' : 'Save'),
+                child: bulkMode
+                    ? Text(bulkSelected.isEmpty
+                        ? 'Add'
+                        : 'Add to ${bulkSelected.length}')
+                    : Text(isNew ? 'Add' : 'Save'),
               ),
             ],
           );
