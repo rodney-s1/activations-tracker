@@ -310,11 +310,10 @@ class AppProvider extends ChangeNotifier {
         fileName: fileName,
       );
 
-      // Re-apply any saved customer renames on top of fresh parse
+      // Re-apply any saved customer renames on top of fresh parse,
+      // then re-price so overrides using renamed names resolve correctly.
       _applyRenames();
-
-      // Apply any manual device price overrides on top of engine pricing
-      _applyDeviceOverrides();
+      repriceCurrent();
     } catch (e) {
       _state = AppState.error;
       _errorMessage = 'Failed to parse CSV: $e';
@@ -682,8 +681,9 @@ class AppProvider extends ChangeNotifier {
         _state = AppState.loaded;
         // Re-apply persisted renames so edited names are not lost
         _applyRenames();
-        // Apply device price overrides
-        _applyDeviceOverrides();
+        // Re-price with renamed customer names so overrides match correctly,
+        // then apply serial-level device price overrides on top.
+        repriceCurrent();
         if (kDebugMode) {
           debugPrint('[AppProvider] Activations restored from persist: '
               '${groups.length} customers');
