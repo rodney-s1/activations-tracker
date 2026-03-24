@@ -112,6 +112,38 @@ class _CustomerCardState extends State<CustomerCard> {
     setState(() => _isEditing = false);
   }
 
+  Future<void> _confirmHide(BuildContext context) async {
+    final name = widget.group.customerName;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove from View?'),
+        content: Text(
+          '"$name" will be hidden from the Activations page.\n\n'
+          'You can restore it any time from the menu at the top of the '
+          'customer list.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await context.read<AppProvider>().hideCustomer(name);
+    }
+  }
+
   static const _completedBg   = Color(0xFFECFDF5); // very light green bg
   static const _completedBar  = Color(0xFF16A34A); // solid green accent bar
   static const _completedCard = Color(0xFFDCFCE7); // slightly deeper green for subtotal
@@ -384,10 +416,28 @@ class _CustomerCardState extends State<CustomerCard> {
                   ),
                 ),
 
-                // Right: prorated total
+                // Right: prorated total + hide button
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
+                    // ── Hide/remove customer button ───────────────
+                    Tooltip(
+                      message: 'Remove from view',
+                      child: InkWell(
+                        onTap: () => _confirmHide(context),
+                        borderRadius: BorderRadius.circular(4),
+                        child: Padding(
+                          padding: const EdgeInsets.only(
+                              bottom: 4, left: 4),
+                          child: Icon(
+                            Icons.visibility_off_outlined,
+                            size: 14,
+                            color: AppTheme.textSecondary
+                                .withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ),
+                    ),
                     Text(
                       Formatters.currency(g.totalCustomerProratedCost),
                       style: TextStyle(

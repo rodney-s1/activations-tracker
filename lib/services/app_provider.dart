@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/customer_group.dart';
 import '../models/import_session.dart';
 import '../models/customer_rate.dart';
@@ -44,10 +45,22 @@ class AppProvider extends ChangeNotifier {
   List<QbCustomer> _qbCustomers = [];
   List<CustomerRatePlanOverride> _ratePlanOverrides = [];
 
+  // ── Customer renames: originalName → renamedName ────────────────────
+  Map<String, String> _customerRenames = {};
+
+  // ── Hidden customers: set of original (pre-rename) customer names ─────
+  Set<String> _hiddenCustomers = {};
+
   // ── Manual per-device price overrides (serial → override) ─────────────
   Map<String, DevicePriceOverride> _devicePriceOverrides = {};
 
   Map<String, DevicePriceOverride> get devicePriceOverrides => _devicePriceOverrides;
+
+  /// Read-only view of the rename map (original → new).
+  Map<String, String> get customerRenames => Map.unmodifiable(_customerRenames);
+
+  /// Read-only set of hidden customer names (these are the *current display* names).
+  Set<String> get hiddenCustomers => Set.unmodifiable(_hiddenCustomers);
 
   // ── Cloud sync countdown timer (updates UI every minute) ──────────────
   Timer? _countdownTimer;
@@ -188,9 +201,13 @@ class AppProvider extends ChangeNotifier {
       _parseResult?.blankCustomers ?? [];
 
   List<CustomerGroup> get filteredGroups {
-    if (_searchQuery.isEmpty) return _customerGroups;
+    // Filter out hidden customers first
+    final visible = _customerGroups
+        .where((g) => !_hiddenCustomers.contains(g.customerName))
+        .toList();
+    if (_searchQuery.isEmpty) return visible;
     final q = _searchQuery.toLowerCase();
-    return _customerGroups.where((g) {
+    return visible.where((g) {
       if (g.customerName.toLowerCase().contains(q)) return true;
       return g.devices.any((d) =>
           d.serialNumber.toLowerCase().contains(q) ||
@@ -251,6 +268,13 @@ class AppProvider extends ChangeNotifier {
       // Reload pricing data before parsing so prices are fresh
       loadPricingData();
 
+      // A fresh CSV import clears prior renames and hidden customers
+      // so the new data starts clean (user can re-hide / re-rename as needed).
+      _hiddenCustomers = {};
+      _customerRenames = {};
+      await _saveHidden();
+      await _saveRenames();
+
       final result = CsvParserService.parse(content, _pricingEngine);
       final groups = CsvParserService.groupByCustomer(result.records);
 
@@ -279,6 +303,9 @@ class AppProvider extends ChangeNotifier {
         content:  content,
         fileName: fileName,
       );
+
+      // Re-apply any saved customer renames on top of fresh parse
+      _applyRenames();
 
       // Apply any manual device price overrides on top of engine pricing
       _applyDeviceOverrides();
@@ -630,11 +657,33 @@ class AppProvider extends ChangeNotifier {
     }
 
     // ── Restore Activations CSV ────────────────────────────────────────────
-    // ⚠️  Intentionally NOT restoring the activations CSV on cold launch.
-    // The user wants a clean slate every time the app starts so stale data
-    // from a previous session doesn't auto-populate.  The persisted CSV is
-    // still saved (so Refresh still works within the same session) but we
-    // no longer auto-load it here.
+    // Re-enable: restore the last imported CSV so the dashboard is ready
+    // immediately on app reopen, without requiring a re-import.
+    // Renames and hidden customers are re-applied on top of the fresh parse.
+    try {
+      final saved = await CsvPersistService.loadActivations();
+      if (saved != null && saved.content.isNotEmpty) {
+        loadPricingData();
+        final result =
+            CsvParserService.parse(saved.content, _pricingEngine);
+        final groups =
+            CsvParserService.groupByCustomer(result.records);
+        _parseResult    = result;
+        _customerGroups = groups;
+        _currentFileName = saved.fileName;
+        _state = AppState.loaded;
+        // Re-apply persisted renames so edited names are not lost
+        _applyRenames();
+        // Apply device price overrides
+        _applyDeviceOverrides();
+        if (kDebugMode) {
+          debugPrint('[AppProvider] Activations restored from persist: '
+              '${groups.length} customers');
+        }
+      }
+    } catch (_) {
+      // Silently ignore — user can re-import manually
+    }
     notifyListeners();
   }
 
@@ -652,25 +701,114 @@ class AppProvider extends ChangeNotifier {
 
   // ── Customer Name Rename ─────────────────────────────────────────────────
 
-  /// Rename a customer group from [oldName] to [newName] in-memory, then
-  /// re-sort groups alphabetically.  The new name is persisted on the next
-  /// full refresh; invoice-line text also picks up the new name immediately.
+  static const _kRenamesKey = 'customer_renames_v1';
+  static const _kHiddenKey  = 'hidden_customers_v1';
+
+  /// Load persisted renames and hidden list from SharedPreferences.
+  Future<void> loadCustomerOverrides() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Renames: stored as JSON object {original: newName}
+    final renamesJson = prefs.getString(_kRenamesKey);
+    if (renamesJson != null && renamesJson.isNotEmpty) {
+      try {
+        final map = json.decode(renamesJson) as Map<String, dynamic>;
+        _customerRenames = map.map((k, v) => MapEntry(k, v as String));
+      } catch (_) {
+        _customerRenames = {};
+      }
+    }
+
+    // Hidden: stored as JSON array of customer display names
+    final hiddenJson = prefs.getString(_kHiddenKey);
+    if (hiddenJson != null && hiddenJson.isNotEmpty) {
+      try {
+        final list = json.decode(hiddenJson) as List<dynamic>;
+        _hiddenCustomers = list.map((e) => e as String).toSet();
+      } catch (_) {
+        _hiddenCustomers = {};
+      }
+    }
+  }
+
+  Future<void> _saveRenames() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kRenamesKey, json.encode(_customerRenames));
+  }
+
+  Future<void> _saveHidden() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kHiddenKey, json.encode(_hiddenCustomers.toList()));
+  }
+
+  /// Apply the persisted rename map to the current in-memory groups.
+  void _applyRenames() {
+    if (_customerRenames.isEmpty) return;
+    _customerGroups = _customerGroups.map((g) {
+      final newName = _customerRenames[g.customerName];
+      if (newName == null || newName == g.customerName) return g;
+      final renamedDevices =
+          g.devices.map((d) => d.copyWithCustomer(newName)).toList();
+      return CustomerGroup(customerName: newName, devices: renamedDevices);
+    }).toList();
+    _customerGroups.sort((a, b) =>
+        a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()));
+  }
+
+  /// Rename a customer group from [oldName] to [newName], persist the mapping,
+  /// and re-apply any device-price overrides so the override screen stays correct.
   void renameCustomer(String oldName, String newName) {
     final trimmed = newName.trim();
     if (trimmed.isEmpty || trimmed == oldName) return;
 
+    // Update or insert rename: if oldName itself was already a rename target,
+    // find the original key so we always map original → latest name.
+    final originalKey = _customerRenames.entries
+        .firstWhere((e) => e.value == oldName,
+            orElse: () => MapEntry(oldName, oldName))
+        .key;
+    _customerRenames[originalKey] = trimmed;
+
+    // Also update hidden set if this customer was hidden under the old name
+    if (_hiddenCustomers.remove(oldName)) {
+      _hiddenCustomers.add(trimmed);
+    }
+
     _customerGroups = _customerGroups.map((g) {
       if (g.customerName != oldName) return g;
-      // Rebuild the group with every device's customer field updated
-      final renamedDevices = g.devices.map((d) => d.copyWithCustomer(trimmed)).toList();
+      final renamedDevices =
+          g.devices.map((d) => d.copyWithCustomer(trimmed)).toList();
       return CustomerGroup(customerName: trimmed, devices: renamedDevices);
     }).toList();
 
-    // Re-sort alphabetically (case-insensitive), same as groupByCustomer
-    _customerGroups.sort(
-      (a, b) => a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()),
-    );
+    _customerGroups.sort((a, b) =>
+        a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()));
 
+    _saveRenames();
+    _saveHidden();
+    notifyListeners();
+  }
+
+  // ── Hide / Remove customer from Activations view ──────────────────────────
+
+  /// Hide [customerName] from the Activations page (non-destructive).
+  Future<void> hideCustomer(String customerName) async {
+    _hiddenCustomers.add(customerName);
+    await _saveHidden();
+    notifyListeners();
+  }
+
+  /// Un-hide a previously hidden customer.
+  Future<void> unhideCustomer(String customerName) async {
+    _hiddenCustomers.remove(customerName);
+    await _saveHidden();
+    notifyListeners();
+  }
+
+  /// Un-hide all hidden customers at once.
+  Future<void> unhideAllCustomers() async {
+    _hiddenCustomers.clear();
+    await _saveHidden();
     notifyListeners();
   }
 
@@ -681,7 +819,13 @@ class AppProvider extends ChangeNotifier {
     _customerGroups = [];
     _currentFileName = '';
     _searchQuery = '';
+    _hiddenCustomers = {};
+    _customerRenames = {};
     _state = AppState.idle;
+    // Clear persisted hidden/renames too so a future import starts clean
+    _saveHidden();
+    _saveRenames();
+    CsvPersistService.clearActivations();
     notifyListeners();
   }
 }

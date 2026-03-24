@@ -755,6 +755,128 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  /// Banner shown when one or more customers are hidden, with options to
+  /// restore individual customers or restore all at once.
+  Widget _buildHiddenBanner(BuildContext context, AppProvider provider) {
+    final hidden = provider.hiddenCustomers.toList()..sort();
+    final count = hidden.length;
+    return Container(
+      color: const Color(0xFF374151), // gray-700
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.visibility_off_outlined,
+              size: 13, color: Colors.white54),
+          const SizedBox(width: 6),
+          Text(
+            '$count customer${count == 1 ? '' : 's'} hidden',
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          // Restore individual
+          InkWell(
+            onTap: () => _showRestoreHiddenDialog(context, provider, hidden),
+            borderRadius: BorderRadius.circular(4),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              child: Text(
+                'Manage',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppTheme.tealLight,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          // Restore all
+          InkWell(
+            onTap: () => provider.unhideAllCustomers(),
+            borderRadius: BorderRadius.circular(4),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              child: Text(
+                'Restore All',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppTheme.tealLight,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRestoreHiddenDialog(
+      BuildContext context, AppProvider provider, List<String> hidden) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Hidden Customers'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Tap a customer to restore them to the list.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 10),
+              ...hidden.map(
+                (name) => ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.visibility_off_outlined,
+                      size: 16, color: AppTheme.textSecondary),
+                  title: Text(name,
+                      style: const TextStyle(fontSize: 13)),
+                  trailing: TextButton(
+                    onPressed: () {
+                      provider.unhideCustomer(name);
+                      if (hidden.length == 1) Navigator.pop(dialogCtx);
+                    },
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.teal,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      minimumSize: const Size(48, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Restore',
+                        style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Close'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              provider.unhideAllCustomers();
+              Navigator.pop(dialogCtx);
+            },
+            child: const Text('Restore All'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDateRangeFilter(
       BuildContext context,
       List<dynamic> groups,
@@ -1025,6 +1147,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onChanged: provider.setSearchQuery,
           ),
         ),
+
+        // ── Hidden customers restore banner ───────────────────────
+        if (provider.hiddenCustomers.isNotEmpty)
+          _buildHiddenBanner(context, provider),
 
         // ── Date range filter + count/clear (merged into one row) ───
         _buildDateRangeFilter(context, groups, provider),

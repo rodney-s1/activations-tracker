@@ -51,6 +51,9 @@ void main() async {
   // Load manual device price overrides (async — must be awaited separately)
   await provider.loadDevicePriceOverrides();
 
+  // Load persisted customer renames and hidden list
+  await provider.loadCustomerOverrides();
+
   CloudSyncService.onPeriodicPullComplete = () {
     provider.loadPricingData(); // refreshes standardRates, planCodes, overrides, qbCustomers
     provider.repriceCurrent();  // immediately re-price any loaded activations
