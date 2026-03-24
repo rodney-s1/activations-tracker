@@ -755,38 +755,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildDateRangeFilter(BuildContext context) {
+  Widget _buildDateRangeFilter(
+      BuildContext context,
+      List<dynamic> groups,
+      AppProvider provider) {
     final hasFilter = _filterFrom != null || _filterTo != null;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: hasFilter
-            ? AppTheme.navyAccent.withValues(alpha: 0.07)
-            : const Color(0xFFF1F5F9),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: hasFilter
-              ? AppTheme.navyAccent.withValues(alpha: 0.30)
-              : const Color(0xFFE2E8F0),
-        ),
-      ),
+    final deviceCount =
+        groups.fold<int>(0, (s, g) => s + (g.deviceCount as int));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 3),
       child: Row(
         children: [
-          const Icon(Icons.date_range, size: 15, color: AppTheme.navyAccent),
-          const SizedBox(width: 6),
-          const Text(
-            'Billing date:',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(width: 8),
+          // ── Date filter chips ───────────────────────────────────
+          const Icon(Icons.date_range, size: 14, color: AppTheme.navyAccent),
+          const SizedBox(width: 5),
           _DateChip(
-            label: _filterFrom != null ? Formatters.date(_filterFrom) : 'From',
+            label:
+                _filterFrom != null ? Formatters.date(_filterFrom) : 'From',
             isSet: _filterFrom != null,
             onTap: () => _pickDate(context, true),
             onClear: _filterFrom != null
@@ -794,12 +779,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 : null,
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Text(
               '→',
               style: TextStyle(
-                fontSize: 12,
-                color: hasFilter ? AppTheme.navyAccent : AppTheme.textSecondary,
+                fontSize: 11,
+                color:
+                    hasFilter ? AppTheme.navyAccent : AppTheme.textSecondary,
               ),
             ),
           ),
@@ -811,51 +797,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ? () => setState(() => _filterTo = null)
                 : null,
           ),
+          if (hasFilter) ...[
+            const SizedBox(width: 4),
+            InkWell(
+              onTap: () => setState(() {
+                _filterFrom = null;
+                _filterTo = null;
+              }),
+              borderRadius: BorderRadius.circular(4),
+              child: const Icon(Icons.filter_alt_off,
+                  size: 13, color: AppTheme.red),
+            ),
+          ],
           const Spacer(),
-          if (hasFilter)
-            Tooltip(
-              message: 'Clear date filter',
-              child: InkWell(
-                onTap: () => setState(() {
-                  _filterFrom = null;
-                  _filterTo = null;
-                }),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.red.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(6),
+          // ── Count label ─────────────────────────────────────────
+          Text(
+            '${groups.length} customer${groups.length == 1 ? '' : 's'}'
+            ' · $deviceCount devices',
+            style: const TextStyle(
+                fontSize: 11, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(width: 4),
+          // ── Clear data button ────────────────────────────────────
+          InkWell(
+            onTap: () => showDialog(
+              context: context,
+              builder: (_) => AlertDialog(
+                title: const Text('Clear Current Data?'),
+                content: const Text(
+                    'This will clear the current view. The import will remain in history.'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
                   ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.filter_alt_off,
-                          size: 12, color: AppTheme.red),
-                      SizedBox(width: 4),
-                      Text(
-                        'Clear',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.red,
-                        ),
-                      ),
-                    ],
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      provider.clearCurrent();
+                    },
+                    child: const Text('Clear'),
                   ),
-                ),
-              ),
-            )
-          else
-            const Text(
-              'Filter by billing start date',
-              style: TextStyle(
-                fontSize: 10,
-                color: AppTheme.textSecondary,
-                fontStyle: FontStyle.italic,
+                ],
               ),
             ),
+            borderRadius: BorderRadius.circular(4),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: Text('✕ Clear',
+                  style: TextStyle(
+                      fontSize: 11, color: AppTheme.red)),
+            ),
+          ),
         ],
       ),
     );
@@ -873,11 +866,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Container(
           color: AppTheme.navyMid,
           padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
           child: Row(
             children: [
               const Icon(Icons.insert_drive_file,
-                  size: 14, color: Colors.white54),
+                  size: 13, color: Colors.white54),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -1019,65 +1012,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         // ── Search bar ────────────────────────────────────────────
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 5, 16, 2),
           child: TextField(
             decoration: const InputDecoration(
               hintText: 'Search customer, serial, or plan…',
               prefixIcon: Icon(Icons.search, color: AppTheme.textSecondary),
               hintStyle: TextStyle(color: AppTheme.textSecondary),
+              isDense: true,
+              contentPadding:
+                  EdgeInsets.symmetric(vertical: 8, horizontal: 12),
             ),
             onChanged: provider.setSearchQuery,
           ),
         ),
 
-        // ── Date range filter row ───────────────────────────────────
-        _buildDateRangeFilter(context),
-
-        // ── Results count + clear ─────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Row(
-            children: [
-              Text(
-                '${groups.length} customer${groups.length == 1 ? '' : 's'}'
-                ' · ${groups.fold<int>(0, (s, g) => s + g.deviceCount as int)} devices',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppTheme.textSecondary,
-                ),
-              ),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (_) => AlertDialog(
-                      title: const Text('Clear Current Data?'),
-                      content: const Text(
-                          'This will clear the current view. The import will remain in history.'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('Cancel'),
-                        ),
-                        ElevatedButton(
-                          onPressed: () {
-                            Navigator.pop(context);
-                            provider.clearCurrent();
-                          },
-                          child: const Text('Clear'),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.clear, size: 14),
-                label: const Text('Clear',
-                    style: TextStyle(fontSize: 12)),
-              ),
-            ],
-          ),
-        ),
+        // ── Date range filter + count/clear (merged into one row) ───
+        _buildDateRangeFilter(context, groups, provider),
 
         // ── Customer cards list ───────────────────────────────────
         Expanded(
