@@ -1021,6 +1021,7 @@ class _DeviceRow extends StatefulWidget {
 
 class _DeviceRowState extends State<_DeviceRow> {
   bool _planCopied = false;
+  bool _serialCopied = false;
 
   /// Show the manual price override dialog.
   ///
@@ -1560,6 +1561,61 @@ class _DeviceRowState extends State<_DeviceRow> {
                               fontWeight: FontWeight.w600,
                               color: AppTheme.textPrimary,
                               fontFamily: 'monospace',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        // ── Copy serial number button ────────────────
+                        Tooltip(
+                          message: 'Copy serial number',
+                          child: InkWell(
+                            onTap: () async {
+                              await Clipboard.setData(
+                                  ClipboardData(text: record.serialNumber));
+                              setState(() => _serialCopied = true);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                        'Serial copied: "${record.serialNumber}"'),
+                                    backgroundColor: AppTheme.teal,
+                                    duration: const Duration(seconds: 2),
+                                  ),
+                                );
+                              }
+                              await Future.delayed(
+                                  const Duration(seconds: 3));
+                              if (mounted) {
+                                setState(() => _serialCopied = false);
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(4),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: _serialCopied
+                                    ? const Color(0xFF16A34A)
+                                    : AppTheme.navyAccent
+                                        .withValues(alpha: 0.08),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: _serialCopied
+                                      ? const Color(0xFF16A34A)
+                                      : AppTheme.navyAccent
+                                          .withValues(alpha: 0.20),
+                                  width: 0.8,
+                                ),
+                              ),
+                              child: Icon(
+                                _serialCopied
+                                    ? Icons.check
+                                    : Icons.content_copy,
+                                size: 10,
+                                color: _serialCopied
+                                    ? Colors.white
+                                    : AppTheme.navyAccent,
+                              ),
                             ),
                           ),
                         ),
