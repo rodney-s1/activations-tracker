@@ -259,7 +259,11 @@ class AppProvider extends ChangeNotifier {
 
   // ── CSV Import ────────────────────────────────────────────────────────────
 
-  Future<void> loadCsv(String fileName, String content) async {
+  /// Load a CSV file.
+  /// [isNewImport] = true  → user picked a new file; clears renames & hidden.
+  /// [isNewImport] = false → internal re-parse (refresh / restore); preserves renames & hidden.
+  Future<void> loadCsv(String fileName, String content,
+      {bool isNewImport = true}) async {
     _state = AppState.loading;
     _errorMessage = '';
     notifyListeners();
@@ -268,12 +272,14 @@ class AppProvider extends ChangeNotifier {
       // Reload pricing data before parsing so prices are fresh
       loadPricingData();
 
-      // A fresh CSV import clears prior renames and hidden customers
-      // so the new data starts clean (user can re-hide / re-rename as needed).
-      _hiddenCustomers = {};
-      _customerRenames = {};
-      await _saveHidden();
-      await _saveRenames();
+      // Only wipe renames/hidden on a genuine new CSV import, not on
+      // refresh/restore — those paths must preserve the user's edits.
+      if (isNewImport) {
+        _hiddenCustomers = {};
+        _customerRenames = {};
+        await _saveHidden();
+        await _saveRenames();
+      }
 
       final result = CsvParserService.parse(content, _pricingEngine);
       final groups = CsvParserService.groupByCustomer(result.records);
@@ -619,7 +625,9 @@ class AppProvider extends ChangeNotifier {
     }
 
     if (rawContent == null || rawContent.isEmpty) return;
-    await loadCsv(_currentFileName, rawContent);
+    // Pass isNewImport: false so renames and hidden customers are preserved
+    // across the re-price — this is a refresh, not a new file import.
+    await loadCsv(_currentFileName, rawContent, isNewImport: false);
   }
 
   /// On startup: restore the last imported Activations CSV from local storage
@@ -757,7 +765,7 @@ class AppProvider extends ChangeNotifier {
 
   /// Rename a customer group from [oldName] to [newName], persist the mapping,
   /// and re-apply any device-price overrides so the override screen stays correct.
-  void renameCustomer(String oldName, String newName) {
+  Future<void> renameCustomer(String oldName, String newName) async {
     final trimmed = newName.trim();
     if (trimmed.isEmpty || trimmed == oldName) return;
 
@@ -784,8 +792,10 @@ class AppProvider extends ChangeNotifier {
     _customerGroups.sort((a, b) =>
         a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()));
 
-    _saveRenames();
-    _saveHidden();
+    // Await both saves so the data is fully written to localStorage before
+    // any potential page reload / navigation.
+    await _saveRenames();
+    await _saveHidden();
     notifyListeners();
   }
 

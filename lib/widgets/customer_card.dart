@@ -99,12 +99,14 @@ class _CustomerCardState extends State<CustomerCard> {
     });
   }
 
-  void _saveEdit(BuildContext context) {
+  Future<void> _saveEdit(BuildContext context) async {
     final newName = _nameController.text.trim();
     if (newName.isNotEmpty && newName != widget.group.customerName) {
-      context.read<AppProvider>().renameCustomer(widget.group.customerName, newName);
+      // Await the rename so SharedPreferences is fully written before any
+      // potential page reload \u2014 this prevents the name reverting on refresh.
+      await context.read<AppProvider>().renameCustomer(widget.group.customerName, newName);
     }
-    setState(() => _isEditing = false);
+    if (mounted) setState(() => _isEditing = false);
   }
 
   void _cancelEdit() {
