@@ -738,7 +738,29 @@ class _DateGroupState extends State<_DateGroup> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                // Device count badge for this date group
+                Container(
+                  margin: const EdgeInsets.only(left: 6),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: isProcessed
+                        ? const Color(0xFF94A3B8).withValues(alpha: 0.15)
+                        : AppTheme.navyAccent.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${devicesOnDate.length}',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: isProcessed
+                          ? const Color(0xFF94A3B8)
+                          : AppTheme.navyAccent,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
                 // Mark processed toggle
                 Tooltip(
                   message: isProcessed ? 'Unmark processed' : 'Mark as processed',
