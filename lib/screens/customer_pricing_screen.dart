@@ -1274,8 +1274,263 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
   String _search = '';
   bool _importingPriceList = false;
 
-  // ── Import Item Price List CSV ─────────────────────────────────────────────
-  Future<void> _importItemPriceList(BuildContext context, AppProvider provider) async {
+  // ── Bulk-edit state ───────────────────────────────────────────────────────
+  bool _bulkMode = false;
+  final Set<String> _selected = {}; // keys = "${customerName}__${ratePlan}"
+
+  static String _overrideKey(CustomerRatePlanOverride o) =>
+      '${o.customerName}__${o.ratePlan}';
+
+  void _toggleBulkMode() {
+    setState(() {
+      _bulkMode = !_bulkMode;
+      _selected.clear();
+    });
+  }
+
+  void _toggleSelect(CustomerRatePlanOverride o) {
+    setState(() {
+      final k = _overrideKey(o);
+      if (_selected.contains(k)) {
+        _selected.remove(k);
+      } else {
+        _selected.add(k);
+      }
+    });
+  }
+
+  void _selectAll(List<CustomerRatePlanOverride> list) {
+    setState(() => _selected.addAll(list.map(_overrideKey)));
+  }
+
+  void _deselectAll() => setState(() => _selected.clear());
+
+  /// Show the bulk-edit dialog: update Cost, Price, and/or Rate Plan Keyword
+  /// for all selected overrides at once.
+  Future<void> _showBulkEditDialog(
+      BuildContext context, AppProvider provider,
+      List<CustomerRatePlanOverride> allOverrides) async {
+    final selected = allOverrides
+        .where((o) => _selected.contains(_overrideKey(o)))
+        .toList();
+    if (selected.isEmpty) return;
+
+    final costCtrl  = TextEditingController();
+    final priceCtrl = TextEditingController();
+    final planCtrl  = TextEditingController();
+    // Track which fields the user wants to change
+    bool changeCost  = false;
+    bool changePrice = false;
+    bool changePlan  = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx2, setDlg) {
+          return AlertDialog(
+            title: Row(children: [
+              const Icon(Icons.edit_note, size: 18, color: AppTheme.amber),
+              const SizedBox(width: 8),
+              Text('Bulk Edit — ${selected.length} override${selected.length == 1 ? '' : 's'}'),
+            ]),
+            content: SizedBox(
+              width: 400,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Choose which fields to update. Leave a field\'s checkbox '
+                      'unchecked to keep the existing value.',
+                      style: const TextStyle(
+                          fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Rate Plan Keyword ─────────────────────────────────
+                    Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                      Checkbox(
+                        value: changePlan,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: (v) => setDlg(() => changePlan = v ?? false),
+                        activeColor: AppTheme.teal,
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: planCtrl,
+                          enabled: changePlan,
+                          decoration: InputDecoration(
+                            labelText: 'Rate Plan Keyword',
+                            hintText: 'New keyword for all selected',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8)),
+                            filled: !changePlan,
+                            fillColor: AppTheme.divider.withValues(alpha: 0.4),
+                          ),
+                          onTap: () => setDlg(() => changePlan = true),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 10),
+
+                    // ── Your Cost ─────────────────────────────────────────
+                    Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                      Checkbox(
+                        value: changeCost,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: (v) => setDlg(() => changeCost = v ?? false),
+                        activeColor: AppTheme.teal,
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: costCtrl,
+                          enabled: changeCost,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,5}')),
+                          ],
+                          decoration: InputDecoration(
+                            labelText: 'Your Cost (Geotab charges you)',
+                            prefixText: r'$ ',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8)),
+                            filled: !changeCost,
+                            fillColor: AppTheme.divider.withValues(alpha: 0.4),
+                          ),
+                          onTap: () => setDlg(() => changeCost = true),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 10),
+
+                    // ── Customer Price ────────────────────────────────────
+                    Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                      Checkbox(
+                        value: changePrice,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: (v) => setDlg(() => changePrice = v ?? false),
+                        activeColor: AppTheme.teal,
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: priceCtrl,
+                          enabled: changePrice,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,5}')),
+                          ],
+                          decoration: InputDecoration(
+                            labelText: 'Customer Price (you charge them)',
+                            prefixText: r'$ ',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8)),
+                            filled: !changePrice,
+                            fillColor: AppTheme.divider.withValues(alpha: 0.4),
+                          ),
+                          onTap: () => setDlg(() => changePrice = true),
+                        ),
+                      ),
+                    ]),
+
+                    const SizedBox(height: 14),
+                    const Divider(),
+                    const SizedBox(height: 6),
+
+                    // ── Preview of affected overrides ─────────────────────
+                    Text(
+                      'Will update ${selected.length} override${selected.length == 1 ? '' : 's'}:',
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textSecondary),
+                    ),
+                    const SizedBox(height: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 160),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: selected.map((o) => Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            '• ${o.customerName}  (${o.ratePlan})',
+                            style: const TextStyle(
+                                fontSize: 11, color: AppTheme.textPrimary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        )).toList(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.save, size: 14),
+                label: Text('Apply to ${selected.length}'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () async {
+                  if (!changeCost && !changePrice && !changePlan) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(
+                          content: Text('Check at least one field to update.')),
+                    );
+                    return;
+                  }
+                  Navigator.pop(ctx);
+
+                  final newCost  = double.tryParse(costCtrl.text.trim());
+                  final newPrice = double.tryParse(priceCtrl.text.trim());
+                  final newPlan  = planCtrl.text.trim();
+
+                  int count = 0;
+                  for (final o in selected) {
+                    if (changePlan  && newPlan.isNotEmpty)  o.ratePlan      = newPlan;
+                    if (changeCost  && newCost  != null)    o.yourCost      = newCost;
+                    if (changePrice && newPrice != null)    o.customerPrice = newPrice;
+                    o.lastUpdated = DateTime.now();
+                    await o.save(); // HiveObject in-place save
+                    count++;
+                  }
+
+                  // Reload in provider + reprice
+                  await provider.saveRatePlanOverride(selected.first); // triggers reload
+                  // Force-reload all overrides since we used o.save() directly
+                  provider.reloadRatePlanOverrides();
+
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('Updated $count override${count == 1 ? '' : 's'}'),
+                      backgroundColor: AppTheme.teal,
+                      duration: const Duration(seconds: 3),
+                    ));
+                  }
+                  setState(() {
+                    _bulkMode = false;
+                    _selected.clear();
+                  });
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _importItemPriceList(
+      BuildContext context, AppProvider provider) async {
     setState(() => _importingPriceList = true);
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -1440,7 +1695,7 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
           ),
         ),
 
-        // ── Search + Add ──────────────────────────────────────────────────
+        // ── Search + Add + Select ─────────────────────────────────────────
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
           child: Row(
@@ -1461,21 +1716,127 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                 ),
               ),
               const SizedBox(width: 8),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('Add'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.teal,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  textStyle: const TextStyle(fontSize: 13),
+              // Bulk-select toggle
+              Tooltip(
+                message: _bulkMode
+                    ? 'Exit selection mode'
+                    : 'Select multiple to bulk edit',
+                child: OutlinedButton.icon(
+                  icon: Icon(_bulkMode ? Icons.close : Icons.checklist,
+                      size: 15),
+                  label: Text(_bulkMode ? 'Cancel' : 'Select',
+                      style: const TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor:
+                        _bulkMode ? AppTheme.red : AppTheme.navyAccent,
+                    side: BorderSide(
+                        color: _bulkMode
+                            ? AppTheme.red.withValues(alpha: 0.5)
+                            : AppTheme.navyAccent.withValues(alpha: 0.4)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 10),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    minimumSize: Size.zero,
+                  ),
+                  onPressed: _toggleBulkMode,
                 ),
-                onPressed: () => _showOverrideDialog(context, provider, null),
               ),
+              if (!_bulkMode) ...[
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Add'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.teal,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    textStyle: const TextStyle(fontSize: 13),
+                  ),
+                  onPressed: () =>
+                      _showOverrideDialog(context, provider, null),
+                ),
+              ],
             ],
           ),
         ),
+
+        // ── Bulk-select toolbar ───────────────────────────────────────────
+        if (_bulkMode)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.amber.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: AppTheme.amber.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.edit_note,
+                      size: 15, color: AppTheme.amber),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _selected.isEmpty
+                          ? 'Tap overrides to select them'
+                          : '${_selected.length} selected',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.amber,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                    onPressed: () => _selectAll(overrides),
+                    child:
+                        const Text('All', style: TextStyle(fontSize: 11)),
+                  ),
+                  const Text('·',
+                      style:
+                          TextStyle(color: AppTheme.textSecondary)),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                    onPressed: _deselectAll,
+                    child: const Text('None',
+                        style: TextStyle(fontSize: 11)),
+                  ),
+                  const SizedBox(width: 4),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.edit, size: 13),
+                    label: const Text('Edit Selected',
+                        style: TextStyle(fontSize: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _selected.isEmpty
+                          ? AppTheme.textSecondary
+                          : AppTheme.amber,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 7),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: Size.zero,
+                    ),
+                    onPressed: _selected.isEmpty
+                        ? null
+                        : () => _showBulkEditDialog(
+                            context, provider, overrides),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
         // ── Count badge ───────────────────────────────────────────────────
         if (all.isNotEmpty)
@@ -1521,6 +1882,48 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                   separatorBuilder: (_, __) => const SizedBox(height: 6),
                   itemBuilder: (ctx, i) {
                     final o = overrides[i];
+                    final key = _overrideKey(o);
+                    final isSelected = _selected.contains(key);
+                    if (_bulkMode) {
+                      return GestureDetector(
+                        onTap: () => _toggleSelect(o),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSelected
+                                  ? AppTheme.amber
+                                  : Colors.transparent,
+                              width: isSelected ? 2 : 0,
+                            ),
+                            color: isSelected
+                                ? AppTheme.amber.withValues(alpha: 0.07)
+                                : null,
+                          ),
+                          child: Row(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(left: 4),
+                                child: Checkbox(
+                                  value: isSelected,
+                                  onChanged: (_) => _toggleSelect(o),
+                                  activeColor: AppTheme.amber,
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                              Expanded(
+                                child: _OverrideTile(
+                                  item: o,
+                                  onEdit: () => _toggleSelect(o),
+                                  onDelete: () => _toggleSelect(o),
+                                  showActions: false,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
                     return _OverrideTile(
                       item: o,
                       onEdit: () =>
@@ -2343,11 +2746,13 @@ class _OverrideTile extends StatelessWidget {
   final CustomerRatePlanOverride item;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final bool showActions;
 
   const _OverrideTile({
     required this.item,
     required this.onEdit,
     required this.onDelete,
+    this.showActions = true,
   });
 
   @override
@@ -2438,6 +2843,7 @@ class _OverrideTile extends StatelessWidget {
               ),
             ),
             // Action buttons
+            if (showActions)
             Column(
               children: [
                 InkWell(
