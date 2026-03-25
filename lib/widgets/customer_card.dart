@@ -1560,6 +1560,7 @@ class _DeviceRowState extends State<_DeviceRow> {
   Widget build(BuildContext context) {
     final record = widget.record;
     final completed = widget.completed;
+    final provider = context.watch<AppProvider>();
 
     final daysInMonth = record.billingStart != null
         ? DateTime(record.billingStart!.year, record.billingStart!.month + 1, 0).day
@@ -1573,6 +1574,37 @@ class _DeviceRowState extends State<_DeviceRow> {
     final costColor = completed ? const Color(0xFF16A34A) : AppTheme.green;
 
     final planText = record.ratePlan.isEmpty ? record.planMode : record.ratePlan;
+
+    // ── Detect override mismatches ─────────────────────────────────────────
+    // Check if a rate-plan override exists for this customer but the keyword
+    // doesn't substring-match this device's rate plan → override silently fails.
+    final ratePlanNorm = planText.trim().toLowerCase();
+    final customerNorm = record.customer.trim().toLowerCase();
+    final customerOverrides = provider.ratePlanOverrides
+        .where((o) =>
+            o.customerName.trim().toLowerCase() == customerNorm)
+        .toList();
+    // Only flag if an override exists but NONE of them matched this plan
+    final hasOverrideForCustomer = customerOverrides.isNotEmpty;
+    final overrideMatchedThisPlan = customerOverrides.any((o) {
+      final kw = o.ratePlan.trim().toLowerCase();
+      return kw.isNotEmpty && ratePlanNorm.contains(kw);
+    });
+    // Show warning only when override exists but didn't match AND pricing fell
+    // back to a non-override rule (Standard plan / CSV fallback).
+    final showOverrideMismatch = hasOverrideForCustomer &&
+        !overrideMatchedThisPlan &&
+        !record.priceMatchedRule.startsWith('Rate plan override') &&
+        record.priceMatchedRule != 'Manual override';
+    // Collect mismatched override keywords for display
+    final mismatchedKeywords = customerOverrides
+        .where((o) {
+          final kw = o.ratePlan.trim().toLowerCase();
+          return kw.isEmpty || !ratePlanNorm.contains(kw);
+        })
+        .map((o) => '"${o.ratePlan}"')
+        .toSet()
+        .join(', ');
 
     return Column(
       children: [
@@ -1765,6 +1797,35 @@ class _DeviceRowState extends State<_DeviceRow> {
                         ),
                       ),
                     ],
+                  ),
+                ),
+              // ── Override mismatch warning ─────────────────────────────
+              // Shown when a rate-plan override exists for this customer but
+              // the keyword doesn't match this device's plan, so the override
+              // is being silently ignored and standard pricing is applied.
+              if (showOverrideMismatch)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12, top: 3),
+                  child: Tooltip(
+                    message: 'Override keyword $mismatchedKeywords does not match '
+                        '"$planText". Edit the override so its Rate Plan Keyword '
+                        'is a substring of the actual plan name.',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.tune_outlined, size: 11, color: Color(0xFFDC2626)),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            'Override not matching — fix keyword',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: const Color(0xFFDC2626).withValues(alpha: 0.9),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               if (daysRemaining > 0)

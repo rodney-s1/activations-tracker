@@ -2035,15 +2035,125 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                     // ── Rate plan keyword ─────────────────────────────────────
                     TextField(
                       controller: planCtrl,
+                      onChanged: (_) => setDialogState(() {}),
                       decoration: const InputDecoration(
                         labelText: 'Rate Plan Keyword *',
                         hintText:
-                            'e.g. ProPlus Install Bundle Plan [1250]',
+                            'e.g. GO Plan  (must be a substring of the CSV Rate Plan)',
                         helperText:
                             'Case-insensitive substring of the Rate Plan column',
                         isDense: true,
                       ),
                     ),
+                    // ── Live match preview ──────────────────────────────────
+                    Builder(builder: (ctx) {
+                      final kw = planCtrl.text.trim().toLowerCase();
+                      final custName = (bulkMode
+                              ? (bulkSelected.isNotEmpty
+                                  ? bulkSelected.first
+                                  : '')
+                              : customerCtrl.text.trim())
+                          .toLowerCase();
+                      if (kw.isEmpty || custName.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      // Find matching plans from loaded activations
+                      final activePlans = provider.customerGroups
+                          .where((g) =>
+                              g.customerName.trim().toLowerCase() == custName)
+                          .expand((g) => g.devices)
+                          .map((d) =>
+                              d.ratePlan.isNotEmpty ? d.ratePlan : d.planMode)
+                          .where((p) => p.isNotEmpty)
+                          .toSet()
+                          .toList();
+                      if (activePlans.isEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'No active plans found for this customer in current CSV',
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: AppTheme.textSecondary
+                                    .withValues(alpha: 0.7),
+                                fontStyle: FontStyle.italic),
+                          ),
+                        );
+                      }
+                      final matched = activePlans
+                          .where((p) => p.toLowerCase().contains(kw))
+                          .toList();
+                      final unmatched = activePlans
+                          .where((p) => !p.toLowerCase().contains(kw))
+                          .toList();
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: matched.isNotEmpty
+                                ? const Color(0xFF16A34A).withValues(alpha: 0.06)
+                                : const Color(0xFFDC2626).withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: matched.isNotEmpty
+                                  ? const Color(0xFF16A34A).withValues(alpha: 0.3)
+                                  : const Color(0xFFDC2626).withValues(alpha: 0.25),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Icon(
+                                  matched.isNotEmpty
+                                      ? Icons.check_circle_outline
+                                      : Icons.warning_amber_outlined,
+                                  size: 12,
+                                  color: matched.isNotEmpty
+                                      ? const Color(0xFF16A34A)
+                                      : const Color(0xFFDC2626),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  matched.isNotEmpty
+                                      ? 'Matches ${matched.length} plan${matched.length == 1 ? '' : 's'}'
+                                      : 'No match — keyword won\'t fire',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: matched.isNotEmpty
+                                        ? const Color(0xFF16A34A)
+                                        : const Color(0xFFDC2626),
+                                  ),
+                                ),
+                              ]),
+                              if (matched.isNotEmpty) ...[
+                                const SizedBox(height: 3),
+                                ...matched.map((p) => Padding(
+                                  padding: const EdgeInsets.only(left: 16, top: 1),
+                                  child: Text('✓ $p',
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Color(0xFF16A34A))),
+                                )),
+                              ],
+                              if (unmatched.isNotEmpty) ...[
+                                const SizedBox(height: 2),
+                                ...unmatched.map((p) => Padding(
+                                  padding: const EdgeInsets.only(left: 16, top: 1),
+                                  child: Text('✗ $p',
+                                      style: TextStyle(
+                                          fontSize: 10,
+                                          color: AppTheme.textSecondary
+                                              .withValues(alpha: 0.6))),
+                                )),
+                              ],
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
                     const SizedBox(height: 12),
 
                     // ── Your cost ─────────────────────────────────────────────
