@@ -800,9 +800,10 @@ class AppProvider extends ChangeNotifier {
     // This ensures overrides continue to match after the customer is renamed.
     // The pricing engine does an exact (case-insensitive) name match, so stale
     // names cause overrides to silently stop working.
+    final oldNorm = PricingEngine.normalizeCustomerName(oldName);
     final allOverrides = CustomerRatePlanOverrideService.getAll();
     for (final o in allOverrides) {
-      if (o.customerName.trim().toLowerCase() == oldName.trim().toLowerCase()) {
+      if (PricingEngine.normalizeCustomerName(o.customerName) == oldNorm) {
         o.customerName  = trimmed;
         o.lastUpdated   = DateTime.now();
         await o.save(); // save in-place (HiveObject) to avoid duplicate insertion
@@ -813,7 +814,7 @@ class AppProvider extends ChangeNotifier {
     // ── Update Customer Plan Codes to use the new customer name ──────────
     final allCodes = CustomerPlanCodeService.getAll();
     for (final c in allCodes) {
-      if (c.customerName.trim().toLowerCase() == oldName.trim().toLowerCase()) {
+      if (PricingEngine.normalizeCustomerName(c.customerName) == oldNorm) {
         c.customerName = trimmed;
         c.lastUpdated  = DateTime.now();
         await c.save(); // save in-place (HiveObject) to avoid duplicate insertion

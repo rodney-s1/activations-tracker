@@ -1,6 +1,7 @@
 // Service for Customer Plan Codes (Hive typeId=4)
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/customer_plan_code.dart';
+import 'pricing_engine.dart';
 
 class CustomerPlanCodeService {
   static const _boxName = 'customer_plan_codes';
@@ -18,9 +19,9 @@ class CustomerPlanCodeService {
   static List<CustomerPlanCode> getAll() => _box!.values.toList();
 
   static List<CustomerPlanCode> getForCustomer(String customerName) {
-    final norm = customerName.trim().toLowerCase();
+    final norm = PricingEngine.normalizeCustomerName(customerName);
     return _box!.values
-        .where((c) => c.customerName.trim().toLowerCase() == norm)
+        .where((c) => PricingEngine.normalizeCustomerName(c.customerName) == norm)
         .toList();
   }
 

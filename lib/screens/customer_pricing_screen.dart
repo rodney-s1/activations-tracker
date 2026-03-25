@@ -17,6 +17,7 @@ import '../models/customer_rate_plan_override.dart';
 import '../models/qb_item.dart';
 import '../services/item_price_list_service.dart';
 import '../services/app_provider.dart';
+import '../services/pricing_engine.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -2048,19 +2049,20 @@ class _RatePlanOverridesTabState extends State<_RatePlanOverridesTab> {
                     // ── Live match preview ──────────────────────────────────
                     Builder(builder: (ctx) {
                       final kw = planCtrl.text.trim().toLowerCase();
-                      final custName = (bulkMode
-                              ? (bulkSelected.isNotEmpty
-                                  ? bulkSelected.first
-                                  : '')
-                              : customerCtrl.text.trim())
-                          .toLowerCase();
+                      final custName = PricingEngine.normalizeCustomerName(
+                        bulkMode
+                            ? (bulkSelected.isNotEmpty
+                                ? bulkSelected.first
+                                : '')
+                            : customerCtrl.text.trim(),
+                      );
                       if (kw.isEmpty || custName.isEmpty) {
                         return const SizedBox.shrink();
                       }
                       // Find matching plans from loaded activations
                       final activePlans = provider.customerGroups
                           .where((g) =>
-                              g.customerName.trim().toLowerCase() == custName)
+                              PricingEngine.normalizeCustomerName(g.customerName) == custName)
                           .expand((g) => g.devices)
                           .map((d) =>
                               d.ratePlan.isNotEmpty ? d.ratePlan : d.planMode)

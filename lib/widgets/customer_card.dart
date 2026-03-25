@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/customer_group.dart';
 import '../models/activation_record.dart';
 import '../services/app_provider.dart';
+import '../services/pricing_engine.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -1579,10 +1580,10 @@ class _DeviceRowState extends State<_DeviceRow> {
     // Check if a rate-plan override exists for this customer but the keyword
     // doesn't substring-match this device's rate plan → override silently fails.
     final ratePlanNorm = planText.trim().toLowerCase();
-    final customerNorm = record.customer.trim().toLowerCase();
+    final customerNorm = PricingEngine.normalizeCustomerName(record.customer);
     final customerOverrides = provider.ratePlanOverrides
         .where((o) =>
-            o.customerName.trim().toLowerCase() == customerNorm)
+            PricingEngine.normalizeCustomerName(o.customerName) == customerNorm)
         .toList();
     // Only flag if an override exists but NONE of them matched this plan
     final hasOverrideForCustomer = customerOverrides.isNotEmpty;

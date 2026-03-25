@@ -5,6 +5,7 @@
 
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/customer_rate_plan_override.dart';
+import 'pricing_engine.dart';
 
 class CustomerRatePlanOverrideService {
   static const _boxName = 'customer_rate_plan_overrides';
@@ -41,8 +42,8 @@ class CustomerRatePlanOverrideService {
     for (final key in _box!.keys) {
       final existing = _box!.get(key);
       if (existing != null &&
-          existing.customerName.trim().toLowerCase() ==
-              override.customerName.trim().toLowerCase() &&
+          PricingEngine.normalizeCustomerName(existing.customerName) ==
+              PricingEngine.normalizeCustomerName(override.customerName) &&
           existing.ratePlan.trim().toLowerCase() ==
               override.ratePlan.trim().toLowerCase()) {
         existing.customerPrice = override.customerPrice;

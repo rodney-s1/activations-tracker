@@ -59,16 +59,16 @@ class PricingEngine {
     // Strip everything from the first `{` or `|` in the customer name so that
     // names like "ACME Corp {12345}" or "ACME Corp | Branch" match the override
     // rule stored as "ACME Corp".
-    final rawCustomer = record.customer.trim();
-    final cleanCustomer = _stripCustomerSuffix(rawCustomer);
-    final customerNameNorm = cleanCustomer.toLowerCase();
+    // Also normalize commas: Geotab CSV exports replace commas with spaces, so
+    // "Havtech  LLC" (from CSV) must match "Havtech, LLC" (stored in override).
+    final customerNameNorm = normalizeCustomerName(record.customer);
     final ratePlanNorm = record.ratePlan.trim().toLowerCase();
 
     // ── Tier 0: Rate Plan Overrides (highest priority) ────────────
-    // Matches customer name (exact, after stripping) + rate plan substring.
+    // Matches customer name (exact, after normalizing) + rate plan substring.
     if (ratePlanOverrides.isNotEmpty) {
       for (final ov in ratePlanOverrides) {
-        final ovCustomerNorm = _stripCustomerSuffix(ov.customerName.trim()).toLowerCase();
+        final ovCustomerNorm = normalizeCustomerName(ov.customerName);
         final ovPlanNorm = ov.ratePlan.trim().toLowerCase();
         final nameMatches = ovCustomerNorm == customerNameNorm;
         final planMatches = ovPlanNorm.isNotEmpty && ratePlanNorm.contains(ovPlanNorm);
@@ -91,7 +91,7 @@ class PricingEngine {
     // ── Tier 1: Customer-specific plan codes ─────────────────────
     final customerSpecificCodes = customerCodes
         .where((c) =>
-            c.customerName.trim().toLowerCase() == customerNameNorm)
+            normalizeCustomerName(c.customerName) == customerNameNorm)
         .toList();
 
     if (customerSpecificCodes.isNotEmpty) {
@@ -219,6 +219,22 @@ class PricingEngine {
     if (braceIdx >= 0 && braceIdx < cutAt) cutAt = braceIdx;
     if (pipeIdx  >= 0 && pipeIdx  < cutAt) cutAt = pipeIdx;
     return name.substring(0, cutAt).trim();
+  }
+
+  /// Normalize a customer name for comparison:
+  ///   1. Strip suffix ({…} / |…)
+  ///   2. Remove commas  ("Havtech, LLC" → "Havtech  LLC")
+  ///   3. Collapse multiple spaces to one  ("Havtech  LLC" → "Havtech LLC")
+  ///   4. Lowercase
+  ///
+  /// This makes CSV export names (commas replaced by spaces by Geotab)
+  /// match names stored in overrides/plan-codes (which may have commas).
+  static String normalizeCustomerName(String name) {
+    return _stripCustomerSuffix(name)
+        .replaceAll(',', ' ')     // comma → space
+        .replaceAll(RegExp(r' +'), ' ') // collapse runs of spaces
+        .trim()
+        .toLowerCase();
   }
 
   /// Public helper so other parts of the app can use the same stripping logic.
