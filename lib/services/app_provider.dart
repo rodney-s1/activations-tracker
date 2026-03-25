@@ -531,6 +531,15 @@ class AppProvider extends ChangeNotifier {
     CloudSyncService.pushSilent();
   }
 
+  /// Reload all rate plan overrides from Hive into memory and reprice.
+  /// Called after bulk-edit operations that use HiveObject.save() directly.
+  void reloadRatePlanOverrides() {
+    _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+    repriceCurrent();
+    notifyListeners();
+    CloudSyncService.pushSilent();
+  }
+
   // ── QB Customers ──────────────────────────────────────────────────────────
 
   /// Import from raw bytes — preferred on web to avoid String.fromCharCodes encoding issues.
