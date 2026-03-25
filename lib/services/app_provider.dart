@@ -765,6 +765,10 @@ class AppProvider extends ChangeNotifier {
 
   /// Rename a customer group from [oldName] to [newName], persist the mapping,
   /// and re-apply any device-price overrides so the override screen stays correct.
+  ///
+  /// Also updates the customerName field in any matching CustomerRatePlanOverrides
+  /// and CustomerPlanCodes so pricing rules continue to resolve correctly after
+  /// the customer is renamed.
   Future<void> renameCustomer(String oldName, String newName) async {
     final trimmed = newName.trim();
     if (trimmed.isEmpty || trimmed == oldName) return;
@@ -792,10 +796,42 @@ class AppProvider extends ChangeNotifier {
     _customerGroups.sort((a, b) =>
         a.customerName.toLowerCase().compareTo(b.customerName.toLowerCase()));
 
+    // ── Update Rate Plan Overrides to use the new customer name ──────────
+    // This ensures overrides continue to match after the customer is renamed.
+    // The pricing engine does an exact (case-insensitive) name match, so stale
+    // names cause overrides to silently stop working.
+    final allOverrides = CustomerRatePlanOverrideService.getAll();
+    for (final o in allOverrides) {
+      if (o.customerName.trim().toLowerCase() == oldName.trim().toLowerCase()) {
+        o.customerName  = trimmed;
+        o.lastUpdated   = DateTime.now();
+        await o.save(); // save in-place (HiveObject) to avoid duplicate insertion
+      }
+    }
+    _ratePlanOverrides = CustomerRatePlanOverrideService.getAll();
+
+    // ── Update Customer Plan Codes to use the new customer name ──────────
+    final allCodes = CustomerPlanCodeService.getAll();
+    for (final c in allCodes) {
+      if (c.customerName.trim().toLowerCase() == oldName.trim().toLowerCase()) {
+        c.customerName = trimmed;
+        c.lastUpdated  = DateTime.now();
+        await c.save(); // save in-place (HiveObject) to avoid duplicate insertion
+      }
+    }
+    _customerPlanCodes = CustomerPlanCodeService.getAll();
+
     // Await both saves so the data is fully written to localStorage before
     // any potential page reload / navigation.
     await _saveRenames();
     await _saveHidden();
+
+    // Re-price immediately so the renamed customer's overrides apply at once.
+    repriceCurrent();
+
+    // Push updated overrides/codes to cloud so other devices stay in sync.
+    CloudSyncService.pushSilent();
+
     notifyListeners();
   }
 

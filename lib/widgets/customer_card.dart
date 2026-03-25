@@ -1800,7 +1800,10 @@ class _DeviceRowState extends State<_DeviceRow> {
                 width: 72,
                 child: Padding(
                   padding: const EdgeInsets.only(top: 1),
-                  child: Column(
+                  child: Tooltip(
+                    message: 'Pricing rule: ${record.priceMatchedRule}',
+                    preferBelow: false,
+                    child: Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Row(
@@ -1851,6 +1854,7 @@ class _DeviceRowState extends State<_DeviceRow> {
                           textAlign: TextAlign.right,
                         ),
                     ],
+                  ),
                   ),
                 ),
               ),
