@@ -2,15 +2,19 @@
 
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/activations_export_service.dart';
 import '../services/app_provider.dart';
 export '../services/csv_parser_service.dart' show MissingCodeFlag;
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
+import '../utils/web_download.dart';
 import '../widgets/customer_card.dart';
 import '../widgets/summary_bar.dart';
 
@@ -535,6 +539,218 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  // ── Activations Snapshot Export ───────────────────────────────────────────
+
+  /// Show a confirmation dialog with a summary of the snapshot, then download.
+  Future<void> _showExportDialog(
+      BuildContext context, AppProvider provider) async {
+    final groups = provider.filteredGroups;
+    final totalDevices =
+        groups.fold<int>(0, (s, g) => s + g.devices.length);
+    final completedCount = await ActivationsExportService.loadCompletedCustomers(groups);
+    final processedMap = await ActivationsExportService.loadProcessedDates(groups);
+
+    if (!context.mounted) return;
+
+    final dateFmt = DateFormat('MMM d, yyyy');
+    final now = DateTime.now();
+    final fileName =
+        'activations_snapshot_${DateFormat('yyyy-MM-dd').format(now)}.csv';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.download_rounded, color: AppTheme.teal, size: 20),
+            SizedBox(width: 8),
+            Text('Export Activations Snapshot'),
+          ],
+        ),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.teal.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: AppTheme.teal.withValues(alpha: 0.2)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _ExportStat(
+                        icon: Icons.people_outline,
+                        label: 'Customers',
+                        value: '${groups.length}'),
+                    const SizedBox(height: 6),
+                    _ExportStat(
+                        icon: Icons.devices_other,
+                        label: 'Devices',
+                        value: '$totalDevices'),
+                    const SizedBox(height: 6),
+                    _ExportStat(
+                        icon: Icons.check_box_outlined,
+                        label: 'Completed',
+                        value: '${completedCount.length} / ${groups.length}'),
+                    const SizedBox(height: 6),
+                    _ExportStat(
+                        icon: Icons.calendar_today_outlined,
+                        label: 'Export date',
+                        value: dateFmt.format(now)),
+                    const SizedBox(height: 6),
+                    _ExportStat(
+                        icon: Icons.insert_drive_file_outlined,
+                        label: 'File',
+                        value: fileName),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppTheme.amber.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: AppTheme.amber.withValues(alpha: 0.25)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline,
+                        size: 14, color: AppTheme.amber),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'Exports all currently visible customers and devices '
+                        'with resolved pricing, completed/processed status, '
+                        'and pricing rule applied. Save this file before '
+                        'importing a new CSV to keep a permanent record.',
+                        style: TextStyle(
+                            fontSize: 11, color: AppTheme.textSecondary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.download, size: 14),
+            label: const Text('Download CSV'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.teal,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _doExport(
+                context: context,
+                provider: provider,
+                groups: groups,
+                completedCustomers: completedCount,
+                processedDatesMap: processedMap,
+                fileName: fileName,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Generate the CSV and trigger download / clipboard copy.
+  Future<void> _doExport({
+    required BuildContext context,
+    required AppProvider provider,
+    required List groups,
+    required Set<String> completedCustomers,
+    required Map<String, Set<DateTime>> processedDatesMap,
+    required String fileName,
+  }) async {
+    try {
+      final csvContent = ActivationsExportService.buildCsv(
+        groups: provider.filteredGroups,
+        completedCustomers: completedCustomers,
+        processedDatesMap: processedDatesMap,
+        filterFrom: _filterFrom,
+        filterTo: _filterTo,
+      );
+
+      if (kIsWeb) {
+        // Web: trigger browser download via JS interop
+        _webDownloadCsv(csvContent, fileName);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Downloading $fileName…'),
+              backgroundColor: AppTheme.teal,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        // Mobile: write to temp and notify
+        final dir = Directory.systemTemp;
+        final file = File('${dir.path}/$fileName');
+        await file.writeAsString(csvContent);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Saved to ${file.path}'),
+              backgroundColor: AppTheme.teal,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      } else {
+        // Desktop fallback — clipboard
+        await Clipboard.setData(ClipboardData(text: csvContent));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                  'CSV copied to clipboard — paste into a .csv file to save.'),
+              backgroundColor: AppTheme.teal,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export failed: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Trigger a file download in the browser using a real Blob URL.
+  void _webDownloadCsv(String content, String fileName) {
+    try {
+      triggerWebDownload(content, fileName);
+    } catch (_) {
+      // Fallback: clipboard
+      Clipboard.setData(ClipboardData(text: content));
+    }
+  }
+
   /// Re-parses the current raw CSV content with fresh pricing/filter settings.
   Future<void> _refresh(BuildContext context) async {
     final provider = context.read<AppProvider>();
@@ -647,6 +863,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onPressed: canRefresh && !_isRefreshing
                     ? () => _refresh(context)
                     : null,
+              ),
+            );
+          },
+        ),
+        // Export Snapshot button (only when data is loaded)
+        Consumer<AppProvider>(
+          builder: (context, provider, _) {
+            if (!provider.hasData) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Tooltip(
+                message: 'Export current activations page as CSV snapshot',
+                child: OutlinedButton.icon(
+                  onPressed: () => _showExportDialog(context, provider),
+                  icon: const Icon(Icons.download, size: 16),
+                  label: const Text('Export'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white54),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    textStyle: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
               ),
             );
           },
@@ -1309,6 +1550,45 @@ class _DateChip extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── Helper widget for export dialog stats ────────────────────────────────────
+
+class _ExportStat extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _ExportStat({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 13, color: AppTheme.teal),
+        const SizedBox(width: 6),
+        Text(
+          '$label: ',
+          style: const TextStyle(
+              fontSize: 12, color: AppTheme.textSecondary),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimary),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 }
