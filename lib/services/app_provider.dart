@@ -54,6 +54,9 @@ class AppProvider extends ChangeNotifier {
   // ── Manual per-device price overrides (serial → override) ─────────────
   Map<String, DevicePriceOverride> _devicePriceOverrides = {};
 
+  // ── Manual per-device plan overrides (serial → custom plan text) ─────
+  Map<String, String> _planOverrides = {};
+
   Map<String, DevicePriceOverride> get devicePriceOverrides => _devicePriceOverrides;
 
   /// Read-only view of the rename map (original → new).
@@ -99,6 +102,7 @@ class AppProvider extends ChangeNotifier {
   List<CustomerPlanCode> get customerPlanCodes => _customerPlanCodes;
   List<QbCustomer> get qbCustomers => _qbCustomers;
   List<CustomerRatePlanOverride> get ratePlanOverrides => _ratePlanOverrides;
+  Map<String, String> get planOverrides => Map.unmodifiable(_planOverrides);
 
   /// Apply manual device price overrides on top of engine pricing.
   /// Called at the end of repriceCurrent and loadCsv.
@@ -194,6 +198,47 @@ class AppProvider extends ChangeNotifier {
     _devicePriceOverrides.remove(serialNumber);
     // Re-price from scratch without the override
     repriceCurrent();
+  }
+
+  // ── Per-device plan overrides ─────────────────────────────────────────────
+
+  static const _planOverridesKey = 'plan_overrides_v1';
+
+  /// Load persisted plan overrides from SharedPreferences.
+  Future<void> loadPlanOverrides() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_planOverridesKey);
+    if (raw != null) {
+      try {
+        final map = Map<String, dynamic>.from(
+            const JsonDecoder().convert(raw) as Map);
+        _planOverrides = map.map((k, v) => MapEntry(k, v.toString()));
+      } catch (_) {
+        _planOverrides = {};
+      }
+    }
+  }
+
+  Future<void> _savePlanOverrides() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _planOverridesKey, const JsonEncoder().convert(_planOverrides));
+  }
+
+  /// Override the rate plan text for a single device, then re-price.
+  Future<void> setPlanOverride(String serialNumber, String planText) async {
+    _planOverrides[serialNumber] = planText;
+    await _savePlanOverrides();
+    repriceCurrent();
+    notifyListeners();
+  }
+
+  /// Remove the plan override for a device and restore original pricing.
+  Future<void> clearPlanOverride(String serialNumber) async {
+    _planOverrides.remove(serialNumber);
+    await _savePlanOverrides();
+    repriceCurrent();
+    notifyListeners();
   }
 
   /// Blank customer warnings from the last import
@@ -365,7 +410,12 @@ class AppProvider extends ChangeNotifier {
 
     final repriced = _customerGroups.map((group) {
       final newDevices = group.devices.map((record) {
-        final result = engine.resolve(record);
+        // Apply manual plan override before pricing — swap the ratePlan
+        final planOverrideText = _planOverrides[record.serialNumber];
+        final recordForPricing = planOverrideText != null
+            ? record.copyWithRatePlan(planOverrideText)
+            : record;
+        final result = engine.resolve(recordForPricing);
 
         // Rebuild warning flags live
         if (result.missingCode) {

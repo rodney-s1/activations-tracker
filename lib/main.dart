@@ -51,6 +51,9 @@ void main() async {
   // Load manual device price overrides (async — must be awaited separately)
   await provider.loadDevicePriceOverrides();
 
+  // Load manual plan text overrides
+  await provider.loadPlanOverrides();
+
   // Load persisted customer renames and hidden list
   await provider.loadCustomerOverrides();
 

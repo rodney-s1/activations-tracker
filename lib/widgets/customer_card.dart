@@ -1098,8 +1098,60 @@ class _DeviceRowState extends State<_DeviceRow> {
   bool _planCopied = false;
   bool _serialCopied = false;
 
-  /// Show the manual price override dialog.
-  ///
+  // ── Inline plan editing ──────────────────────────────────────────────────
+  bool _isEditingPlan = false;
+  late TextEditingController _planEditCtrl;
+  final FocusNode _planFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _planEditCtrl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _planEditCtrl.dispose();
+    _planFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _startEditingPlan(String currentPlan) {
+    _planEditCtrl.text = currentPlan;
+    setState(() => _isEditingPlan = true);
+    // Auto-focus + select all after frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _planFocusNode.requestFocus();
+      _planEditCtrl.selection =
+          TextSelection(baseOffset: 0, extentOffset: _planEditCtrl.text.length);
+    });
+  }
+
+  Future<void> _savePlanEdit(BuildContext context) async {
+    final newPlan = _planEditCtrl.text.trim();
+    final record = widget.record;
+    final provider = context.read<AppProvider>();
+    final originalPlan =
+        record.ratePlan.isEmpty ? record.planMode : record.ratePlan;
+
+    setState(() => _isEditingPlan = false);
+
+    if (newPlan.isEmpty || newPlan == originalPlan) {
+      // Nothing changed or cleared — remove any existing override
+      await provider.clearPlanOverride(record.serialNumber);
+      return;
+    }
+    await provider.setPlanOverride(record.serialNumber, newPlan);
+  }
+
+  void _cancelPlanEdit() => setState(() => _isEditingPlan = false);
+
+  Future<void> _clearPlanOverride(BuildContext context) async {
+    final provider = context.read<AppProvider>();
+    setState(() => _isEditingPlan = false);
+    await provider.clearPlanOverride(widget.record.serialNumber);
+  }
+
   /// Siblings (same customer, same rate plan) are classified into four buckets:
   ///   • clean     – same price, no flags, no existing override → included by default
   ///   • outlier   – different resolvedCustomerPrice → excluded by default, shown with warning
@@ -1728,60 +1780,266 @@ class _DeviceRowState extends State<_DeviceRow> {
                         ),
                       ],
                     ),
-                    // Rate plan row with inline copy button
-                    Padding(
-                      padding: const EdgeInsets.only(left: 12, top: 1),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              planText,
-                              style: const TextStyle(
-                                fontSize: 10,
-                                color: AppTheme.textSecondary,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (planText.isNotEmpty) ...[
-                            const SizedBox(width: 4),
-                            Tooltip(
-                              message: 'Copy rate plan name',
-                              child: InkWell(
-                                onTap: () => _copyRatePlan(context),
-                                borderRadius: BorderRadius.circular(4),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 5, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: _planCopied
-                                        ? const Color(0xFF16A34A)
-                                        : AppTheme.navyAccent.withValues(alpha: 0.08),
+                    // ── Rate plan row — tappable to edit inline ──────
+                    Consumer<AppProvider>(
+                      builder: (context, provider, _) {
+                        final hasPlanOverride = provider.planOverrides
+                            .containsKey(record.serialNumber);
+                        final displayPlan = hasPlanOverride
+                            ? provider.planOverrides[record.serialNumber]!
+                            : planText;
+                        final originalPlan = planText;
+
+                        if (_isEditingPlan) {
+                          // ── Inline edit field ─────────────────────────
+                          return Padding(
+                            padding:
+                                const EdgeInsets.only(left: 12, top: 2, right: 4),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _planEditCtrl,
+                                    focusNode: _planFocusNode,
+                                    style: const TextStyle(
+                                        fontSize: 10,
+                                        color: AppTheme.textPrimary),
+                                    decoration: InputDecoration(
+                                      isDense: true,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 6, vertical: 4),
+                                      border: OutlineInputBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                        borderSide: BorderSide(
+                                            color: AppTheme.amber
+                                                .withValues(alpha: 0.6)),
+                                      ),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                        borderSide: const BorderSide(
+                                            color: AppTheme.amber, width: 1.5),
+                                      ),
+                                      filled: true,
+                                      fillColor: AppTheme.amber
+                                          .withValues(alpha: 0.06),
+                                    ),
+                                    onSubmitted: (_) =>
+                                        _savePlanEdit(context),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                // Save
+                                Tooltip(
+                                  message: 'Save plan',
+                                  child: InkWell(
+                                    onTap: () => _savePlanEdit(context),
                                     borderRadius: BorderRadius.circular(4),
-                                    border: Border.all(
-                                      color: _planCopied
-                                          ? const Color(0xFF16A34A)
-                                          : AppTheme.navyAccent.withValues(alpha: 0.20),
-                                      width: 0.8,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.teal
+                                            .withValues(alpha: 0.12),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                      ),
+                                      child: const Icon(Icons.check,
+                                          size: 12, color: AppTheme.teal),
                                     ),
                                   ),
-                                  child: Icon(
-                                    _planCopied
-                                        ? Icons.check
-                                        : Icons.content_copy,
-                                    size: 10,
-                                    color: _planCopied
-                                        ? Colors.white
-                                        : AppTheme.navyAccent,
+                                ),
+                                const SizedBox(width: 3),
+                                // Cancel
+                                Tooltip(
+                                  message: 'Cancel',
+                                  child: InkWell(
+                                    onTap: _cancelPlanEdit,
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.textSecondary
+                                            .withValues(alpha: 0.10),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                      ),
+                                      child: const Icon(Icons.close,
+                                          size: 12,
+                                          color: AppTheme.textSecondary),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        // ── Static plan display ───────────────────────
+                        return Padding(
+                          padding: const EdgeInsets.only(left: 12, top: 1),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              // Overridden indicator dot
+                              if (hasPlanOverride) ...[
+                                Tooltip(
+                                  message:
+                                      'Plan overridden from:\n"$originalPlan"',
+                                  child: Container(
+                                    width: 6,
+                                    height: 6,
+                                    margin: const EdgeInsets.only(right: 4),
+                                    decoration: const BoxDecoration(
+                                      color: AppTheme.amber,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              Flexible(
+                                child: Tooltip(
+                                  message: hasPlanOverride
+                                      ? 'Tap to edit plan (overridden from "$originalPlan")'
+                                      : 'Tap to override plan name',
+                                  child: GestureDetector(
+                                    onTap: () =>
+                                        _startEditingPlan(displayPlan),
+                                    child: Text(
+                                      displayPlan,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: hasPlanOverride
+                                            ? AppTheme.amber
+                                            : AppTheme.textSecondary,
+                                        fontStyle: hasPlanOverride
+                                            ? FontStyle.italic
+                                            : FontStyle.normal,
+                                        decoration: hasPlanOverride
+                                            ? TextDecoration.underline
+                                            : null,
+                                        decorationColor:
+                                            AppTheme.amber.withValues(alpha: 0.5),
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ],
-                        ],
-                      ),
+                              const SizedBox(width: 4),
+                              // Edit pencil button
+                              Tooltip(
+                                message: hasPlanOverride
+                                    ? 'Edit plan override'
+                                    : 'Override plan name for pricing',
+                                child: InkWell(
+                                  onTap: () =>
+                                      _startEditingPlan(displayPlan),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: hasPlanOverride
+                                          ? AppTheme.amber
+                                              .withValues(alpha: 0.12)
+                                          : AppTheme.navyAccent
+                                              .withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(
+                                        color: hasPlanOverride
+                                            ? AppTheme.amber
+                                                .withValues(alpha: 0.35)
+                                            : AppTheme.navyAccent
+                                                .withValues(alpha: 0.20),
+                                        width: 0.8,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      Icons.edit,
+                                      size: 9,
+                                      color: hasPlanOverride
+                                          ? AppTheme.amber
+                                          : AppTheme.navyAccent,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              // Clear override button
+                              if (hasPlanOverride) ...[
+                                const SizedBox(width: 3),
+                                Tooltip(
+                                  message:
+                                      'Clear override — restore "$originalPlan"',
+                                  child: InkWell(
+                                    onTap: () =>
+                                        _clearPlanOverride(context),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.red
+                                            .withValues(alpha: 0.08),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: AppTheme.red
+                                              .withValues(alpha: 0.25),
+                                          width: 0.8,
+                                        ),
+                                      ),
+                                      child: const Icon(Icons.undo_rounded,
+                                          size: 9, color: AppTheme.red),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              // Copy plan button (when not overriding)
+                              if (!hasPlanOverride && planText.isNotEmpty) ...[
+                                const SizedBox(width: 3),
+                                Tooltip(
+                                  message: 'Copy rate plan name',
+                                  child: InkWell(
+                                    onTap: () => _copyRatePlan(context),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: _planCopied
+                                            ? const Color(0xFF16A34A)
+                                            : AppTheme.navyAccent
+                                                .withValues(alpha: 0.08),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: _planCopied
+                                              ? const Color(0xFF16A34A)
+                                              : AppTheme.navyAccent
+                                                  .withValues(alpha: 0.20),
+                                          width: 0.8,
+                                        ),
+                                      ),
+                                      child: Icon(
+                                        _planCopied
+                                            ? Icons.check
+                                            : Icons.content_copy,
+                                        size: 9,
+                                        color: _planCopied
+                                            ? Colors.white
+                                            : AppTheme.navyAccent,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      },
                     ),
                     // Missing-code flag warning
                     // Only show when pricing genuinely has no rule match (not suppressed by standard rate)
