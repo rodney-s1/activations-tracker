@@ -867,27 +867,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             );
           },
         ),
-        // Export Snapshot button (only when data is loaded)
+        // Export Snapshot icon button (only when data is loaded)
         Consumer<AppProvider>(
           builder: (context, provider, _) {
             if (!provider.hasData) return const SizedBox.shrink();
-            return Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Tooltip(
-                message: 'Export current activations page as CSV snapshot',
-                child: OutlinedButton.icon(
-                  onPressed: () => _showExportDialog(context, provider),
-                  icon: const Icon(Icons.download, size: 16),
-                  label: const Text('Export'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white54),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    textStyle: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
-                ),
+            return Tooltip(
+              message: 'Export activations snapshot as CSV',
+              child: IconButton(
+                onPressed: () => _showExportDialog(context, provider),
+                icon: const Icon(Icons.download_rounded, color: Colors.white),
               ),
             );
           },
