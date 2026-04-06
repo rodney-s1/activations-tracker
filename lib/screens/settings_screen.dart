@@ -724,6 +724,7 @@ class _QbFiltersTab extends StatefulWidget {
 
 class _QbFiltersTabState extends State<_QbFiltersTab> {
   final _ctrl = TextEditingController();
+  String _pendingKeyword = ''; // mirrors _ctrl text — survives focus-loss on web
   List<QbIgnoreKeyword> _keywords = [];
 
   // ── New-Activations ignore text config ───────────────────────────────────
@@ -798,44 +799,49 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   }
 
   Future<void> _add() async {
-    // Step 1 — read text BEFORE any await so focus-loss can't clear it
-    final kw = _ctrl.text.trim();
-
-    // Debug dialog so we can see every failure path in production
-    Future<void> _dbg(String msg) async {
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('QB Filters Debug'),
-          content: Text(msg),
-          actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('OK'))],
-        ),
-      );
-    }
-
-    if (kw.isEmpty) {
-      await _dbg('EMPTY — controller text was empty at tap time.\n'
-          'Raw value: "${_ctrl.text}"');
-      return;
-    }
-
+    // Use _pendingKeyword (set via onChanged) — survives focus-loss on web
+    // where _ctrl.text can be empty by the time the button tap fires.
+    final kw = _pendingKeyword.trim().isNotEmpty
+        ? _pendingKeyword.trim()
+        : _ctrl.text.trim();
+    if (kw.isEmpty) return;
     try {
       final live = await QbIgnoreKeywordService.getAllAsync();
       if (live.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
-        await _dbg('DUPLICATE — "$kw" already exists in list (${live.length} items).');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('"$kw" is already in the list.'),
+              backgroundColor: AppTheme.amber,
+            ),
+          );
+        }
         return;
       }
       await QbIgnoreKeywordService.add(kw);
       _ctrl.clear();
+      _pendingKeyword = '';
       _load();
       if (mounted) {
         context.read<AppProvider>().refreshQbIgnoreKeywords();
-        await _dbg('SUCCESS — "$kw" added. List now has ${_keywords.length} items.');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$kw" added to ignore list.'),
+            backgroundColor: AppTheme.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
       }
     } catch (e, st) {
       debugPrint('[QB Filters] _add error: $e\n$st');
-      await _dbg('ERROR — $e\n\nStack:\n${st.toString().substring(0, st.toString().length.clamp(0, 300))}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to add keyword: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
     }
   }
 
@@ -1090,26 +1096,19 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
                     prefixIcon: Icon(Icons.add_circle_outline, color: AppTheme.teal),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   ),
+                  onChanged: (v) => _pendingKeyword = v,
                   onSubmitted: (_) => _add(),
                 ),
               ),
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () {
-                  showDialog<void>(
-                    context: context,
-                    builder: (_) => AlertDialog(
-                      title: const Text('TAP FIRED'),
-                      content: Text('ctrl text = "${_ctrl.text}"'),
-                      actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('OK'))],
-                    ),
-                  );
-                },
-                child: Container(
+              ElevatedButton(
+                onPressed: _add,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  color: AppTheme.teal,
-                  child: const Text('Add', style: TextStyle(color: Colors.white)),
                 ),
+                child: const Text('Add'),
               ),
             ],
           ),
