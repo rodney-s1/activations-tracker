@@ -798,40 +798,46 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
     }
   }
 
-  Future<void> _dbg(String msg) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Debug'),
-        content: Text(msg),
-        actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('OK'))],
-      ),
-    );
-  }
-
   Future<void> _add() async {
     final kw = _ctrl.text.trim();
-    await _dbg('STEP 1: kw="$kw"  pending="$_pendingKeyword"');
-    if (kw.isEmpty) { await _dbg('STEP 1b: EMPTY — returning'); return; }
+    if (kw.isEmpty) return;
     try {
-      await _dbg('STEP 2: calling getAllAsync...');
       final live = await QbIgnoreKeywordService.getAllAsync();
-      await _dbg('STEP 3: got ${live.length} keywords\n${live.map((k) => k.keyword).join(", ")}');
       if (live.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
-        await _dbg('STEP 3b: DUPLICATE found');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('"$kw" is already in the list.'),
+              backgroundColor: AppTheme.amber,
+            ),
+          );
+        }
         return;
       }
-      await _dbg('STEP 4: calling add("$kw")...');
       await QbIgnoreKeywordService.add(kw);
-      await _dbg('STEP 5: add() completed — calling _load()');
       _ctrl.clear();
       _pendingKeyword = '';
       _load();
-      await _dbg('STEP 6: DONE — keywords now ${_keywords.length}');
-      if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
+      if (mounted) {
+        context.read<AppProvider>().refreshQbIgnoreKeywords();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('"$kw" added to ignore list.'),
+            backgroundColor: AppTheme.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     } catch (e, st) {
-      await _dbg('ERROR: $e\n\n${st.toString().substring(0, 400)}');
+      debugPrint('[QB Filters] _add error: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to add keyword: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
     }
   }
 
