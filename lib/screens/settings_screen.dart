@@ -1094,14 +1094,22 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
                 ),
               ),
               const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: _add,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.teal,
-                  foregroundColor: Colors.white,
+              GestureDetector(
+                onTap: () {
+                  showDialog<void>(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      title: const Text('TAP FIRED'),
+                      content: Text('ctrl text = "${_ctrl.text}"'),
+                      actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('OK'))],
+                    ),
+                  );
+                },
+                child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  color: AppTheme.teal,
+                  child: const Text('Add', style: TextStyle(color: Colors.white)),
                 ),
-                child: const Text('Add'),
               ),
             ],
           ),
