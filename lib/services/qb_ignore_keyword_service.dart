@@ -80,17 +80,52 @@ class QbIgnoreKeywordService {
     for (final kw in defaultKeywords) {
       await _box!.add(QbIgnoreKeyword(keyword: kw, isDefault: true));
     }
-    if (kDebugMode) debugPrint('[QbIgnoreKeywordService] Seeded ${defaultKeywords.length} default keywords');
+    if (kDebugMode) {
+      debugPrint(
+          '[QbIgnoreKeywordService] Seeded ${defaultKeywords.length} default keywords');
+    }
   }
+
+  // ── Box accessor — auto-reopens if closed (web hot-reload / session issue) ─
 
   static Box<QbIgnoreKeyword> get box {
     if (_box == null) throw StateError('QbIgnoreKeywordService not initialized');
     return _box!;
   }
 
+  /// Ensures the box is open, reopening it if Hive closed it (can happen on
+  /// web after certain navigation or session events).
+  static Future<Box<QbIgnoreKeyword>> _ensureOpen() async {
+    if (_box == null) throw StateError('QbIgnoreKeywordService not initialized');
+    if (!_box!.isOpen) {
+      if (kDebugMode) debugPrint('[QbIgnoreKeywordService] box was closed — reopening');
+      _box = await Hive.openBox<QbIgnoreKeyword>(_boxName);
+      if (_box!.isEmpty) await _seedDefaults();
+    }
+    return _box!;
+  }
+
+  // ── Public reopen helper (called from UI before mutations) ──────────────────
+
+  /// Public wrapper — ensures box is open. Call before any write operation
+  /// when there is any chance the box may have been closed (e.g. web reload).
+  static Future<void> ensureOpen() async {
+    await _ensureOpen();
+  }
+
+  /// Async variant of [getAll] — ensures box is open first, then returns list.
+  static Future<List<QbIgnoreKeyword>> getAllAsync() async {
+    await _ensureOpen();
+    return getAll();
+  }
+
+  // ── Read operations (sync — safe on web since box stays open after init) ────
+
   static List<QbIgnoreKeyword> getAll() {
-    final list = box.values.toList();
-    list.sort((a, b) => a.keyword.toLowerCase().compareTo(b.keyword.toLowerCase()));
+    if (_box == null || !_box!.isOpen) return [];
+    final list = _box!.values.toList();
+    list.sort(
+        (a, b) => a.keyword.toLowerCase().compareTo(b.keyword.toLowerCase()));
     return list;
   }
 
@@ -99,33 +134,39 @@ class QbIgnoreKeywordService {
 
   /// Returns true if [item] matches any ignore keyword (case-insensitive).
   static bool shouldIgnore(String item) {
-    if (_box == null) return false;
+    if (_box == null || !_box!.isOpen) return false;
     final lower = item.toLowerCase();
     return _box!.values.any((k) => lower.contains(k.keyword.toLowerCase()));
   }
 
+  // ── Write operations (async — ensure box is open first) ───────────────────
+
   static Future<QbIgnoreKeyword> add(String keyword) async {
+    final b = await _ensureOpen();
     final kw = QbIgnoreKeyword(keyword: keyword.trim(), isDefault: false);
-    await box.add(kw);
+    await b.add(kw);
     return kw;
   }
 
   static Future<void> delete(QbIgnoreKeyword keyword) async {
+    await _ensureOpen(); // ensure box is open so HiveObject.delete() works
     await keyword.delete();
   }
 
   static Future<void> resetToDefaults() async {
-    await box.clear();
+    final b = await _ensureOpen();
+    await b.clear();
     await _seedDefaults();
   }
 
   /// For cloud sync — clear and restore from list of keyword strings.
   static Future<void> restoreFromList(List<Map<String, dynamic>> items) async {
-    await box.clear();
+    final b = await _ensureOpen();
+    await b.clear();
     for (final item in items) {
-      await box.add(QbIgnoreKeyword(
-        keyword:   item['keyword']?.toString()   ?? '',
-        isDefault: item['isDefault'] as bool?    ?? false,
+      await b.add(QbIgnoreKeyword(
+        keyword: item['keyword']?.toString() ?? '',
+        isDefault: item['isDefault'] as bool? ?? false,
       ));
     }
   }

@@ -3,11 +3,13 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/qb_customer.dart';
+import '../models/qb_ignore_keyword.dart';
 import '../services/app_provider.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
@@ -722,7 +724,7 @@ class _QbFiltersTab extends StatefulWidget {
 
 class _QbFiltersTabState extends State<_QbFiltersTab> {
   final _ctrl = TextEditingController();
-  List<dynamic> _keywords = [];
+  List<QbIgnoreKeyword> _keywords = [];
 
   // ── New-Activations ignore text config ───────────────────────────────────
   bool _editingIgnoreText = false;
@@ -733,7 +735,8 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   void initState() {
     super.initState();
     _ignoreTextCtrl = TextEditingController(text: _ignoreText);
-    _load();
+    // Use async load so Hive box is re-opened if it was closed (web edge case).
+    _loadAsync();
   }
 
   void _load() {
@@ -741,6 +744,12 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
       _keywords = QbIgnoreKeywordService.getAll();
       _ignoreText = QbIgnoreKeywordService.newActivationsIgnoreText;
     });
+  }
+
+  Future<void> _loadAsync() async {
+    // Ensure box is open (handles web reopen edge case) then reload.
+    await QbIgnoreKeywordService.ensureOpen();
+    _load();
   }
 
   @override
@@ -791,28 +800,62 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   Future<void> _add() async {
     final kw = _ctrl.text.trim();
     if (kw.isEmpty) return;
-    // Prevent duplicates
-    if (_keywords.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
+    try {
+      // Ensure the Hive box is open — it can silently close on web after
+      // navigation or a session event even though _box is non-null.
+      final live = await QbIgnoreKeywordService.getAllAsync();
+      if (live.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('"$kw" is already in the list.'),
+              backgroundColor: AppTheme.amber,
+            ),
+          );
+        }
+        return;
+      }
+      await QbIgnoreKeywordService.add(kw);
+      _ctrl.clear();
+      _load();
       if (mounted) {
+        context.read<AppProvider>().refreshQbIgnoreKeywords();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('"$kw" is already in the list.'),
-            backgroundColor: AppTheme.amber,
+            content: Text('"$kw" added to ignore list.'),
+            backgroundColor: AppTheme.green,
+            duration: const Duration(seconds: 2),
           ),
         );
       }
-      return;
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('[QB Filters] _add error: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to add keyword: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
     }
-    await QbIgnoreKeywordService.add(kw);
-    _ctrl.clear();
-    _load();
-    if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
   }
 
-  Future<void> _delete(dynamic kw) async {
-    await QbIgnoreKeywordService.delete(kw);
-    _load();
-    if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
+  Future<void> _delete(QbIgnoreKeyword kw) async {
+    try {
+      await QbIgnoreKeywordService.delete(kw);
+      _load();
+      if (mounted) context.read<AppProvider>().refreshQbIgnoreKeywords();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to remove keyword: $e'),
+            backgroundColor: AppTheme.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _resetDefaults() async {
@@ -1163,7 +1206,7 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
     );
   }
 
-  void _showDeleteConfirm(dynamic kw) {
+  void _showDeleteConfirm(QbIgnoreKeyword kw) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
