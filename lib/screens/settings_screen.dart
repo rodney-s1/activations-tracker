@@ -798,21 +798,32 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   }
 
   Future<void> _add() async {
+    // Step 1 — read text BEFORE any await so focus-loss can't clear it
     final kw = _ctrl.text.trim();
-    if (kw.isEmpty) return;
+
+    // Debug dialog so we can see every failure path in production
+    Future<void> _dbg(String msg) async {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('QB Filters Debug'),
+          content: Text(msg),
+          actions: [TextButton(onPressed: () => Navigator.pop(_), child: const Text('OK'))],
+        ),
+      );
+    }
+
+    if (kw.isEmpty) {
+      await _dbg('EMPTY — controller text was empty at tap time.\n'
+          'Raw value: "${_ctrl.text}"');
+      return;
+    }
+
     try {
-      // Ensure the Hive box is open — it can silently close on web after
-      // navigation or a session event even though _box is non-null.
       final live = await QbIgnoreKeywordService.getAllAsync();
       if (live.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('"$kw" is already in the list.'),
-              backgroundColor: AppTheme.amber,
-            ),
-          );
-        }
+        await _dbg('DUPLICATE — "$kw" already exists in list (${live.length} items).');
         return;
       }
       await QbIgnoreKeywordService.add(kw);
@@ -820,24 +831,11 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
       _load();
       if (mounted) {
         context.read<AppProvider>().refreshQbIgnoreKeywords();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('"$kw" added to ignore list.'),
-            backgroundColor: AppTheme.green,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        await _dbg('SUCCESS — "$kw" added. List now has ${_keywords.length} items.');
       }
     } catch (e, st) {
-      if (kDebugMode) debugPrint('[QB Filters] _add error: $e\n$st');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to add keyword: $e'),
-            backgroundColor: AppTheme.red,
-          ),
-        );
-      }
+      debugPrint('[QB Filters] _add error: $e\n$st');
+      await _dbg('ERROR — $e\n\nStack:\n${st.toString().substring(0, st.toString().length.clamp(0, 300))}');
     }
   }
 
