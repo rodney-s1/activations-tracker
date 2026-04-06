@@ -384,7 +384,14 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     if (nameCell.isNotEmpty) {
       currentCustomer    = nameCell;
       currentCustomerKey = _normKey(nameCell);
-      displayNames.putIfAbsent(currentCustomerKey, () => nameCell);
+      // Strip QB "Parent:Child" colon prefix for display — we want "Child" only.
+      // e.g. "Berrett Pest Control Services:Berrett Pest Control Services - Dallas"
+      //   → "Berrett Pest Control Services - Dallas"
+      final colonIdx = nameCell.indexOf(':');
+      final cleanDisplayName = (colonIdx > 0 && colonIdx < nameCell.length - 1)
+          ? nameCell.substring(colonIdx + 1).trim()
+          : nameCell;
+      displayNames.putIfAbsent(currentCustomerKey, () => cleanDisplayName);
     }
     if (numIdx  >= 0 && gc(numIdx).isNotEmpty)  currentInvoice = gc(numIdx);
     if (dateIdx >= 0 && gc(dateIdx).isNotEmpty) currentDate    = gc(dateIdx);
@@ -544,8 +551,22 @@ String _normKey(String name) {
   s = _stripCurlyBraceSuffix(s);
   // 2. Strip parenthetical location/contact suffix, e.g. " (City State)"
   s = _stripParenSuffix(s);
-  // 3. Collapse whitespace and lowercase
-  return s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  // 3. Strip QB colon-parent prefix: QB exports "Parent:Child" — we only want
+  //    the child portion so it matches the MyAdmin name.
+  //    e.g. "Berrett Pest Control Services:Berrett Pest Control Services - Dallas"
+  //         → "Berrett Pest Control Services - Dallas"
+  //    If there is no colon the string is returned unchanged.
+  final colonIdx = s.indexOf(':');
+  if (colonIdx > 0 && colonIdx < s.length - 1) {
+    s = s.substring(colonIdx + 1).trim();
+  }
+  // 4. Lowercase and collapse whitespace
+  s = s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  // 5. Strip punctuation characters that differ between sources
+  //    e.g. "Cape Fear Regional Transport, Inc." vs "Cape Fear Regional Transport Inc"
+  //    Remove commas, periods, and other common legal-name punctuation.
+  s = s.replaceAll(RegExp(r"[,.'`]"), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  return s;
 }
 
 /// Remove a trailing curly-brace suffix, e.g. " {Cameras}" or " {OEM}".
@@ -1895,6 +1916,47 @@ class _CustomerVerifyCard extends StatelessWidget {
                               label: 'Billed: ${summary.billedCount}',
                               color: AppTheme.navyAccent,
                             ),
+                            // ── Per-plan billed breakdown chips ──────────────
+                            // Bucket QB plan labels into GPS vs Camera so the
+                            // Billed side mirrors the Billable breakdown.
+                            () {
+                              final byPlan = summary.billedPerPlan;
+                              if (byPlan.length <= 1) return const SizedBox.shrink();
+                              const cameraLabels = {
+                                'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'
+                              };
+                              int billedGps = 0;
+                              int billedCam = 0;
+                              for (final e in byPlan.entries) {
+                                if (cameraLabels.contains(e.key)) {
+                                  billedCam += e.value;
+                                } else if (e.key.toLowerCase() != 'hanover') {
+                                  billedGps += e.value;
+                                }
+                              }
+                              final chips = <Widget>[];
+                              if (billedGps > 0) {
+                                chips.add(const SizedBox(width: 4));
+                                chips.add(_MiniChip(
+                                  icon: Icons.gps_fixed,
+                                  label: 'GPS $billedGps',
+                                  color: AppTheme.navyAccent,
+                                ));
+                              }
+                              if (billedCam > 0) {
+                                chips.add(const SizedBox(width: 4));
+                                chips.add(_MiniChip(
+                                  icon: Icons.videocam_outlined,
+                                  label: 'Cam $billedCam',
+                                  color: Colors.indigo,
+                                ));
+                              }
+                              if (chips.isEmpty) return const SizedBox.shrink();
+                              return Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: chips,
+                              );
+                            }(),
                             if (summary.totalBilled > 0) ...[
                               const SizedBox(width: 6),
                               Text(
