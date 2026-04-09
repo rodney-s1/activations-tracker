@@ -51,6 +51,9 @@ class AppProvider extends ChangeNotifier {
   // ── Hidden customers: set of original (pre-rename) customer names ─────
   Set<String> _hiddenCustomers = {};
 
+  // ── Dismissed blank-customer serials ─────────────────────────────────
+  Set<String> _dismissedBlankSerials = {};
+
   // ── Manual per-device price overrides (serial → override) ─────────────
   Map<String, DevicePriceOverride> _devicePriceOverrides = {};
 
@@ -241,9 +244,18 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Blank customer warnings from the last import
+  /// Blank customer warnings from the last import (excluding dismissed ones)
   List<BlankCustomerRecord> get blankCustomerWarnings =>
+      (_parseResult?.blankCustomers ?? [])
+          .where((b) => !_dismissedBlankSerials.contains(b.serialNumber))
+          .toList();
+
+  /// All blank customer warnings including dismissed (for showing total count in UI if needed)
+  List<BlankCustomerRecord> get allBlankCustomerWarnings =>
       _parseResult?.blankCustomers ?? [];
+
+  Set<String> get dismissedBlankSerials =>
+      Set.unmodifiable(_dismissedBlankSerials);
 
   List<CustomerGroup> get filteredGroups {
     // Filter out hidden customers first
@@ -768,8 +780,9 @@ class AppProvider extends ChangeNotifier {
 
   // ── Customer Name Rename ─────────────────────────────────────────────────
 
-  static const _kRenamesKey = 'customer_renames_v1';
-  static const _kHiddenKey  = 'hidden_customers_v1';
+  static const _kRenamesKey       = 'customer_renames_v1';
+  static const _kHiddenKey        = 'hidden_customers_v1';
+  static const _kDismissedBlanksKey = 'dismissed_blank_serials_v1';
 
   /// Load persisted renames and hidden list from SharedPreferences.
   Future<void> loadCustomerOverrides() async {
@@ -796,6 +809,17 @@ class AppProvider extends ChangeNotifier {
         _hiddenCustomers = {};
       }
     }
+
+    // Dismissed blank serials: stored as JSON array
+    final dismissedJson = prefs.getString(_kDismissedBlanksKey);
+    if (dismissedJson != null && dismissedJson.isNotEmpty) {
+      try {
+        final list = json.decode(dismissedJson) as List<dynamic>;
+        _dismissedBlankSerials = list.map((e) => e as String).toSet();
+      } catch (_) {
+        _dismissedBlankSerials = {};
+      }
+    }
   }
 
   Future<void> _saveRenames() async {
@@ -806,6 +830,12 @@ class AppProvider extends ChangeNotifier {
   Future<void> _saveHidden() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kHiddenKey, json.encode(_hiddenCustomers.toList()));
+  }
+
+  Future<void> _saveDismissedBlanks() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _kDismissedBlanksKey, json.encode(_dismissedBlankSerials.toList()));
   }
 
   /// Apply the persisted rename map to the current in-memory groups.
@@ -895,6 +925,29 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Dismiss blank-customer warnings ────────────────────────────────────────
+
+  Future<void> dismissBlankSerial(String serial) async {
+    _dismissedBlankSerials.add(serial);
+    await _saveDismissedBlanks();
+    notifyListeners();
+  }
+
+  Future<void> undismissBlankSerial(String serial) async {
+    _dismissedBlankSerials.remove(serial);
+    await _saveDismissedBlanks();
+    notifyListeners();
+  }
+
+  Future<void> dismissAllBlankSerials() async {
+    final all = _parseResult?.blankCustomers ?? [];
+    for (final b in all) {
+      _dismissedBlankSerials.add(b.serialNumber);
+    }
+    await _saveDismissedBlanks();
+    notifyListeners();
+  }
+
   // ── Hide / Remove customer from Activations view ──────────────────────────
 
   /// Hide [customerName] from the Activations page (non-destructive).
@@ -931,6 +984,8 @@ class AppProvider extends ChangeNotifier {
     // Clear persisted hidden/renames too so a future import starts clean
     _saveHidden();
     _saveRenames();
+    // NOTE: dismissed blank serials are intentionally preserved across imports
+    // so the user doesn't have to re-dismiss devices they already handled.
     CsvPersistService.clearActivations();
     notifyListeners();
   }

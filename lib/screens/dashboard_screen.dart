@@ -137,161 +137,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _showBlankCustomerWarning(BuildContext context, AppProvider provider) {
-    final blanks = provider.blankCustomerWarnings;
-    if (blanks.isEmpty) return;
-
-    // Build the plain-text serial list once — used by both copy & export
-    final serialList = blanks
-        .map((b) => b.serialNumber.isEmpty ? '(no serial)' : b.serialNumber)
-        .join('\n');
+    // Show all blanks (including dismissed) so user can un-check if needed
+    final allBlanks = provider.allBlankCustomerWarnings;
+    if (allBlanks.isEmpty) return;
 
     showDialog(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        icon: const Icon(Icons.warning_amber_rounded,
-            color: AppTheme.amber, size: 36),
-        title: Text(
-          '${blanks.length} Blank Customer Name${blanks.length > 1 ? 's' : ''} Found',
-          style: const TextStyle(fontSize: 17),
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'These devices had no customer name and were excluded. '
-                'Look them up in your system, then fix the source report and re-import.',
-                style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
-              ),
-              const SizedBox(height: 10),
-
-              // ── Copy / Export action row ──────────────────────────
-              Row(
-                children: [
-                  // Copy all serials to clipboard
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: serialList));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                              '${blanks.length} serial number${blanks.length > 1 ? 's' : ''} copied to clipboard'),
-                          backgroundColor: AppTheme.teal,
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.copy, size: 14),
-                    label: const Text('Copy All', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppTheme.teal,
-                      side: const BorderSide(color: AppTheme.teal),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Download as .txt file (web: triggers download; mobile: saves to downloads)
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      await _exportBlankSerials(context, serialList, blanks.length);
-                    },
-                    icon: const Icon(Icons.download, size: 14),
-                    label: const Text('Export .txt', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppTheme.navyAccent,
-                      side: const BorderSide(color: AppTheme.navyAccent),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-
-              // ── Serial list ───────────────────────────────────────
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 240),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: blanks.length,
-                  itemBuilder: (_, i) {
-                    final b = blanks[i];
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: AppTheme.amber.withValues(alpha: 0.07),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: AppTheme.amber.withValues(alpha: 0.22)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline,
-                              size: 14, color: AppTheme.amber),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                SelectableText(
-                                  b.serialNumber.isEmpty
-                                      ? '(no serial)'
-                                      : b.serialNumber,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontFamily: 'monospace',
-                                    fontSize: 12,
-                                  ),
-                                ),
-                                Text(
-                                  'Line ${b.lineNumber}  ·  ${b.requestType}',
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      color: AppTheme.textSecondary),
-                                ),
-                              ],
-                            ),
-                          ),
-                          // Per-item copy button
-                          IconButton(
-                            icon: const Icon(Icons.copy,
-                                size: 14, color: AppTheme.textSecondary),
-                            tooltip: 'Copy serial',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(
-                                  text: b.serialNumber));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Serial copied'),
-                                  duration: Duration(seconds: 1),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(dialogCtx),
-            child: const Text('Got It'),
-          ),
-        ],
+      builder: (dialogCtx) => _BlankCustomerDialog(
+        allBlanks: allBlanks,
+        onExport: (serialList, count) =>
+            _exportBlankSerials(context, serialList, count),
       ),
     );
   }
@@ -1575,6 +1430,253 @@ class _ExportStat extends StatelessWidget {
                 color: AppTheme.textPrimary),
             overflow: TextOverflow.ellipsis,
           ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Blank Customer Warning Dialog ─────────────────────────────────────────────
+// Stateful so checkboxes update instantly without rebuilding parent.
+
+class _BlankCustomerDialog extends StatefulWidget {
+  final List<BlankCustomerRecord> allBlanks;
+  final Future<void> Function(String serialList, int count) onExport;
+
+  const _BlankCustomerDialog({
+    required this.allBlanks,
+    required this.onExport,
+  });
+
+  @override
+  State<_BlankCustomerDialog> createState() => _BlankCustomerDialogState();
+}
+
+class _BlankCustomerDialogState extends State<_BlankCustomerDialog> {
+  // Local set of serials the user has checked off as "done"
+  late Set<String> _checked;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-populate with whatever is already dismissed in the provider
+    final provider = context.read<AppProvider>();
+    _checked = Set<String>.from(provider.dismissedBlankSerials);
+  }
+
+  Future<void> _toggle(String serial, bool? value) async {
+    final provider = context.read<AppProvider>();
+    if (value == true) {
+      await provider.dismissBlankSerial(serial);
+    } else {
+      await provider.undismissBlankSerial(serial);
+    }
+    setState(() {
+      if (value == true) {
+        _checked.add(serial);
+      } else {
+        _checked.remove(serial);
+      }
+    });
+  }
+
+  Future<void> _checkAll() async {
+    final provider = context.read<AppProvider>();
+    await provider.dismissAllBlankSerials();
+    setState(() {
+      _checked = widget.allBlanks.map((b) => b.serialNumber).toSet();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final blanks = widget.allBlanks;
+    final undoneCount = blanks.where((b) => !_checked.contains(b.serialNumber)).length;
+
+    final serialList = blanks
+        .map((b) => b.serialNumber.isEmpty ? '(no serial)' : b.serialNumber)
+        .join('\n');
+
+    return AlertDialog(
+      icon: Icon(
+        undoneCount == 0
+            ? Icons.check_circle_rounded
+            : Icons.warning_amber_rounded,
+        color: undoneCount == 0 ? AppTheme.teal : AppTheme.amber,
+        size: 36,
+      ),
+      title: Text(
+        undoneCount == 0
+            ? 'All ${blanks.length} Resolved'
+            : '$undoneCount of ${blanks.length} Blank Customer Name${blanks.length > 1 ? 's' : ''} Remaining',
+        style: const TextStyle(fontSize: 17),
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Check off each device once you\'ve fixed it in your system. '
+              'Checked items won\'t show the warning again on future imports.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 10),
+
+            // ── Copy / Export / Check-All row ─────────────────────
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: serialList));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                            '${blanks.length} serial number${blanks.length > 1 ? 's' : ''} copied to clipboard'),
+                        backgroundColor: AppTheme.teal,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 14),
+                  label: const Text('Copy All', style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.teal,
+                    side: const BorderSide(color: AppTheme.teal),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await widget.onExport(serialList, blanks.length);
+                  },
+                  icon: const Icon(Icons.download, size: 14),
+                  label:
+                      const Text('Export .txt', style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.navyAccent,
+                    side: const BorderSide(color: AppTheme.navyAccent),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                if (undoneCount > 0)
+                  OutlinedButton.icon(
+                    onPressed: _checkAll,
+                    icon: const Icon(Icons.done_all, size: 14),
+                    label: const Text('Mark All Done',
+                        style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.teal,
+                      side: const BorderSide(color: AppTheme.teal),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // ── Serial list with checkboxes ────────────────────────
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: blanks.length,
+                itemBuilder: (_, i) {
+                  final b = blanks[i];
+                  final done = _checked.contains(b.serialNumber);
+                  return AnimatedOpacity(
+                    opacity: done ? 0.45 : 1.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      decoration: BoxDecoration(
+                        color: done
+                            ? AppTheme.teal.withValues(alpha: 0.06)
+                            : AppTheme.amber.withValues(alpha: 0.07),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: done
+                              ? AppTheme.teal.withValues(alpha: 0.25)
+                              : AppTheme.amber.withValues(alpha: 0.22),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          // Checkbox on the left
+                          Checkbox(
+                            value: done,
+                            activeColor: AppTheme.teal,
+                            onChanged: (v) => _toggle(b.serialNumber, v),
+                          ),
+                          // Serial + meta
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  b.serialNumber.isEmpty
+                                      ? '(no serial)'
+                                      : b.serialNumber,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontFamily: 'monospace',
+                                    fontSize: 12,
+                                    decoration: done
+                                        ? TextDecoration.lineThrough
+                                        : TextDecoration.none,
+                                  ),
+                                ),
+                                Text(
+                                  'Line ${b.lineNumber}  ·  ${b.requestType}',
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.textSecondary),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // Copy button
+                          IconButton(
+                            icon: const Icon(Icons.copy,
+                                size: 14, color: AppTheme.textSecondary),
+                            tooltip: 'Copy serial',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () {
+                              Clipboard.setData(
+                                  ClipboardData(text: b.serialNumber));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Serial copied'),
+                                  duration: Duration(seconds: 1),
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
         ),
       ],
     );
