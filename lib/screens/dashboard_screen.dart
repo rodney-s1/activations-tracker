@@ -793,7 +793,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
               height: 1.5,
             ),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 24),
+
+          // ── Last audited badge ────────────────────────────────────
+          Consumer<AppProvider>(
+            builder: (context, provider, _) {
+              final history = provider.history;
+              if (history.isEmpty) return const SizedBox(height: 8);
+              final last = history.first; // sorted newest-first
+              final hasDates = last.reportDateFrom.isNotEmpty;
+              final dateLabel = hasDates
+                  ? '${last.reportDateFrom} → ${last.reportDateTo}'
+                  : Formatters.dateTime(last.importedAt);
+              return Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.teal.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: AppTheme.teal.withValues(alpha: 0.25)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.history,
+                            size: 14, color: AppTheme.teal),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Last audited: ',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.teal.withValues(alpha: 0.8),
+                          ),
+                        ),
+                        Text(
+                          dateLabel,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.teal,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${last.totalDevices} device${last.totalDevices == 1 ? '' : 's'}  ·  ${last.fileName}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              );
+            },
+          ),
+
           ElevatedButton.icon(
             onPressed: () => _importCsv(context),
             icon: const Icon(Icons.upload_file),
@@ -1099,6 +1158,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ),
+
+        // ── Previous audit reminder (shows if there is an older session) ──
+        Builder(builder: (context) {
+          final history = provider.history;
+          // history[0] is the current import (just saved), so look for index 1
+          final prev = history.length > 1 ? history[1] : null;
+          if (prev == null) return const SizedBox.shrink();
+          final hasDates = prev.reportDateFrom.isNotEmpty;
+          final dateLabel = hasDates
+              ? '${prev.reportDateFrom} → ${prev.reportDateTo}'
+              : Formatters.dateTime(prev.importedAt);
+          return Container(
+            color: AppTheme.teal.withValues(alpha: 0.12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                const Icon(Icons.history, size: 13, color: AppTheme.teal),
+                const SizedBox(width: 6),
+                Text(
+                  'Previously audited: ',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.teal.withValues(alpha: 0.85)),
+                ),
+                Text(
+                  dateLabel,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.teal,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
 
         // ── Blank customer warning banner ─────────────────────────
         if (blanks.isNotEmpty)
