@@ -1874,155 +1874,159 @@ class _CustomerVerifyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 6),
       child: Column(
         children: [
-          // ── Header row ──────────────────────────────────────────────
+          // ── Header ──────────────────────────────────────────────────
           InkWell(
             onTap: onToggle,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Status icon
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Icon(_icon, size: 18, color: _color),
-                  ),
-                  const SizedBox(width: 9),
 
-                  // ── Main content ────────────────────────────────────
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Customer name + tags row
-                        Row(
+                  // ── TOP ROW: icon · name · [tags] · status · expand ─
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Icon(_icon, size: 16, color: _color),
+                      const SizedBox(width: 7),
+
+                      // Customer name (fills remaining space)
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Expanded(
-                              child: Text(
-                                summary.customerName,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.textPrimary,
+                            Text(
+                              summary.customerName,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            // Inline tags: CUA · jobType
+                            if (summary.isCua || summary.jobType.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Wrap(
+                                  spacing: 4,
+                                  runSpacing: 2,
+                                  children: [
+                                    if (summary.isCua)
+                                      _TagChip(
+                                        label: 'CUA',
+                                        icon: Icons.bolt,
+                                        color: Colors.deepPurple,
+                                      ),
+                                    if (summary.jobType.isNotEmpty)
+                                      _TagChip(
+                                        label: summary.jobType,
+                                        color: summary.isCua
+                                            ? Colors.deepPurple
+                                            : AppTheme.textSecondary,
+                                        italic: true,
+                                      ),
+                                  ],
                                 ),
                               ),
-                            ),
-                            if (summary.isCua) ...[
-                              const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.bolt,
-                                label: 'CUA',
-                                color: Colors.deepPurple,
-                              ),
-                            ],
-                            if (summary.jobType.isNotEmpty) ...[
-                              const SizedBox(width: 4),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(width: 6),
+
+                      // Status badge + amount stacked, then expand arrow
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Status badge + expand arrow on same line
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 5, vertical: 2),
+                                    horizontal: 7, vertical: 3),
                                 decoration: BoxDecoration(
-                                  color: (summary.isCua
-                                          ? Colors.deepPurple
-                                          : AppTheme.textSecondary)
-                                      .withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(4),
+                                  color: _color.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: _color.withValues(alpha: 0.35)),
                                 ),
                                 child: Text(
-                                  summary.jobType,
+                                  _label,
                                   style: TextStyle(
-                                    fontSize: 9,
-                                    color: summary.isCua
-                                        ? Colors.deepPurple
-                                            .withValues(alpha: 0.8)
-                                        : AppTheme.textSecondary
-                                            .withValues(alpha: 0.7),
-                                    fontStyle: FontStyle.italic,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: _color,
                                   ),
                                 ),
                               ),
+                              const SizedBox(width: 3),
+                              Icon(
+                                expanded
+                                    ? Icons.expand_less
+                                    : Icons.expand_more,
+                                size: 16,
+                                color: AppTheme.textSecondary,
+                              ),
                             ],
+                          ),
+                          if (summary.totalBilled > 0) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              Formatters.currency(summary.totalBilled),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary,
+                              ),
+                            ),
                           ],
-                        ),
-                        const SizedBox(height: 7),
-
-                        // ── Side-by-side Billable vs Billed grid ────
-                        // Each side shows: Total | GPS | Cam | Susp(if any)
-                        // aligned in columns so they're easy to scan.
-                        _BillingCompareRow(summary: summary),
-
-                        // Extra info chips (unknown / hanover)
-                        if (summary.unknownCount > 0 ||
-                            summary.hanoverCount > 0) ...[
-                          const SizedBox(height: 5),
-                          Row(children: [
-                            if (summary.unknownCount > 0)
-                              _MiniChip(
-                                icon: Icons.help_outline,
-                                label: '??? ${summary.unknownCount} unknown',
-                                color: Colors.grey,
-                              ),
-                            if (summary.unknownCount > 0 &&
-                                summary.hanoverCount > 0)
-                              const SizedBox(width: 4),
-                            if (summary.hanoverCount > 0)
-                              _MiniChip(
-                                icon: Icons.shield_outlined,
-                                label:
-                                    'HNV ${summary.hanoverCount} direct-bill',
-                                color: Colors.teal,
-                              ),
-                          ]),
                         ],
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
 
-                  const SizedBox(width: 8),
-                  // ── Right side: status badge + amount + expand ──
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  // ── BOTTOM ROW: billing compare (tight left) + alert chips ─
+                  const SizedBox(height: 7),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      // Status badge
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: _color.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border:
-                              Border.all(color: _color.withValues(alpha: 0.35)),
-                        ),
-                        child: Text(
-                          _label,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: _color,
+                      // Compare block sits left — does NOT stretch
+                      _BillingCompareRow(summary: summary),
+
+                      const SizedBox(width: 10),
+
+                      // Alert chips: unknown + hanover (only if present)
+                      if (summary.unknownCount > 0 ||
+                          summary.hanoverCount > 0)
+                        Expanded(
+                          child: Wrap(
+                            spacing: 4,
+                            runSpacing: 2,
+                            children: [
+                              if (summary.unknownCount > 0)
+                                _TagChip(
+                                  label: '${summary.unknownCount} unknown',
+                                  icon: Icons.help_outline,
+                                  color: Colors.grey,
+                                ),
+                              if (summary.hanoverCount > 0)
+                                _TagChip(
+                                  label:
+                                      '${summary.hanoverCount} direct-bill',
+                                  icon: Icons.shield_outlined,
+                                  color: Colors.teal,
+                                ),
+                            ],
                           ),
                         ),
-                      ),
-                      if (summary.totalBilled > 0) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          Formatters.currency(summary.totalBilled),
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 4),
-                      Icon(
-                        expanded ? Icons.expand_less : Icons.expand_more,
-                        size: 18,
-                        color: AppTheme.textSecondary,
-                      ),
                     ],
                   ),
                 ],
@@ -3169,6 +3173,10 @@ class _SideHeader extends StatelessWidget {
 /// Side-by-side "MyAdmin Billable" vs "QB Billed" layout.
 /// Shows TOTAL | GPS | CAM | SUSP columns aligned so the user can scan
 /// discrepancies at a glance without opening the expanded view.
+// ── Billing Compare Row ───────────────────────────────────────────────────────
+/// Horizontal table: header row (BILLABLE · diff · BILLED) then one detail
+/// row per device type (GPS, Cam, Susp) — columns are aligned so values line
+/// up vertically and the eye can scan down each column easily.
 class _BillingCompareRow extends StatelessWidget {
   final QbCustomerSummary summary;
   const _BillingCompareRow({required this.summary});
@@ -3176,239 +3184,273 @@ class _BillingCompareRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = summary;
-    final hasGps = s.geotabCount > 0 || s.qbGpsBilled > 0;
-    final hasCam = s.cameraCount > 0 || s.qbCamBilled > 0;
-    final hasSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
 
-    // Camera sub-label (prefer GF/GE detail)
-    String billableCamStr() {
-      final gf = s.goFocusCount;
-      final ge = s.goFocusPlusCount;
-      if (gf > 0 && ge > 0) return '${s.cameraCount} (GF$gf·GE$ge)';
-      if (gf > 0) return '${s.cameraCount} (GF$gf)';
-      if (ge > 0) return '${s.cameraCount} (GE$ge)';
-      return '${s.cameraCount}';
+    // ── diff badge ──────────────────────────────────────────────────
+    final Color diffColor;
+    final String diffLabel;
+    final IconData? diffIcon;
+    if (s.status == VerifyStatus.match) {
+      diffColor = AppTheme.green;
+      diffLabel = '';
+      diffIcon  = Icons.check;
+    } else {
+      final over = s.diff > 0;
+      diffColor = over ? AppTheme.amber : AppTheme.red;
+      diffLabel = over ? '+${s.diff}' : '${s.diff}';
+      diffIcon  = null;
     }
 
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // ── MyAdmin side ──────────────────────────────────────────
-          Expanded(
-            child: _BillingSide(
-              label: 'BILLABLE',
-              labelColor: AppTheme.teal,
-              total: s.activeCount,
-              gps: hasGps ? s.geotabCount : null,
-              cam: hasCam ? billableCamStr() : null,
-              susp: hasSupp ? s.suspendedGeotabCount : null,
-              isLeft: true,
-            ),
-          ),
+    // ── which rows to show ──────────────────────────────────────────
+    final showGps  = s.geotabCount > 0 || s.qbGpsBilled > 0;
+    final showCam  = s.cameraCount > 0 || s.qbCamBilled > 0;
+    final showSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
 
-          // ── Divider + diff ─────────────────────────────────────────
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 1,
-                color: AppTheme.divider,
-                height: 36,
-              ),
-              const SizedBox(height: 2),
-              _DiffBadge(diff: s.diff, status: s.status),
-              const SizedBox(height: 2),
-              Container(
-                width: 1,
-                color: AppTheme.divider,
-                height: 36,
-              ),
-            ],
-          ),
+    // Camera detail suffix e.g. "55 GF12·GE3"
+    String camDetail(int total, int gf, int ge) {
+      if (gf > 0 && ge > 0) return '$total  GF$gf·GE$ge';
+      if (gf > 0)            return '$total  GF$gf';
+      if (ge > 0)            return '$total  GE$ge';
+      return '$total';
+    }
 
-          // ── QB side ───────────────────────────────────────────────
-          Expanded(
-            child: _BillingSide(
-              label: 'BILLED',
-              labelColor: AppTheme.navyAccent,
-              total: s.billedCount,
-              gps: hasGps ? s.qbGpsBilled : null,
-              cam: hasCam ? '${s.qbCamBilled}' : null,
-              susp: hasSupp ? s.qbSuspendedBilled : null,
-              isLeft: false,
+    // Column widths kept fixed so left/right values always align.
+    const double kSideW = 72;   // width of each BILLABLE / BILLED column
+    const double kDiffW = 36;   // width of the centre diff badge column
+
+    // ── helper: one detail row (GPS / Cam / Susp) ──────────────────
+    Widget detailRow({
+      required IconData icon,
+      required Color color,
+      required String rowLabel,
+      required String billableVal,
+      required String billedVal,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // left value
+            SizedBox(
+              width: kSideW,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 10, color: color.withValues(alpha: 0.7)),
+                  const SizedBox(width: 3),
+                  Text(
+                    billableVal,
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: color.withValues(alpha: 0.9)),
+                  ),
+                ],
+              ),
             ),
+            // centre label
+            SizedBox(
+              width: kDiffW,
+              child: Text(
+                rowLabel,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 9,
+                  color: AppTheme.textSecondary.withValues(alpha: 0.6),
+                ),
+              ),
+            ),
+            // right value
+            SizedBox(
+              width: kSideW,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 10, color: color.withValues(alpha: 0.7)),
+                  const SizedBox(width: 3),
+                  Text(
+                    billedVal,
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: color.withValues(alpha: 0.9)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+
+        // ── HEADER ROW: BILLABLE  [diff]  BILLED ───────────────────
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            // BILLABLE side
+            SizedBox(
+              width: kSideW,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'BILLABLE',
+                    style: TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.teal.withValues(alpha: 0.7),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  Text(
+                    '${s.activeCount}',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.teal,
+                      height: 1.1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Diff badge centred
+            SizedBox(
+              width: kDiffW,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: diffColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: diffColor.withValues(alpha: 0.4)),
+                  ),
+                  child: diffIcon != null
+                      ? Icon(diffIcon, size: 11, color: diffColor)
+                      : Text(
+                          diffLabel,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: diffColor,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+
+            // BILLED side
+            SizedBox(
+              width: kSideW,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'BILLED',
+                    style: TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.navyAccent.withValues(alpha: 0.7),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  Text(
+                    '${s.billedCount}',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.navyAccent,
+                      height: 1.1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+
+        // ── DETAIL ROWS ─────────────────────────────────────────────
+        if (showGps)
+          detailRow(
+            icon: Icons.gps_fixed,
+            color: AppTheme.navyAccent,
+            rowLabel: 'GPS',
+            billableVal: '${s.geotabCount}',
+            billedVal: '${s.qbGpsBilled}',
           ),
-        ],
-      ),
+        if (showCam)
+          detailRow(
+            icon: Icons.videocam_outlined,
+            color: Colors.indigo,
+            rowLabel: 'CAM',
+            billableVal: camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
+            billedVal: '${s.qbCamBilled}',
+          ),
+        if (showSupp)
+          detailRow(
+            icon: Icons.pause_circle_outline,
+            color: Colors.orange,
+            rowLabel: 'SUSP',
+            billableVal: '${s.suspendedGeotabCount}',
+            billedVal: '${s.qbSuspendedBilled}',
+          ),
+      ],
     );
   }
 }
 
-class _BillingSide extends StatelessWidget {
+// ── Tag Chip (metadata labels) ────────────────────────────────────────────────
+/// Small inline label used for CUA, jobType, unknown, Hanover badges.
+class _TagChip extends StatelessWidget {
   final String label;
-  final Color labelColor;
-  final int total;
-  final int? gps;
-  final String? cam;
-  final int? susp;
-  final bool isLeft;
+  final Color color;
+  final IconData? icon;
+  final bool italic;
 
-  const _BillingSide({
+  const _TagChip({
     required this.label,
-    required this.labelColor,
-    required this.total,
-    this.gps,
-    this.cam,
-    this.susp,
-    required this.isLeft,
+    required this.color,
+    this.icon,
+    this.italic = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final align =
-        isLeft ? CrossAxisAlignment.start : CrossAxisAlignment.end;
-    final pad = isLeft
-        ? const EdgeInsets.only(right: 10, top: 4, bottom: 4)
-        : const EdgeInsets.only(left: 10, top: 4, bottom: 4);
-
-    Widget breakdownChip(IconData icon, Color color, String text) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 9, color: color.withValues(alpha: 0.7)),
-          const SizedBox(width: 2),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 10,
-              color: color.withValues(alpha: 0.85),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      );
-    }
-
-    return Padding(
-      padding: pad,
-      child: Column(
-        crossAxisAlignment: align,
-        children: [
-          // Label
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              color: labelColor.withValues(alpha: 0.7),
-              letterSpacing: 0.5,
-            ),
-          ),
-          const SizedBox(height: 1),
-          // Total number (large)
-          Text(
-            '$total',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-              color: labelColor,
-              height: 1.1,
-            ),
-          ),
-          // Breakdown row: GPS + Cam + Susp
-          if (gps != null || cam != null || susp != null) ...[
-            const SizedBox(height: 3),
-            Wrap(
-              alignment: isLeft ? WrapAlignment.start : WrapAlignment.end,
-              spacing: 6,
-              runSpacing: 2,
-              children: [
-                if (gps != null && gps! > 0)
-                  breakdownChip(
-                      Icons.gps_fixed, AppTheme.navyAccent, 'GPS $gps'),
-                if (cam != null && cam!.isNotEmpty && cam != '0')
-                  breakdownChip(
-                      Icons.videocam_outlined, Colors.indigo, 'Cam $cam'),
-                if (susp != null && susp! > 0)
-                  breakdownChip(
-                      Icons.pause_circle_outline, Colors.orange, 'Susp $susp'),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// The diff pill shown between Billable and Billed columns.
-class _DiffBadge extends StatelessWidget {
-  final int diff;   // positive = overbilled, negative = underbilled
-  final VerifyStatus status;
-  const _DiffBadge({required this.diff, required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    if (status == VerifyStatus.match) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-        decoration: BoxDecoration(
-          color: AppTheme.green.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: AppTheme.green.withValues(alpha: 0.3)),
-        ),
-        child: const Icon(Icons.check, size: 11, color: AppTheme.green),
-      );
-    }
-    final isOver = diff > 0;
-    final color = isOver ? AppTheme.amber : AppTheme.red;
-    final sign  = isOver ? '+' : '';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(
-        '$sign$diff',
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w800,
-          color: color,
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  const _MiniChip(
-      {required this.icon, required this.label, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(5),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 10, color: color),
-          const SizedBox(width: 3),
-          Text(label,
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: color)),
+          if (icon != null) ...[
+            Icon(icon, size: 9, color: color.withValues(alpha: 0.8)),
+            const SizedBox(width: 3),
+          ],
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w600,
+              color: color.withValues(alpha: 0.85),
+              fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+            ),
+          ),
         ],
       ),
     );
