@@ -100,22 +100,19 @@ class CsvPersistService {
   // ── Activations Dashboard ─────────────────────────────────────────────────
 
   static Future<void> saveActivations({
-    required String content,
+    required String content,   // ignored — not stored; user imports fresh each session
     required String fileName,
   }) async {
+    // Activations CSV is intentionally NOT persisted — the user uploads a
+    // new file each session.  Clear any content saved by an older version.
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kActivationsContent, content);
-    await prefs.setString(_kActivationsFile,    fileName);
+    await prefs.remove(_kActivationsContent);
+    await prefs.remove(_kActivationsFile);
   }
 
+  /// Always returns null — Activations CSV is session-only and must be re-imported.
   static Future<({String content, String fileName})?> loadActivations() async {
-    final prefs = await SharedPreferences.getInstance();
-    final content = prefs.getString(_kActivationsContent);
-    if (content == null || content.isEmpty) return null;
-    return (
-      content:  content,
-      fileName: prefs.getString(_kActivationsFile) ?? 'Activations.csv',
-    );
+    return null;
   }
 
   static Future<void> clearActivations() async {
