@@ -182,7 +182,7 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
                   ElevatedButton.icon(
                     onPressed: _importQbCsv,
                     icon: const Icon(Icons.upload_file, size: 16),
-                    label: const Text('Import Sales by Customer Detail', style: TextStyle(fontSize: 13)),
+                    label: const Text('Import QB CSV', style: TextStyle(fontSize: 13)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.teal,
                       foregroundColor: Colors.white,
@@ -261,25 +261,16 @@ class _QbCustomersTabState extends State<_QbCustomersTab> {
                               color: AppTheme.textSecondary.withValues(alpha: 0.4)),
                           const SizedBox(height: 16),
                           const Text(
-                            'No QB customers imported yet.',
+                            'No QB customers imported yet.\n'
+                            'Import your QuickBooks Customer List CSV.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: AppTheme.textSecondary),
-                          ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'Run the QuickBooks report:\n"Sales by Customer Detail"\nthen export and import the CSV here.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: AppTheme.textSecondary,
-                              height: 1.5,
-                            ),
                           ),
                           const SizedBox(height: 24),
                           ElevatedButton.icon(
                             onPressed: _importQbCsv,
                             icon: const Icon(Icons.upload_file),
-                            label: const Text('Import Sales by Customer Detail'),
+                            label: const Text('Import QB Customer List'),
                           ),
                         ],
                       ),

@@ -604,17 +604,20 @@ class _CustomerPlanCodesTabState extends State<_CustomerPlanCodesTab> {
                         fontSize: 12, color: AppTheme.textSecondary),
                   ),
                   const Spacer(),
-                  OutlinedButton.icon(
-                    onPressed: () => _importFromQbCsv(context, provider),
-                    icon: const Icon(Icons.upload_file, size: 15,
-                        color: AppTheme.navyAccent),
-                    label: const Text('Import QB Pricing',
-                        style: TextStyle(fontSize: 11, color: AppTheme.navyAccent)),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppTheme.navyAccent),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  Tooltip(
+                    message: 'QuickBooks → Reports → "Sales by Customer Detail"',
+                    child: OutlinedButton.icon(
+                      onPressed: () => _importFromQbCsv(context, provider),
+                      icon: const Icon(Icons.upload_file, size: 15,
+                          color: AppTheme.navyAccent),
+                      label: const Text('Import Sales by Customer Detail',
+                          style: TextStyle(fontSize: 11, color: AppTheme.navyAccent)),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppTheme.navyAccent),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
