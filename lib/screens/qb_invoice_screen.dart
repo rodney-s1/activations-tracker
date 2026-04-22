@@ -141,6 +141,12 @@ class QbCustomerSummary {
   final int goFocusCount;       // billable Go Focus cameras (GF serial prefix)
   final int goFocusPlusCount;   // billable Go Focus Plus cameras (GE serial prefix)
   final int geotabCount;        // billable Geotab (non-camera) devices
+  final int suspendedGeotabCount;    // billable Geotab devices that are Suspended
+  final int neverActivatedGeotabCount; // billable Geotab devices that are Never Activated
+  // QB billed breakdown (derived from QB plan labels)
+  final int qbGpsBilled;        // QB GPS/Geotab device count from billed lines
+  final int qbCamBilled;        // QB Camera device count from billed lines
+  final int qbSuspendedBilled;  // QB Suspended-SKU device count from billed lines
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
   /// True = Charged Upon Activation.
@@ -164,6 +170,11 @@ class QbCustomerSummary {
     this.goFocusCount = 0,
     this.goFocusPlusCount = 0,
     this.geotabCount = 0,
+    this.suspendedGeotabCount = 0,
+    this.neverActivatedGeotabCount = 0,
+    this.qbGpsBilled = 0,
+    this.qbCamBilled = 0,
+    this.qbSuspendedBilled = 0,
     required this.activeDevices,
     this.isCua = false,
     this.jobType = '',
@@ -539,12 +550,18 @@ String _extractPlanLabel(String item) {
 
 /// Normalise a customer name for cross-source matching.
 ///
-/// MyAdmin can append two types of suffix that QB names never have:
+/// MyAdmin can append several types of suffix that QB names never have:
 ///   • Parenthetical location:  "Baker Roofing (Seth Hagen Raleigh NC)" → "baker roofing"
 ///   • Curly-brace device type: "Acme Corp {Cameras}" → "acme corp"
-///     (same QB customer, just different device-type sub-groups)
+///   • Dash-location suffix:    "Berrett Pest Control - Austin TX" → "berrett pest control"
+///     NOTE: intentionally NOT stripped here — locations like "- Austin" are
+///     valid child-account differentiators in both QB and MyAdmin.
+///     They ARE stripped for the parent-child roll-up separately.
 ///
-/// Both are stripped before lowercasing so all sub-groups merge to one key.
+/// Also normalises common text differences between QB and MyAdmin:
+///   • "&" ↔ "and"
+///   • Legal suffix variants: LLC / L.L.C. / Ltd / Co. / Corp / Inc → stripped
+///   • Extra whitespace, commas, periods
 String _normKey(String name) {
   String s = name;
   // 1. Strip curly-brace device-type suffix first, e.g. " {Cameras}"
@@ -562,10 +579,25 @@ String _normKey(String name) {
   }
   // 4. Lowercase and collapse whitespace
   s = s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
-  // 5. Strip punctuation characters that differ between sources
+  // 5. Normalise "&" ↔ "and" so "A & B" matches "A and B"
+  s = s.replaceAll(RegExp(r'\s*&\s*'), ' and ');
+  // 6. Strip punctuation characters that differ between sources
   //    e.g. "Cape Fear Regional Transport, Inc." vs "Cape Fear Regional Transport Inc"
-  //    Remove commas, periods, and other common legal-name punctuation.
+  //    Remove commas, periods, apostrophes, and backticks.
   s = s.replaceAll(RegExp(r"[,.'`]"), '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  // 7. Strip trailing legal-entity suffixes that vary between QB and MyAdmin.
+  //    e.g. "Acme LLC" vs "Acme" / "Smith Co" vs "Smith Company" not handled
+  //    but "Smith LLC" vs "Smith" will now match.
+  //    Order matters: check longer patterns first (llc before lc, etc.)
+  s = s.replaceFirst(
+      RegExp(
+          r'\s+(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
+          r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|'
+          r'dba|d\.?b\.?a\.?)$',
+          caseSensitive: false),
+      '').trim();
+  // 8. Collapse any double-spaces introduced by suffix stripping
+  s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
   return s;
 }
 
@@ -903,8 +935,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       //   Standard → Active + Suspended + Never Activated
       //   CUA      → Active + Suspended  (Never Activated excluded)
       //
+      //   NOTE on Suspended (Geotab): Suspended devices get their own SKU line
+      //   in QB (e.g. "Suspended Service Fee"), so they ARE billable for both
+      //   Standard and CUA customers.  We count them here so the billable count
+      //   matches what QB invoices.
+      //
       // CAMERA devices ({Cameras} sub-group in MyAdmin):
-      //   Standard      → Active + Never Activated  (Suspended NOT billed)
+      //   Standard      → Active + Never Activated  (Suspended NOT billed for cameras)
       //   CUA (general) → Active + Never Activated  (CUA rule does NOT apply to cameras)
       //   CUA + Hollywood Feed Corporate → Active only (they are CUA for cameras too)
       //
@@ -935,10 +972,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           return s == 'active';
         }
         // All other customers (Standard or CUA): Active + Never Activated/Billed
+        // Cameras: Suspended is NOT billed (no suspended camera SKU in QB)
         return s == 'active' || s == 'never activated' || s == 'never billed';
       }).toList();
 
       // ── Geotab billable count ────────────────────────────────────────────
+      // Suspended Geotab devices ARE billable for ALL customer types because
+      // QB invoices them on a separate "Suspended Service Fee" SKU line.
       final geotabDevices = devices.where((d) => !d.isCamera).toList();
       final billableGeotab = geotabDevices.where((d) {
         final s = d.billingStatus.toLowerCase();
@@ -952,6 +992,18 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         return s == 'active' || s == 'suspended' || s == 'never activated' || s == 'never billed';
       }).toList();
 
+      // Count suspended Geotab separately so we can show it in the card breakdown
+      final suspendedGeotabCount = billableGeotab
+          .where((d) => d.billingStatus.toLowerCase() == 'suspended')
+          .length;
+
+      // Count Never Activated separately for display
+      final neverActivatedGeotabCount = billableGeotab
+          .where((d) {
+            final s = d.billingStatus.toLowerCase();
+            return s == 'never activated' || s == 'never billed';
+          }).length;
+
       // Cost-share Hanover devices count toward billable (customer pays half)
       final hanoverBillableCount = hanoverCsQty.clamp(0, hanoverDevices.length);
       final totalBillable = billableGeotab.length + billableCameras.length + hanoverBillableCount;
@@ -963,6 +1015,25 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // ── Go Focus / Go Focus Plus sub-counts ─────────────────────────────
       final goFocusCount     = billableCameras.where((d) => d.isGoFocus).length;
       final goFocusPlusCount = billableCameras.where((d) => d.isGoFocusPlus).length;
+
+      // ── QB billed breakdown by category ─────────────────────────────────
+      // Derive GPS vs Camera billed counts from QB plan labels for accurate
+      // side-by-side comparison on the card.
+      const _cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'};
+      int qbGpsBilled = 0;
+      int qbCamBilled = 0;
+      int qbSuspendedBilled = 0;
+      for (final line in qbLines) {
+        final lbl = line.planLabel;
+        final lblLower = lbl.toLowerCase();
+        if (_cameraLabels.contains(lbl)) {
+          qbCamBilled += line.qty.round();
+        } else if (lblLower.contains('suspend')) {
+          qbSuspendedBilled += line.qty.round();
+        } else if (lblLower != 'hanover') {
+          qbGpsBilled += line.qty.round();
+        }
+      }
 
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
@@ -978,6 +1049,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         goFocusCount:     goFocusCount,
         goFocusPlusCount: goFocusPlusCount,
         geotabCount:  billableGeotab.length,
+        suspendedGeotabCount: suspendedGeotabCount,
+        neverActivatedGeotabCount: neverActivatedGeotabCount,
+        qbGpsBilled:  qbGpsBilled,
+        qbCamBilled:  qbCamBilled,
+        qbSuspendedBilled: qbSuspendedBilled,
         activeDevices: devices,
         isCua: isCua,
         jobType: jobType,
@@ -1027,6 +1103,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             hanoverCsQty: existing.hanoverCsQty,
             cameraCount:  existing.cameraCount,
             geotabCount:  existing.geotabCount + newDevices.length,
+            suspendedGeotabCount: existing.suspendedGeotabCount,
+            neverActivatedGeotabCount: existing.neverActivatedGeotabCount,
+            qbGpsBilled:  existing.qbGpsBilled,
+            qbCamBilled:  existing.qbCamBilled,
+            qbSuspendedBilled: existing.qbSuspendedBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:         existing.isCua,
             jobType:       existing.jobType,
@@ -1047,6 +1128,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           hanoverCsQty: 0,
           cameraCount:  0,
           geotabCount:  hanoverGoDevices.length,
+          suspendedGeotabCount: 0,
+          neverActivatedGeotabCount: 0,
+          qbGpsBilled:  qbLines.fold(0, (s, l) => s + l.qty.round()),
+          qbCamBilled:  0,
+          qbSuspendedBilled: 0,
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
@@ -1113,6 +1199,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             hanoverCsQty:  parent.hanoverCsQty + child.hanoverCsQty,
             cameraCount:   parent.cameraCount  + child.cameraCount,
             geotabCount:   parent.geotabCount  + child.geotabCount,
+            suspendedGeotabCount: parent.suspendedGeotabCount + child.suspendedGeotabCount,
+            neverActivatedGeotabCount: parent.neverActivatedGeotabCount + child.neverActivatedGeotabCount,
+            qbGpsBilled:   parent.qbGpsBilled,
+            qbCamBilled:   parent.qbCamBilled,
+            qbSuspendedBilled: parent.qbSuspendedBilled,
             goFocusCount:     parent.goFocusCount     + child.goFocusCount,
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -1791,210 +1882,148 @@ class _CustomerVerifyCard extends StatelessWidget {
             onTap: onToggle,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(_icon, size: 20, color: _color),
-                  const SizedBox(width: 10),
+                  // Status icon
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Icon(_icon, size: 18, color: _color),
+                  ),
+                  const SizedBox(width: 9),
+
+                  // ── Main content ────────────────────────────────────
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          summary.customerName,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
-                        if (summary.jobType.isNotEmpty) ...[
-                          const SizedBox(height: 1),
-                          Text(
-                            summary.jobType,
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: summary.isCua
-                                  ? Colors.deepPurple.withValues(alpha: 0.75)
-                                  : AppTheme.textSecondary.withValues(alpha: 0.65),
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 3),
+                        // Customer name + tags row
                         Row(
                           children: [
+                            Expanded(
+                              child: Text(
+                                summary.customerName,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ),
                             if (summary.isCua) ...[
+                              const SizedBox(width: 4),
                               _MiniChip(
                                 icon: Icons.bolt,
                                 label: 'CUA',
                                 color: Colors.deepPurple,
                               ),
-                              const SizedBox(width: 4),
                             ],
-                            // Show combined billable count
-                            _MiniChip(
-                              icon: Icons.devices,
-                              label: 'Billable: ${summary.activeCount}',
-                              color: AppTheme.teal,
-                            ),
-                            // Show Geotab + Camera breakdown when both present
-                            if (summary.cameraCount > 0 && summary.geotabCount > 0) ...[
+                            if (summary.jobType.isNotEmpty) ...[
                               const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.gps_fixed,
-                                label: 'GPS ${summary.geotabCount}',
-                                color: AppTheme.navyAccent,
-                              ),
-                              const SizedBox(width: 4),
-                              // Show GF/GE sub-type chips if available, else total cameras
-                              if (summary.goFocusCount > 0 || summary.goFocusPlusCount > 0) ...[
-                                if (summary.goFocusCount > 0) ...[
-                                  _MiniChip(
-                                    icon: Icons.videocam_outlined,
-                                    label: 'Cam-GF ${summary.goFocusCount}',
-                                    color: Colors.indigo,
-                                  ),
-                                  const SizedBox(width: 4),
-                                ],
-                                if (summary.goFocusPlusCount > 0)
-                                  _MiniChip(
-                                    icon: Icons.videocam,
-                                    label: 'Cam-GE ${summary.goFocusPlusCount}',
-                                    color: Colors.deepPurple,
-                                  ),
-                              ] else
-                                _MiniChip(
-                                  icon: Icons.videocam_outlined,
-                                  label: 'Cam ${summary.cameraCount}',
-                                  color: Colors.indigo,
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: (summary.isCua
+                                          ? Colors.deepPurple
+                                          : AppTheme.textSecondary)
+                                      .withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
                                 ),
-                            ] else if (summary.cameraCount > 0) ...[
-                              const SizedBox(width: 4),
-                              // Camera-only customer: show GF/GE if available
-                              if (summary.goFocusCount > 0 || summary.goFocusPlusCount > 0) ...[
-                                if (summary.goFocusCount > 0) ...[
-                                  _MiniChip(
-                                    icon: Icons.videocam_outlined,
-                                    label: 'Cam-GF ${summary.goFocusCount}',
-                                    color: Colors.indigo,
+                                child: Text(
+                                  summary.jobType,
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: summary.isCua
+                                        ? Colors.deepPurple
+                                            .withValues(alpha: 0.8)
+                                        : AppTheme.textSecondary
+                                            .withValues(alpha: 0.7),
+                                    fontStyle: FontStyle.italic,
                                   ),
-                                  const SizedBox(width: 4),
-                                ],
-                                if (summary.goFocusPlusCount > 0)
-                                  _MiniChip(
-                                    icon: Icons.videocam,
-                                    label: 'Cam-GE ${summary.goFocusPlusCount}',
-                                    color: Colors.deepPurple,
-                                  ),
-                              ] else
-                                _MiniChip(
-                                  icon: Icons.videocam_outlined,
-                                  label: 'Cam ${summary.cameraCount}',
-                                  color: Colors.indigo,
                                 ),
-                            ],
-                            if (summary.unknownCount > 0) ...[
-                              const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.help_outline,
-                                label: '??? ${summary.unknownCount}',
-                                color: Colors.grey,
-                              ),
-                            ],
-                            if (summary.hanoverCount > 0) ...[
-                              const SizedBox(width: 4),
-                              _MiniChip(
-                                icon: Icons.shield_outlined,
-                                label: 'HNV ${summary.hanoverCount}',
-                                color: Colors.teal,
-                              ),
-                            ],
-                            const SizedBox(width: 6),
-                            _MiniChip(
-                              icon: Icons.receipt,
-                              label: 'Billed: ${summary.billedCount}',
-                              color: AppTheme.navyAccent,
-                            ),
-                            // ── Per-plan billed breakdown chips ──────────────
-                            // Bucket QB plan labels into GPS vs Camera so the
-                            // Billed side mirrors the Billable breakdown.
-                            () {
-                              final byPlan = summary.billedPerPlan;
-                              if (byPlan.length <= 1) return const SizedBox.shrink();
-                              const cameraLabels = {
-                                'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'
-                              };
-                              int billedGps = 0;
-                              int billedCam = 0;
-                              for (final e in byPlan.entries) {
-                                if (cameraLabels.contains(e.key)) {
-                                  billedCam += e.value;
-                                } else if (e.key.toLowerCase() != 'hanover') {
-                                  billedGps += e.value;
-                                }
-                              }
-                              final chips = <Widget>[];
-                              if (billedGps > 0) {
-                                chips.add(const SizedBox(width: 4));
-                                chips.add(_MiniChip(
-                                  icon: Icons.gps_fixed,
-                                  label: 'GPS $billedGps',
-                                  color: AppTheme.navyAccent,
-                                ));
-                              }
-                              if (billedCam > 0) {
-                                chips.add(const SizedBox(width: 4));
-                                chips.add(_MiniChip(
-                                  icon: Icons.videocam_outlined,
-                                  label: 'Cam $billedCam',
-                                  color: Colors.indigo,
-                                ));
-                              }
-                              if (chips.isEmpty) return const SizedBox.shrink();
-                              return Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: chips,
-                              );
-                            }(),
-                            if (summary.totalBilled > 0) ...[
-                              const SizedBox(width: 6),
-                              Text(
-                                Formatters.currency(summary.totalBilled),
-                                style: const TextStyle(
-                                    fontSize: 10,
-                                    color: AppTheme.textSecondary),
                               ),
                             ],
                           ],
                         ),
+                        const SizedBox(height: 7),
+
+                        // ── Side-by-side Billable vs Billed grid ────
+                        // Each side shows: Total | GPS | Cam | Susp(if any)
+                        // aligned in columns so they're easy to scan.
+                        _BillingCompareRow(summary: summary),
+
+                        // Extra info chips (unknown / hanover)
+                        if (summary.unknownCount > 0 ||
+                            summary.hanoverCount > 0) ...[
+                          const SizedBox(height: 5),
+                          Row(children: [
+                            if (summary.unknownCount > 0)
+                              _MiniChip(
+                                icon: Icons.help_outline,
+                                label: '??? ${summary.unknownCount} unknown',
+                                color: Colors.grey,
+                              ),
+                            if (summary.unknownCount > 0 &&
+                                summary.hanoverCount > 0)
+                              const SizedBox(width: 4),
+                            if (summary.hanoverCount > 0)
+                              _MiniChip(
+                                icon: Icons.shield_outlined,
+                                label:
+                                    'HNV ${summary.hanoverCount} direct-bill',
+                                color: Colors.teal,
+                              ),
+                          ]),
+                        ],
                       ],
                     ),
                   ),
-                  // Status badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: _color.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: _color.withValues(alpha: 0.35)),
-                    ),
-                    child: Text(
-                      _label,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: _color,
+
+                  const SizedBox(width: 8),
+                  // ── Right side: status badge + amount + expand ──
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Status badge
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border:
+                              Border.all(color: _color.withValues(alpha: 0.35)),
+                        ),
+                        child: Text(
+                          _label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: _color,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 18,
-                    color: AppTheme.textSecondary,
+                      if (summary.totalBilled > 0) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          Formatters.currency(summary.totalBilled),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 4),
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: AppTheme.textSecondary,
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -2167,10 +2196,51 @@ class _SerialListDialog extends StatelessWidget {
               ),
             ),
 
+            // ── Column headers ────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+              color: AppTheme.navyDark.withValues(alpha: 0.6),
+              child: Row(
+                children: [
+                  const SizedBox(width: 22), // # column
+                  const Expanded(
+                    flex: 5,
+                    child: Text('Serial Number',
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.tealLight,
+                            letterSpacing: 0.3)),
+                  ),
+                  const SizedBox(
+                    width: 50,
+                    child: Text('Status',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54,
+                            letterSpacing: 0.3)),
+                  ),
+                  const Expanded(
+                    flex: 3,
+                    child: Text('Plan',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54,
+                            letterSpacing: 0.3)),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: AppTheme.divider),
+
             // ── Serial list ───────────────────────────────────────────
             Expanded(
               child: ListView.builder(
-                padding: const EdgeInsets.symmetric(vertical: 4),
+                padding: const EdgeInsets.only(bottom: 4),
                 itemCount: serials.length,
                 itemBuilder: (ctx, i) {
                   final d = devices.firstWhere(
@@ -2181,96 +2251,125 @@ class _SerialListDialog extends StatelessWidget {
                       .replaceAll(' Mode:', '')
                       .replaceAll(': Live', '');
                   final badge = statusBadge(d.billingStatus);
+                  // Determine row colour: Hanover = teal tint, N/A = amber tint,
+                  // Suspended = orange tint, alternating grey otherwise
+                  Color rowColor;
+                  if (d.isHanover) {
+                    rowColor = Colors.teal.withValues(alpha: 0.06);
+                  } else if (badge?.label == 'N/A') {
+                    rowColor = AppTheme.amber.withValues(alpha: 0.05);
+                  } else if (badge?.label == 'SUSP') {
+                    rowColor = Colors.orange.withValues(alpha: 0.05);
+                  } else {
+                    rowColor = i.isEven
+                        ? Colors.transparent
+                        : AppTheme.navyDark.withValues(alpha: 0.03);
+                  }
+
+                  // Camera type pill
+                  Widget? camPill;
+                  if (d.isCamera && d.cameraType.isNotEmpty) {
+                    final isPlus = d.isGoFocusPlus;
+                    camPill = Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 1),
+                      margin: const EdgeInsets.only(right: 3),
+                      decoration: BoxDecoration(
+                        color: (isPlus ? Colors.deepPurple : Colors.indigo)
+                            .withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(3),
+                        border: Border.all(
+                          color: (isPlus ? Colors.deepPurple : Colors.indigo)
+                              .withValues(alpha: 0.4),
+                        ),
+                      ),
+                      child: Text(
+                        isPlus ? 'GE' : 'GF',
+                        style: TextStyle(
+                          fontSize: 8,
+                          fontWeight: FontWeight.w700,
+                          color:
+                              isPlus ? Colors.deepPurple : Colors.indigo,
+                        ),
+                      ),
+                    );
+                  }
+
                   return Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 6),
-                    color: i.isEven
-                        ? Colors.transparent
-                        : AppTheme.navyDark.withValues(alpha: 0.03),
+                        horizontal: 14, vertical: 5),
+                    color: rowColor,
                     child: Row(
                       children: [
-                        Text(
-                          '${i + 1}.',
-                          style: const TextStyle(
-                              fontSize: 10, color: Colors.grey),
+                        // Row number
+                        SizedBox(
+                          width: 22,
+                          child: Text(
+                            '${i + 1}.',
+                            style: const TextStyle(
+                                fontSize: 9, color: Colors.grey),
+                          ),
                         ),
-                        const SizedBox(width: 4),
+                        // Serial number — full width, no wrapping
                         Expanded(
-                          flex: 2,
+                          flex: 5,
                           child: Text(
                             serials[i],
                             style: const TextStyle(
-                                fontSize: 11,
-                                fontFamily: 'monospace',
-                                color: AppTheme.textPrimary),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            plan,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppTheme.textSecondary),
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                              color: AppTheme.textPrimary,
+                            ),
                             overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
                           ),
                         ),
-                        // Camera sub-type chip (Go Focus / Go Focus Plus)
-                        if (d.isCamera && d.cameraType.isNotEmpty) ...[
-                          const SizedBox(width: 3),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 4, vertical: 1),
-                            margin: const EdgeInsets.only(right: 2),
-                            decoration: BoxDecoration(
-                              color: d.isGoFocusPlus
-                                  ? Colors.deepPurple.withValues(alpha: 0.15)
-                                  : Colors.indigo.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: d.isGoFocusPlus
-                                    ? Colors.deepPurple.withValues(alpha: 0.45)
-                                    : Colors.indigo.withValues(alpha: 0.45),
-                              ),
-                            ),
-                            child: Text(
-                              d.isGoFocusPlus ? 'GF+' : 'GF',
-                              style: TextStyle(
-                                fontSize: 8,
-                                fontWeight: FontWeight.w700,
-                                color: d.isGoFocusPlus
-                                    ? Colors.deepPurple
-                                    : Colors.indigo,
-                              ),
-                            ),
-                          ),
-                        ],
-                        if (badge != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 4, vertical: 1),
-                            margin: const EdgeInsets.only(right: 4),
-                            decoration: BoxDecoration(
-                              color: badge.color.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                  color: badge.color.withValues(alpha: 0.4)),
-                            ),
-                            child: Text(badge.label,
-                                style: TextStyle(
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.w700,
-                                    color: badge.color)),
-                          ),
+                        // Status badge (fixed width so serials don't jump)
                         SizedBox(
-                          width: 60,
-                          child: Text(
-                            d.ratePlanCode,
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppTheme.textSecondary),
-                            overflow: TextOverflow.ellipsis,
+                          width: 50,
+                          child: badge != null
+                              ? Center(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: badge.color
+                                          .withValues(alpha: 0.15),
+                                      borderRadius:
+                                          BorderRadius.circular(4),
+                                      border: Border.all(
+                                          color: badge.color
+                                              .withValues(alpha: 0.4)),
+                                    ),
+                                    child: Text(badge.label,
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                            fontSize: 8,
+                                            fontWeight: FontWeight.w700,
+                                            color: badge.color)),
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                        // Plan + optional camera pill
+                        Expanded(
+                          flex: 3,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              if (camPill != null) camPill,
+                              Flexible(
+                                child: Text(
+                                  plan,
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(
+                                      fontSize: 9,
+                                      color: AppTheme.textSecondary),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],
@@ -3062,6 +3161,224 @@ class _SideHeader extends StatelessWidget {
                   color: color)),
         ),
       ],
+    );
+  }
+}
+
+// ── Billing Compare Row ───────────────────────────────────────────────────────
+/// Side-by-side "MyAdmin Billable" vs "QB Billed" layout.
+/// Shows TOTAL | GPS | CAM | SUSP columns aligned so the user can scan
+/// discrepancies at a glance without opening the expanded view.
+class _BillingCompareRow extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _BillingCompareRow({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = summary;
+    final hasGps = s.geotabCount > 0 || s.qbGpsBilled > 0;
+    final hasCam = s.cameraCount > 0 || s.qbCamBilled > 0;
+    final hasSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
+
+    // Camera sub-label (prefer GF/GE detail)
+    String billableCamStr() {
+      final gf = s.goFocusCount;
+      final ge = s.goFocusPlusCount;
+      if (gf > 0 && ge > 0) return '${s.cameraCount} (GF$gf·GE$ge)';
+      if (gf > 0) return '${s.cameraCount} (GF$gf)';
+      if (ge > 0) return '${s.cameraCount} (GE$ge)';
+      return '${s.cameraCount}';
+    }
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── MyAdmin side ──────────────────────────────────────────
+          Expanded(
+            child: _BillingSide(
+              label: 'BILLABLE',
+              labelColor: AppTheme.teal,
+              total: s.activeCount,
+              gps: hasGps ? s.geotabCount : null,
+              cam: hasCam ? billableCamStr() : null,
+              susp: hasSupp ? s.suspendedGeotabCount : null,
+              isLeft: true,
+            ),
+          ),
+
+          // ── Divider + diff ─────────────────────────────────────────
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 1,
+                color: AppTheme.divider,
+                height: 36,
+              ),
+              const SizedBox(height: 2),
+              _DiffBadge(diff: s.diff, status: s.status),
+              const SizedBox(height: 2),
+              Container(
+                width: 1,
+                color: AppTheme.divider,
+                height: 36,
+              ),
+            ],
+          ),
+
+          // ── QB side ───────────────────────────────────────────────
+          Expanded(
+            child: _BillingSide(
+              label: 'BILLED',
+              labelColor: AppTheme.navyAccent,
+              total: s.billedCount,
+              gps: hasGps ? s.qbGpsBilled : null,
+              cam: hasCam ? '${s.qbCamBilled}' : null,
+              susp: hasSupp ? s.qbSuspendedBilled : null,
+              isLeft: false,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BillingSide extends StatelessWidget {
+  final String label;
+  final Color labelColor;
+  final int total;
+  final int? gps;
+  final String? cam;
+  final int? susp;
+  final bool isLeft;
+
+  const _BillingSide({
+    required this.label,
+    required this.labelColor,
+    required this.total,
+    this.gps,
+    this.cam,
+    this.susp,
+    required this.isLeft,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final align =
+        isLeft ? CrossAxisAlignment.start : CrossAxisAlignment.end;
+    final pad = isLeft
+        ? const EdgeInsets.only(right: 10, top: 4, bottom: 4)
+        : const EdgeInsets.only(left: 10, top: 4, bottom: 4);
+
+    Widget breakdownChip(IconData icon, Color color, String text) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 9, color: color.withValues(alpha: 0.7)),
+          const SizedBox(width: 2),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 10,
+              color: color.withValues(alpha: 0.85),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Padding(
+      padding: pad,
+      child: Column(
+        crossAxisAlignment: align,
+        children: [
+          // Label
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              color: labelColor.withValues(alpha: 0.7),
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 1),
+          // Total number (large)
+          Text(
+            '$total',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+              color: labelColor,
+              height: 1.1,
+            ),
+          ),
+          // Breakdown row: GPS + Cam + Susp
+          if (gps != null || cam != null || susp != null) ...[
+            const SizedBox(height: 3),
+            Wrap(
+              alignment: isLeft ? WrapAlignment.start : WrapAlignment.end,
+              spacing: 6,
+              runSpacing: 2,
+              children: [
+                if (gps != null && gps! > 0)
+                  breakdownChip(
+                      Icons.gps_fixed, AppTheme.navyAccent, 'GPS $gps'),
+                if (cam != null && cam!.isNotEmpty && cam != '0')
+                  breakdownChip(
+                      Icons.videocam_outlined, Colors.indigo, 'Cam $cam'),
+                if (susp != null && susp! > 0)
+                  breakdownChip(
+                      Icons.pause_circle_outline, Colors.orange, 'Susp $susp'),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The diff pill shown between Billable and Billed columns.
+class _DiffBadge extends StatelessWidget {
+  final int diff;   // positive = overbilled, negative = underbilled
+  final VerifyStatus status;
+  const _DiffBadge({required this.diff, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    if (status == VerifyStatus.match) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+        decoration: BoxDecoration(
+          color: AppTheme.green.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.green.withValues(alpha: 0.3)),
+        ),
+        child: const Icon(Icons.check, size: 11, color: AppTheme.green),
+      );
+    }
+    final isOver = diff > 0;
+    final color = isOver ? AppTheme.amber : AppTheme.red;
+    final sign  = isOver ? '+' : '';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        '$sign$diff',
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          color: color,
+        ),
+      ),
     );
   }
 }
