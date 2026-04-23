@@ -21,7 +21,7 @@ import '../utils/formatters.dart';
 
 // ── Enums & Models ────────────────────────────────────────────────────────────
 
-enum VerifyStatus { match, overbilled, underbilled, qbOnly, activeOnly }
+enum VerifyStatus { match, overbilled, underbilled, qbOnly, activeOnly, cuaUnknown }
 
 /// A single device row parsed from the MyAdmin Full Report
 class MyAdminDevice {
@@ -153,6 +153,11 @@ class QbCustomerSummary {
   /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
   final bool isCua;
 
+  /// True when this customer was NOT found in the QB Customer List at all.
+  /// isCua defaults to false in this case, but the billing rule may be wrong.
+  /// The user can manually override isCua via the card until QB data is updated.
+  final bool cuaStatusUnknown;
+
   /// Raw jobType from Column AK of the QB Customer List (e.g. "Standard", "Charge Upon Activation:Hanover").
   /// Empty string if not found in QB Customer List.
   final String jobType;
@@ -177,12 +182,16 @@ class QbCustomerSummary {
     this.qbSuspendedBilled = 0,
     required this.activeDevices,
     this.isCua = false,
+    this.cuaStatusUnknown = false,
     this.jobType = '',
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
   /// Unknown devices are visible in the list but excluded from the diff calculation.
+  /// cuaUnknown: customer appears in MyAdmin but was not found in the QB Customer List,
+  /// so CUA status is unknown — the billing rule applied may be wrong.
   VerifyStatus get status {
+    if (cuaStatusUnknown) return VerifyStatus.cuaUnknown;
     if (billedCount == 0 && activeCount == 0) return VerifyStatus.match;
     if (billedCount > 0 && activeCount == 0) return VerifyStatus.qbOnly;
     if (billedCount == 0 && activeCount > 0) return VerifyStatus.activeOnly;
@@ -701,6 +710,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   String _search = '';
   final Set<String> _expanded = {};
 
+  /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
+  /// Populated when the user taps Standard/CUA toggle on a cuaUnknown card.
+  final Map<String, bool> _cuaOverrides = {};
+
   /// True once the user has clicked "Run Audit" — gates the results view.
   /// Resets to false whenever a new file is imported so the user must
   /// confirm the inputs before seeing fresh results.
@@ -709,7 +722,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 4, vsync: this);
+    _tabCtrl = TabController(length: 5, vsync: this);
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
@@ -970,7 +983,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // _normKey() already normalizes (strips parens/curlies, lowercase, collapse whitespace)
       // so it doubles as the normalization function for the cuaMap lookup.
       final normDisplay = _normKey(displayName);
-      final isCua = cuaMap[displayName] ??
+      // Check manual overrides first, then fall back to QB Customer List.
+      final manualOverride = _cuaOverrides[displayName.isEmpty ? key : displayName] ??
+          _cuaOverrides[key];
+      final isCua = manualOverride ??
+          cuaMap[displayName] ??
           cuaMap[normDisplay] ??
           cuaMap[_qbDisplayNameCache[key] ?? key] ??
           cuaMap[key] ??
@@ -1133,6 +1150,18 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         }
       }
 
+      // cuaStatusUnknown: true when the customer was not found in the QB
+      // Customer List AND the user has not set a manual override.
+      final hasManualOverride = manualOverride != null;
+      final cuaStatusUnknown = !hasManualOverride &&
+          !isCua &&
+          jobType.isEmpty &&
+          QbCustomerService.box.isOpen &&
+          cuaMap[displayName] == null &&
+          cuaMap[normDisplay] == null &&
+          cuaMap[_qbDisplayNameCache[key] ?? key] == null &&
+          cuaMap[key] == null;
+
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
         // billedCount = sum of Qty across deduped lines only (excludes prorated invoices)
@@ -1154,6 +1183,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbSuspendedBilled: qbSuspendedBilled,
         activeDevices: devices,
         isCua: isCua,
+        cuaStatusUnknown: cuaStatusUnknown,
         jobType: jobType,
       );
     }).toList();
@@ -1207,8 +1237,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbCamBilled:  existing.qbCamBilled,
             qbSuspendedBilled: existing.qbSuspendedBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
-            isCua:         existing.isCua,
-            jobType:       existing.jobType,
+            isCua:            existing.isCua,
+            cuaStatusUnknown: existing.cuaStatusUnknown,
+            jobType:          existing.jobType,
           );
         }
       } else {
@@ -1299,14 +1330,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             geotabCount:   parent.geotabCount  + child.geotabCount,
             suspendedGeotabCount: parent.suspendedGeotabCount + child.suspendedGeotabCount,
             neverActivatedGeotabCount: parent.neverActivatedGeotabCount + child.neverActivatedGeotabCount,
-            qbGpsBilled:   parent.qbGpsBilled,
-            qbCamBilled:   parent.qbCamBilled,
+            qbGpsBilled:      parent.qbGpsBilled,
+            qbCamBilled:      parent.qbCamBilled,
             qbSuspendedBilled: parent.qbSuspendedBilled,
             goFocusCount:     parent.goFocusCount     + child.goFocusCount,
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
-            isCua:    parent.isCua,
-            jobType:  parent.jobType,
+            isCua:            parent.isCua,
+            cuaStatusUnknown: parent.cuaStatusUnknown,
+            jobType:          parent.jobType,
           );
         }
         // Whether or not the parent was found in the list, always remove the
@@ -1326,13 +1358,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     // the part before the pipe ("G&W Equipment Inc.").  We don't require a
     // manual parentMap entry for these — detect and merge them here.
     {
-      // Build a lookup of norm-key → index for all current summaries
-      Map<String, int> normIndex() {
-        final m = <String, int>{};
-        for (int i = 0; i < summaries.length; i++) {
-          m[_normKey(summaries[i].customerName)] = i;
-        }
-        return m;
+      // Build a lookup of norm-key → index ONCE before the loop (O(n), not O(n²))
+      final normIdx = <String, int>{};
+      for (int i = 0; i < summaries.length; i++) {
+        normIdx[_normKey(summaries[i].customerName)] = i;
       }
 
       final toRemovePipe = <int>{};
@@ -1350,8 +1379,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         final parentNorm = _normKey(parentRaw);
 
         // Find the parent summary (may or may not exist yet in our list)
-        final idx = normIndex();
-        final pi = idx[parentNorm];
+        // normIndex is built once before the loop (see above) so this is O(1)
+        final pi = normIdx[parentNorm];
         if (pi == null || pi == ci) continue; // no matching parent row, skip
 
         final child  = summaries[ci];
@@ -1377,8 +1406,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           goFocusCount:     parent.goFocusCount     + child.goFocusCount,
           goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
-          isCua:    parent.isCua,
-          jobType:  parent.jobType,
+          isCua:            parent.isCua,
+          cuaStatusUnknown: parent.cuaStatusUnknown,
+          jobType:          parent.jobType,
         );
 
         toRemovePipe.add(ci);
@@ -1448,9 +1478,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             .where((s) => s.status == VerifyStatus.activeOnly)
             .toList();
         break;
-      case 3: // QB Only — in QB but not in MyAdmin
+      case 3: // QB Only — in QB but no devices in MyAdmin
         list = all
             .where((s) => s.status == VerifyStatus.qbOnly)
+            .toList();
+        break;
+      case 4: // CUA Unknown — customer not found in QB Customer List
+        list = all
+            .where((s) => s.status == VerifyStatus.cuaUnknown)
             .toList();
         break;
       default:
@@ -1481,6 +1516,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .where((s) => s.status == VerifyStatus.activeOnly).length;
     final qbOnlyCount = summaries
         .where((s) => s.status == VerifyStatus.qbOnly).length;
+    final cuaUnknownCount = summaries
+        .where((s) => s.status == VerifyStatus.cuaUnknown).length;
 
     final showTabs = _auditRan && summaries.isNotEmpty;
 
@@ -1525,6 +1562,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       if (qbOnlyCount > 0) ...[
                         const SizedBox(width: 4),
                         _CountBadge(qbOnlyCount, Colors.grey),
+                      ],
+                    ]),
+                  ),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('CUA?'),
+                      if (cuaUnknownCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(cuaUnknownCount, Colors.orange),
                       ],
                     ]),
                   ),
@@ -1630,6 +1676,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                           } else {
                             _expanded.add(key);
                           }
+                        }),
+                        onCuaOverride: (isCua) => setState(() {
+                          _cuaOverrides[s.customerName] = isCua;
                         }),
                       );
                     },
@@ -2335,40 +2384,47 @@ class _CustomerVerifyCard extends StatelessWidget {
   final QbCustomerSummary summary;
   final bool expanded;
   final VoidCallback onToggle;
+  /// Called when user manually tags Standard (false) or CUA (true)
+  final void Function(bool isCua)? onCuaOverride;
 
   const _CustomerVerifyCard({
     required this.summary,
     required this.expanded,
     required this.onToggle,
+    this.onCuaOverride,
   });
 
   Color get _color {
     switch (summary.status) {
-      case VerifyStatus.match:      return AppTheme.green;
-      case VerifyStatus.overbilled: return AppTheme.amber;
-      case VerifyStatus.underbilled:return AppTheme.red;
-      case VerifyStatus.qbOnly:     return Colors.grey;
-      case VerifyStatus.activeOnly: return AppTheme.red;
+      case VerifyStatus.match:       return AppTheme.green;
+      case VerifyStatus.overbilled:  return AppTheme.amber;
+      case VerifyStatus.underbilled: return AppTheme.red;
+      case VerifyStatus.qbOnly:      return Colors.grey;
+      case VerifyStatus.activeOnly:  return AppTheme.red;
+      case VerifyStatus.cuaUnknown:  return Colors.orange;
     }
   }
 
   IconData get _icon {
     switch (summary.status) {
-      case VerifyStatus.match:      return Icons.check_circle;
-      case VerifyStatus.overbilled: return Icons.warning_amber;
-      case VerifyStatus.underbilled:return Icons.error;
-      case VerifyStatus.qbOnly:     return Icons.help_outline;
-      case VerifyStatus.activeOnly: return Icons.money_off;
+      case VerifyStatus.match:       return Icons.check_circle;
+      case VerifyStatus.overbilled:  return Icons.warning_amber;
+      case VerifyStatus.underbilled: return Icons.error;
+      case VerifyStatus.qbOnly:      return Icons.help_outline;
+      case VerifyStatus.activeOnly:  return Icons.money_off;
+      case VerifyStatus.cuaUnknown:  return Icons.manage_accounts;
     }
   }
 
+  // Status word only — diff is already large & prominent in the compare block
   String get _label {
     switch (summary.status) {
-      case VerifyStatus.match:      return 'Match';
-      case VerifyStatus.overbilled: return 'Overbilled +${summary.diff}';
-      case VerifyStatus.underbilled:return 'Underbilled ${summary.diff}';
-      case VerifyStatus.qbOnly:     return 'QB Only';
-      case VerifyStatus.activeOnly: return 'Not Billed';
+      case VerifyStatus.match:       return 'Match';
+      case VerifyStatus.overbilled:  return 'Overbilled';
+      case VerifyStatus.underbilled: return 'Underbilled';
+      case VerifyStatus.qbOnly:      return 'QB Only – No Devices';
+      case VerifyStatus.activeOnly:  return 'Not Billed';
+      case VerifyStatus.cuaUnknown:  return 'CUA Unknown';
     }
   }
 
@@ -2514,6 +2570,42 @@ class _CustomerVerifyCard extends StatelessWidget {
                             icon: Icons.shield_outlined,
                             color: Colors.teal,
                           ),
+                      ],
+                    ),
+                  ],
+
+                  // ── CUA Unknown override buttons ────────────────────────
+                  if (summary.status == VerifyStatus.cuaUnknown && onCuaOverride != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => onCuaOverride!(false),
+                            icon: const Icon(Icons.person, size: 14),
+                            label: const Text('Standard', style: TextStyle(fontSize: 12)),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.teal,
+                              side: BorderSide(color: AppTheme.teal.withValues(alpha: 0.5)),
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => onCuaOverride!(true),
+                            icon: const Icon(Icons.bolt, size: 14),
+                            label: const Text('CUA', style: TextStyle(fontSize: 12)),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.deepPurple,
+                              side: BorderSide(color: Colors.deepPurple.withValues(alpha: 0.5)),
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -3522,8 +3614,16 @@ class _DiffCallout extends StatelessWidget {
         color = Colors.grey;
         icon  = Icons.help_outline;
         msg   = '${summary.billedCount} QB line${summary.billedCount == 1 ? '' : 's'} '
-                'but no active devices in MyAdmin. '
+                'with no matching devices in MyAdmin. '
                 'Account may be closed — verify before sending invoice.';
+        break;
+      case VerifyStatus.cuaUnknown:
+        color = Colors.orange;
+        icon  = Icons.manage_accounts;
+        msg   = 'This customer was not found in the QB Customer List — '
+                'billing type (Standard vs CUA) is unknown. '
+                'Use the buttons below to tag the correct type so the '
+                'billable count is calculated correctly.';
         break;
       default:
         return const SizedBox.shrink();
@@ -3559,6 +3659,57 @@ class _DiffCallout extends StatelessWidget {
 class _SummaryFooter extends StatelessWidget {
   final List<QbCustomerSummary> summaries;
   const _SummaryFooter({required this.summaries});
+
+  // ── Export audit results as a CSV file ────────────────────────────────────
+  void _exportCsv() {
+    final buf = StringBuffer();
+    // Header
+    buf.writeln('Customer,Status,Billable,Billed,Diff,GPS Billable,GPS Billed,'
+        'CAM Billable,CAM Billed,SUSP Billable,SUSP Billed,N/A (Never Act.),'
+        'CUA,Job Type,QB Total,Unknown Devices,Hanover Direct');
+
+    for (final s in summaries) {
+      String statusLabel;
+      switch (s.status) {
+        case VerifyStatus.match:       statusLabel = 'Match'; break;
+        case VerifyStatus.overbilled:  statusLabel = 'Overbilled'; break;
+        case VerifyStatus.underbilled: statusLabel = 'Underbilled'; break;
+        case VerifyStatus.activeOnly:  statusLabel = 'Not Billed'; break;
+        case VerifyStatus.qbOnly:      statusLabel = 'QB Only - No Devices'; break;
+        case VerifyStatus.cuaUnknown:  statusLabel = 'CUA Unknown'; break;
+      }
+      String csvEsc(String v) {
+        if (v.contains(',') || v.contains('"') || v.contains('\n')) {
+          return '"${v.replaceAll('"', '""')}"';
+        }
+        return v;
+      }
+      buf.writeln([
+        csvEsc(s.customerName),
+        statusLabel,
+        s.activeCount,
+        s.billedCount,
+        s.diff,
+        s.geotabCount,
+        s.qbGpsBilled,
+        s.cameraCount,
+        s.qbCamBilled,
+        s.suspendedGeotabCount,
+        s.qbSuspendedBilled,
+        s.neverActivatedGeotabCount,
+        s.isCua ? 'CUA' : 'Standard',
+        csvEsc(s.jobType),
+        s.totalBilled.toStringAsFixed(2),
+        s.unknownCount,
+        s.hanoverCount,
+      ].join(','));
+    }
+
+    final now = DateTime.now();
+    final dateSuffix =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+    _downloadText(buf.toString(), 'qb_audit_$dateSuffix.csv');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3628,6 +3779,31 @@ class _SummaryFooter extends StatelessWidget {
                 color: Colors.white70,
                 fontWeight: FontWeight.w600),
           ),
+          // ── Export button ─────────────────────────────────────────────
+          InkWell(
+            onTap: _exportCsv,
+            borderRadius: BorderRadius.circular(5),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppTheme.teal.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: AppTheme.teal.withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.download, size: 12, color: AppTheme.teal),
+                  SizedBox(width: 4),
+                  Text('Export CSV',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.teal,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -3696,6 +3872,8 @@ class _BillingCompareRow extends StatelessWidget {
     final showGps  = s.geotabCount > 0 || s.qbGpsBilled > 0;
     final showCam  = s.cameraCount > 0 || s.qbCamBilled > 0;
     final showSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
+    // N/A row: Standard customers only — CUA excludes Never Activated
+    final showNa   = !s.isCua && s.neverActivatedGeotabCount > 0;
 
     // Camera detail suffix e.g. "55 GF12·GE3"
     String camDetail(int total, int gf, int ge) {
@@ -3893,6 +4071,17 @@ class _BillingCompareRow extends StatelessWidget {
             rowLabel: 'SUSP',
             billableVal: '${s.suspendedGeotabCount}',
             billedVal: '${s.qbSuspendedBilled}',
+          ),
+        if (showNa)
+          detailRow(
+            icon: Icons.new_releases_outlined,
+            color: AppTheme.amber,
+            rowLabel: 'N/A',
+            // N/A devices appear on the BILLABLE side only — QB invoices them
+            // on the standard GPS SKU, not a separate line, so there is no
+            // isolated billed count to display.
+            billableVal: '${s.neverActivatedGeotabCount}',
+            billedVal: '—',
           ),
       ],
     );
