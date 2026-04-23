@@ -662,6 +662,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   String _search = '';
   final Set<String> _expanded = {};
 
+  /// True once the user has clicked "Run Audit" — gates the results view.
+  /// Resets to false whenever a new file is imported so the user must
+  /// confirm the inputs before seeing fresh results.
+  bool _auditRan = false;
+
   @override
   void initState() {
     super.initState();
@@ -715,6 +720,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           _qbFileName         = qb.fileName;
         });
       }
+    }
+
+    // If both files were restored from persistence the audit was already
+    // confirmed in a previous session — go straight to results.
+    if (mounted && _myAdminLoaded && _qbLoaded) {
+      setState(() => _auditRan = true);
     }
   }
 
@@ -781,6 +792,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         _myAdminFileName = file.name;
         _myAdminReportDate = reportDate;
         _expanded.clear();
+        _auditRan = false; // require user to re-confirm before showing results
       });
 
       // Persist so the data survives page refresh / app reopen
@@ -853,6 +865,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         _qbLoaded            = true;
         _qbFileName          = file.name;
         _expanded.clear();
+        _auditRan = false; // require user to re-confirm before showing results
       });
 
       // Persist so the data survives page refresh / app reopen
@@ -1282,7 +1295,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     context.watch<AppProvider>();
 
     final hasAnyData = _myAdminLoaded || _qbLoaded;
-    final summaries  = hasAnyData ? _buildSummaries() : <QbCustomerSummary>[];
+    final bothLoaded = _myAdminLoaded && _qbLoaded;
+    // Only compute summaries once the user has clicked Run Audit
+    final summaries  = (_auditRan && hasAnyData) ? _buildSummaries() : <QbCustomerSummary>[];
 
     final issueCount   = summaries.where((s) =>
         s.status == VerifyStatus.overbilled ||
@@ -1291,6 +1306,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .where((s) => s.status == VerifyStatus.activeOnly).length;
     final qbOnlyCount = summaries
         .where((s) => s.status == VerifyStatus.qbOnly).length;
+
+    final showTabs = _auditRan && summaries.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -1301,46 +1318,48 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             Text('QB Verify'),
           ],
         ),
-        bottom: TabBar(
-          controller: _tabCtrl,
-          labelStyle:
-              const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-          unselectedLabelStyle: const TextStyle(fontSize: 11),
-          tabs: [
-            const Tab(text: 'All'),
-            Tab(
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Text('Issues'),
-                if (issueCount > 0) ...[
-                  const SizedBox(width: 4),
-                  _CountBadge(issueCount, AppTheme.amber),
+        bottom: showTabs
+            ? TabBar(
+                controller: _tabCtrl,
+                labelStyle:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                unselectedLabelStyle: const TextStyle(fontSize: 11),
+                tabs: [
+                  const Tab(text: 'All'),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Issues'),
+                      if (issueCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(issueCount, AppTheme.amber),
+                      ],
+                    ]),
+                  ),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Not Billed'),
+                      if (activeOnlyCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(activeOnlyCount, AppTheme.red),
+                      ],
+                    ]),
+                  ),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('QB Only'),
+                      if (qbOnlyCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(qbOnlyCount, Colors.grey),
+                      ],
+                    ]),
+                  ),
                 ],
-              ]),
-            ),
-            Tab(
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Text('Not Billed'),
-                if (activeOnlyCount > 0) ...[
-                  const SizedBox(width: 4),
-                  _CountBadge(activeOnlyCount, AppTheme.red),
-                ],
-              ]),
-            ),
-            Tab(
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                const Text('QB Only'),
-                if (qbOnlyCount > 0) ...[
-                  const SizedBox(width: 4),
-                  _CountBadge(qbOnlyCount, Colors.grey),
-                ],
-              ]),
-            ),
-          ],
-        ),
+              )
+            : null,
       ),
       body: Column(
         children: [
-          // ── Import action bar ───────────────────────────────────────────
+          // ── Import action bar (always visible) ─────────────────────────
           _ImportBar(
             myAdminLoaded:   _myAdminLoaded,
             myAdminFileName: _myAdminFileName,
@@ -1351,9 +1370,22 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             onImportQb:      _importQb,
           ),
 
+          // ── State machine: empty → ready-to-run → results ──────────────
           if (!hasAnyData)
             _EmptyState(
                 onImportMyAdmin: _importMyAdmin, onImportQb: _importQb)
+          else if (!_auditRan)
+            _ReadyToRunScreen(
+              myAdminLoaded:   _myAdminLoaded,
+              myAdminFileName: _myAdminFileName,
+              myAdminDate:     _myAdminReportDate,
+              qbLoaded:        _qbLoaded,
+              qbFileName:      _qbFileName,
+              bothReady:       bothLoaded,
+              onImportMyAdmin: _importMyAdmin,
+              onImportQb:      _importQb,
+              onRun:           () => setState(() => _auditRan = true),
+            )
           else ...[
             // Search bar
             Padding(
@@ -1432,9 +1464,303 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             ),
           ],
 
-          // ── Summary footer ───────────────────────────────────────────────
+          // ── Summary footer (results only) ────────────────────────────────
           if (summaries.isNotEmpty)
             _SummaryFooter(summaries: summaries),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Ready-to-Run Screen ───────────────────────────────────────────────────────
+/// Shown after one or both files are loaded but before the user clicks Run.
+/// Displays the loaded file cards and a prominent Run Audit button.
+class _ReadyToRunScreen extends StatelessWidget {
+  final bool myAdminLoaded;
+  final String? myAdminFileName;
+  final String? myAdminDate;
+  final bool qbLoaded;
+  final String? qbFileName;
+  final bool bothReady;
+  final VoidCallback onImportMyAdmin;
+  final VoidCallback onImportQb;
+  final VoidCallback onRun;
+
+  const _ReadyToRunScreen({
+    required this.myAdminLoaded,
+    required this.myAdminFileName,
+    required this.myAdminDate,
+    required this.qbLoaded,
+    required this.qbFileName,
+    required this.bothReady,
+    required this.onImportMyAdmin,
+    required this.onImportQb,
+    required this.onRun,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 28, 20, 28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Title ──────────────────────────────────────────────────
+            Row(
+              children: [
+                Icon(
+                  bothReady
+                      ? Icons.task_alt
+                      : Icons.hourglass_top_rounded,
+                  size: 22,
+                  color: bothReady ? AppTheme.teal : AppTheme.amber,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        bothReady
+                            ? 'Ready to Run'
+                            : 'Waiting for files…',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        bothReady
+                            ? 'Both files loaded. Review below, then run the audit.'
+                            : 'Import both files above to continue.',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            // ── File summary cards ──────────────────────────────────────
+            _FileConfirmCard(
+              step: 1,
+              icon: Icons.devices,
+              title: 'MyAdmin Report',
+              subtitle: 'Device Management — Full Report',
+              loaded: myAdminLoaded,
+              fileName: myAdminFileName,
+              detail: myAdminDate != null ? 'Report date: $myAdminDate' : null,
+              loadedColor: AppTheme.teal,
+              onReplace: onImportMyAdmin,
+            ),
+
+            const SizedBox(height: 12),
+
+            _FileConfirmCard(
+              step: 2,
+              icon: Icons.receipt_long,
+              title: 'QB Sales CSV',
+              subtitle: 'Sales by Customer Detail',
+              loaded: qbLoaded,
+              fileName: qbFileName,
+              detail: null,
+              loadedColor: AppTheme.navyAccent,
+              onReplace: onImportQb,
+            ),
+
+            const SizedBox(height: 32),
+
+            // ── Run button ──────────────────────────────────────────────
+            SizedBox(
+              height: 52,
+              child: ElevatedButton.icon(
+                onPressed: bothReady ? onRun : null,
+                icon: const Icon(Icons.play_arrow_rounded, size: 22),
+                label: const Text(
+                  'Run Audit',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.teal,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: AppTheme.teal.withValues(alpha: 0.25),
+                  disabledForegroundColor: Colors.white38,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: bothReady ? 2 : 0,
+                ),
+              ),
+            ),
+
+            if (!bothReady) ...[
+              const SizedBox(height: 10),
+              Center(
+                child: Text(
+                  'Import ${!myAdminLoaded && !qbLoaded ? 'both files' : !myAdminLoaded ? 'the MyAdmin CSV' : 'the QB Sales CSV'} to enable',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Single file confirmation card used on the Ready-to-Run screen.
+class _FileConfirmCard extends StatelessWidget {
+  final int step;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool loaded;
+  final String? fileName;
+  final String? detail;
+  final Color loadedColor;
+  final VoidCallback onReplace;
+
+  const _FileConfirmCard({
+    required this.step,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.loaded,
+    required this.fileName,
+    required this.detail,
+    required this.loadedColor,
+    required this.onReplace,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = loaded ? loadedColor : Colors.grey;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: loaded
+            ? color.withValues(alpha: 0.06)
+            : Colors.white.withValues(alpha: 0.02),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: loaded
+              ? color.withValues(alpha: 0.35)
+              : Colors.white.withValues(alpha: 0.08),
+          width: 1.5,
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Step badge
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: loaded
+                  ? color.withValues(alpha: 0.15)
+                  : Colors.white.withValues(alpha: 0.06),
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: color.withValues(alpha: 0.4)),
+            ),
+            child: Center(
+              child: loaded
+                  ? Icon(Icons.check, size: 14, color: color)
+                  : Text(
+                      '$step',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: color.withValues(alpha: 0.6),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 12),
+
+          // Text info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, size: 14, color: color),
+                    const SizedBox(width: 5),
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: loaded ? color : AppTheme.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                if (loaded && fileName != null) ...[
+                  Text(
+                    fileName!,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (detail != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: Text(
+                        detail!,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ),
+                ] else
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Replace / Import button
+          TextButton(
+            onPressed: onReplace,
+            style: TextButton.styleFrom(
+              foregroundColor: color,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(
+              loaded ? 'Replace' : 'Import',
+              style: const TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+          ),
         ],
       ),
     );
