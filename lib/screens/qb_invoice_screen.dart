@@ -17,6 +17,7 @@ import '../services/cloud_sync_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
+import '../services/billing_schedule_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -820,6 +821,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   /// Customers the user has manually marked as audited (persisted).
   final Set<String> _auditedCustomers = {};
 
+  /// Billing schedules: lowercased customerName → BillingSchedule (persisted).
+  final Map<String, BillingSchedule> _billingSchedules = {};
+
+  /// When true, dormant non-monthly customers are hidden from all tab lists.
+  bool _hideNonMonthly = true;
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -837,9 +844,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
-    // Restore previously imported CSVs + audited set so data survives page refresh / reopen
+    // Restore previously imported CSVs + audited set + billing schedules
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadAuditedCustomers();
+      await _loadBillingSchedules();
       _restorePersistedCsvs();
     });
     // Re-run restore after any cloud pull completes so MyAdmin + QB CSVs
@@ -878,6 +886,22 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_kAuditedKey, _auditedCustomers.toList());
   }
+
+  // ── Billing schedules (persisted) ─────────────────────────────────────────
+
+  Future<void> _loadBillingSchedules() async {
+    final loaded = await BillingScheduleService.load();
+    if (mounted) setState(() => _billingSchedules.addAll(loaded));
+  }
+
+  Future<void> _setBillingSchedule(
+      String customerName, BillingSchedule schedule) async {
+    await BillingScheduleService.set(_billingSchedules, customerName, schedule);
+    if (mounted) setState(() {});
+  }
+
+  BillingSchedule _scheduleFor(String customerName) =>
+      _billingSchedules[customerName.toLowerCase()] ?? const BillingSchedule();
 
   // ── Restore persisted CSV data on startup ──────────────────────────────────
 
@@ -1646,27 +1670,33 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   List<QbCustomerSummary> _filterForTab(
       List<QbCustomerSummary> all, int tabIndex) {
+    // When _hideNonMonthly is on, remove dormant non-monthly customers from
+    // every tab so they don't create false noise during the normal audit.
+    List<QbCustomerSummary> base = _hideNonMonthly
+        ? all.where((s) => !_scheduleFor(s.customerName).isDormant).toList()
+        : all;
+
     List<QbCustomerSummary> list;
     switch (tabIndex) {
       case 1: // Issues: overbilled + underbilled
-        list = all
+        list = base
             .where((s) =>
                 s.status == VerifyStatus.overbilled ||
                 s.status == VerifyStatus.underbilled)
             .toList();
         break;
       case 2: // Active Only — in MyAdmin but not in QB (not invoiced!)
-        list = all
+        list = base
             .where((s) => s.status == VerifyStatus.activeOnly)
             .toList();
         break;
       case 3: // QB Only — in QB but no devices in MyAdmin
-        list = all
+        list = base
             .where((s) => s.status == VerifyStatus.qbOnly)
             .toList();
         break;
       default:
-        list = all;
+        list = base;
     }
     if (_search.isEmpty) return list;
     return list
@@ -1798,6 +1828,63 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               ),
             ),
 
+            // ── Filter chip row ─────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => setState(() => _hideNonMonthly = !_hideNonMonthly),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _hideNonMonthly
+                            ? AppTheme.teal.withValues(alpha: 0.12)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: _hideNonMonthly
+                              ? AppTheme.teal.withValues(alpha: 0.6)
+                              : AppTheme.textSecondary.withValues(alpha: 0.3),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _hideNonMonthly
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                            size: 13,
+                            color: _hideNonMonthly
+                                ? AppTheme.teal
+                                : AppTheme.textSecondary,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'Hide Non-Monthly',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: _hideNonMonthly
+                                  ? AppTheme.teal
+                                  : AppTheme.textSecondary,
+                            ),
+                          ),
+                          if (_hideNonMonthly) ...[ 
+                            const SizedBox(width: 4),
+                            Icon(Icons.check, size: 12, color: AppTheme.teal),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             // Tab views
             Expanded(
               child: TabBarView(
@@ -1838,6 +1925,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                         summary: s,
                         expanded: _expanded.contains(key),
                         isAudited: _auditedCustomers.contains(key),
+                        schedule: _scheduleFor(s.customerName),
                         onToggle: () => setState(() {
                           if (_expanded.contains(key)) {
                             _expanded.remove(key);
@@ -1846,6 +1934,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                           }
                         }),
                         onAuditToggle: () => _toggleAudit(s.customerName),
+                        onScheduleChange: (sched) =>
+                            _setBillingSchedule(s.customerName, sched),
                         onCuaOverride: (isCua) => setState(() {
                           _cuaOverrides[s.customerName] = isCua;
                         }),
@@ -2596,8 +2686,10 @@ class _CustomerVerifyCard extends StatelessWidget {
   final QbCustomerSummary summary;
   final bool expanded;
   final bool isAudited;
+  final BillingSchedule schedule;
   final VoidCallback onToggle;
   final VoidCallback onAuditToggle;
+  final void Function(BillingSchedule) onScheduleChange;
   /// Called when user manually tags Standard (false) or CUA (true)
   final void Function(bool isCua)? onCuaOverride;
 
@@ -2605,12 +2697,20 @@ class _CustomerVerifyCard extends StatelessWidget {
     required this.summary,
     required this.expanded,
     required this.isAudited,
+    required this.schedule,
     required this.onToggle,
     required this.onAuditToggle,
+    required this.onScheduleChange,
     this.onCuaOverride,
   });
 
+  /// When the customer is dormant (non-monthly, outside billing window) we
+  /// display a neutral grey status instead of the real (potentially alarming)
+  /// billing status so they don't create false noise.
+  bool get _isDormant => schedule.isDormant;
+
   Color get _color {
+    if (_isDormant) return AppTheme.textSecondary;
     switch (summary.status) {
       case VerifyStatus.match:       return AppTheme.green;
       case VerifyStatus.overbilled:  return AppTheme.amber;
@@ -2621,6 +2721,7 @@ class _CustomerVerifyCard extends StatelessWidget {
   }
 
   IconData get _icon {
+    if (_isDormant) return Icons.calendar_today_outlined;
     switch (summary.status) {
       case VerifyStatus.match:       return Icons.check_circle;
       case VerifyStatus.overbilled:  return Icons.warning_amber;
@@ -2632,6 +2733,7 @@ class _CustomerVerifyCard extends StatelessWidget {
 
   // Status word only — diff is already large & prominent in the compare block
   String get _label {
+    if (_isDormant) return schedule.frequency.shortLabel;
     switch (summary.status) {
       case VerifyStatus.match:       return 'Match';
       case VerifyStatus.overbilled:  return 'Overbilled';
@@ -2645,15 +2747,21 @@ class _CustomerVerifyCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
-      // Green tint overlay when audited
+      // Green tint when audited; slight grey tint when dormant
       color: isAudited
           ? Color.lerp(AppTheme.cardBg, const Color(0xFF2ECC71), 0.08)
-          : null,
+          : _isDormant
+              ? Color.lerp(AppTheme.cardBg, AppTheme.textSecondary, 0.04)
+              : null,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: isAudited
             ? const BorderSide(color: Color(0xFF2ECC71), width: 1.5)
-            : BorderSide.none,
+            : _isDormant
+                ? BorderSide(
+                    color: AppTheme.textSecondary.withValues(alpha: 0.2),
+                    width: 1.0)
+                : BorderSide.none,
       ),
       child: Column(
         children: [
@@ -2889,6 +2997,13 @@ class _CustomerVerifyCard extends StatelessWidget {
                       ],
                     ),
                   ],
+
+                  // ── Billing frequency picker ─────────────────────────
+                  const SizedBox(height: 8),
+                  _BillingFrequencyPicker(
+                    schedule: schedule,
+                    onChanged: onScheduleChange,
+                  ),
 
                   // ── BOTTOM ROW: billing compare — full width ────────────
                   const SizedBox(height: 8),
@@ -4644,6 +4759,187 @@ class _CollapsedQbPlanTable extends StatelessWidget {
 }
 
 // ── Compact compare label pill (CAM / SUSP / N/A) between the two plan tables ─
+// ── Billing Frequency Picker ──────────────────────────────────────────────────
+/// Compact segmented-style row shown on every customer card.
+/// Lets the user set Monthly / Quarterly / Semi-Annual / Annual and, for
+/// non-monthly options, pick the anchor month.
+class _BillingFrequencyPicker extends StatelessWidget {
+  final BillingSchedule schedule;
+  final void Function(BillingSchedule) onChanged;
+
+  const _BillingFrequencyPicker({
+    required this.schedule,
+    required this.onChanged,
+  });
+
+  static const _months = [
+    'Jan','Feb','Mar','Apr','May','Jun',
+    'Jul','Aug','Sep','Oct','Nov','Dec',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final freqs = BillingFrequency.values;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Frequency selector row ────────────────────────────────────
+        Row(
+          children: freqs.map((f) {
+            final selected = schedule.frequency == f;
+            return Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  // When switching to monthly, anchor doesn't matter.
+                  // When switching to non-monthly, default anchor = current month.
+                  final anchor = f == BillingFrequency.monthly
+                      ? 1
+                      : (schedule.isMonthly
+                          ? DateTime.now().month
+                          : schedule.anchorMonth);
+                  onChanged(BillingSchedule(frequency: f, anchorMonth: anchor));
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 120),
+                  margin: EdgeInsets.only(
+                    right: f != freqs.last ? 3 : 0,
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? AppTheme.teal.withValues(alpha: 0.13)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: selected
+                          ? AppTheme.teal.withValues(alpha: 0.55)
+                          : AppTheme.textSecondary.withValues(alpha: 0.2),
+                      width: selected ? 1.4 : 1.0,
+                    ),
+                  ),
+                  child: Center(
+                    child: Text(
+                      f == BillingFrequency.semiAnnual ? 'Semi-Ann' : f.label,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                        color: selected
+                            ? AppTheme.teal
+                            : AppTheme.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+
+        // ── Anchor month selector (only for non-monthly) ──────────────
+        if (!schedule.isMonthly) ...[
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(Icons.anchor, size: 12,
+                  color: AppTheme.textSecondary.withValues(alpha: 0.7)),
+              const SizedBox(width: 4),
+              Text(
+                'Starting month:',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: AppTheme.textSecondary.withValues(alpha: 0.8),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: List.generate(12, (i) {
+                      final m = i + 1;
+                      final isBilling = schedule.isBillingMonth(m);
+                      final isAnchor = schedule.anchorMonth == m;
+                      return GestureDetector(
+                        onTap: () => onChanged(BillingSchedule(
+                          frequency: schedule.frequency,
+                          anchorMonth: m,
+                        )),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 100),
+                          margin: const EdgeInsets.only(right: 3),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: isAnchor
+                                ? AppTheme.teal.withValues(alpha: 0.15)
+                                : isBilling
+                                    ? AppTheme.teal.withValues(alpha: 0.05)
+                                    : Colors.transparent,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: isAnchor
+                                  ? AppTheme.teal.withValues(alpha: 0.6)
+                                  : isBilling
+                                      ? AppTheme.teal.withValues(alpha: 0.25)
+                                      : AppTheme.textSecondary
+                                          .withValues(alpha: 0.15),
+                              width: isAnchor ? 1.4 : 1.0,
+                            ),
+                          ),
+                          child: Text(
+                            _months[i],
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: isAnchor
+                                  ? FontWeight.w700
+                                  : FontWeight.w400,
+                              color: isAnchor
+                                  ? AppTheme.teal
+                                  : isBilling
+                                      ? AppTheme.teal.withValues(alpha: 0.7)
+                                      : AppTheme.textSecondary
+                                          .withValues(alpha: 0.6),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          // Next billing date hint
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Builder(builder: (_) {
+              final next = schedule.nextBillingDate;
+              final months = _months[next.month - 1];
+              final isDue = schedule.isActiveWindow;
+              return Text(
+                isDue
+                    ? '● Due now — billing window open'
+                    : 'Next invoice: ${months} 1, ${next.year}',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: isDue
+                      ? AppTheme.green
+                      : AppTheme.textSecondary.withValues(alpha: 0.65),
+                  fontWeight: isDue ? FontWeight.w600 : FontWeight.w400,
+                ),
+              );
+            }),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 // ── Tag Chip (metadata labels) ────────────────────────────────────────────────
 /// Small inline label used for CUA, jobType, unknown, Hanover badges.
 class _TagChip extends StatelessWidget {
