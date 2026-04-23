@@ -2383,7 +2383,7 @@ class _CustomerVerifyCard extends StatelessWidget {
             onTap: onToggle,
             borderRadius: BorderRadius.circular(12),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+              padding: const EdgeInsets.fromLTRB(14, 11, 12, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2392,8 +2392,8 @@ class _CustomerVerifyCard extends StatelessWidget {
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Icon(_icon, size: 16, color: _color),
-                      const SizedBox(width: 7),
+                      Icon(_icon, size: 20, color: _color),
+                      const SizedBox(width: 9),
 
                       // Customer name (fills remaining space)
                       Expanded(
@@ -2404,7 +2404,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                             Text(
                               summary.customerName,
                               style: const TextStyle(
-                                fontSize: 13,
+                                fontSize: 15,
                                 fontWeight: FontWeight.w700,
                                 color: AppTheme.textPrimary,
                               ),
@@ -2452,38 +2452,39 @@ class _CustomerVerifyCard extends StatelessWidget {
                             children: [
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 7, vertical: 3),
+                                    horizontal: 9, vertical: 4),
                                 decoration: BoxDecoration(
                                   color: _color.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(6),
+                                  borderRadius: BorderRadius.circular(7),
                                   border: Border.all(
-                                      color: _color.withValues(alpha: 0.35)),
+                                      color: _color.withValues(alpha: 0.4),
+                                      width: 1.5),
                                 ),
                                 child: Text(
                                   _label,
                                   style: TextStyle(
-                                    fontSize: 10,
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w800,
                                     color: _color,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 3),
+                              const SizedBox(width: 4),
                               Icon(
                                 expanded
                                     ? Icons.expand_less
                                     : Icons.expand_more,
-                                size: 16,
+                                size: 18,
                                 color: AppTheme.textSecondary,
                               ),
                             ],
                           ),
                           if (summary.totalBilled > 0) ...[
-                            const SizedBox(height: 3),
+                            const SizedBox(height: 4),
                             Text(
                               Formatters.currency(summary.totalBilled),
                               style: const TextStyle(
-                                fontSize: 11,
+                                fontSize: 13,
                                 fontWeight: FontWeight.w700,
                                 color: AppTheme.textPrimary,
                               ),
@@ -2494,42 +2495,32 @@ class _CustomerVerifyCard extends StatelessWidget {
                     ],
                   ),
 
-                  // ── BOTTOM ROW: billing compare (tight left) + alert chips ─
-                  const SizedBox(height: 7),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // Compare block sits left — does NOT stretch
-                      _BillingCompareRow(summary: summary),
-
-                      const SizedBox(width: 10),
-
-                      // Alert chips: unknown + hanover (only if present)
-                      if (summary.unknownCount > 0 ||
-                          summary.hanoverCount > 0)
-                        Expanded(
-                          child: Wrap(
-                            spacing: 4,
-                            runSpacing: 2,
-                            children: [
-                              if (summary.unknownCount > 0)
-                                _TagChip(
-                                  label: '${summary.unknownCount} unknown',
-                                  icon: Icons.help_outline,
-                                  color: Colors.grey,
-                                ),
-                              if (summary.hanoverCount > 0)
-                                _TagChip(
-                                  label:
-                                      '${summary.hanoverCount} direct-bill',
-                                  icon: Icons.shield_outlined,
-                                  color: Colors.teal,
-                                ),
-                            ],
+                  // ── Alert chips (unknown / hanover) above compare row ─
+                  if (summary.unknownCount > 0 || summary.hanoverCount > 0) ...[
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 2,
+                      children: [
+                        if (summary.unknownCount > 0)
+                          _TagChip(
+                            label: '${summary.unknownCount} unknown',
+                            icon: Icons.help_outline,
+                            color: Colors.grey,
                           ),
-                        ),
-                    ],
-                  ),
+                        if (summary.hanoverCount > 0)
+                          _TagChip(
+                            label: '${summary.hanoverCount} direct-bill',
+                            icon: Icons.shield_outlined,
+                            color: Colors.teal,
+                          ),
+                      ],
+                    ),
+                  ],
+
+                  // ── BOTTOM ROW: billing compare — full width ────────────
+                  const SizedBox(height: 8),
+                  _BillingCompareRow(summary: summary),
                 ],
               ),
             ),
@@ -3714,11 +3705,7 @@ class _BillingCompareRow extends StatelessWidget {
       return '$total';
     }
 
-    // Column widths kept fixed so left/right values always align.
-    const double kSideW = 72;   // width of each BILLABLE / BILLED column
-    const double kDiffW = 36;   // width of the centre diff badge column
-
-    // ── helper: one detail row (GPS / Cam / Susp) ──────────────────
+    // ── helper: one full-width detail row (GPS / Cam / Susp) ──────
     Widget detailRow({
       required IconData icon,
       required Color color,
@@ -3727,55 +3714,57 @@ class _BillingCompareRow extends StatelessWidget {
       required String billedVal,
     }) {
       return Padding(
-        padding: const EdgeInsets.only(top: 3),
+        padding: const EdgeInsets.only(top: 5),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // left value
-            SizedBox(
-              width: kSideW,
+            // left value — fills half the available space
+            Expanded(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 10, color: color.withValues(alpha: 0.7)),
-                  const SizedBox(width: 3),
+                  Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
+                  const SizedBox(width: 5),
                   Text(
                     billableVal,
                     style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: color.withValues(alpha: 0.9)),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: color.withValues(alpha: 0.9),
+                    ),
                   ),
                 ],
               ),
             ),
-            // centre label
-            SizedBox(
-              width: kDiffW,
+            // centre label pill
+            Container(
+              width: 48,
+              alignment: Alignment.center,
               child: Text(
                 rowLabel,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 9,
-                  color: AppTheme.textSecondary.withValues(alpha: 0.6),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.4,
+                  color: AppTheme.textSecondary.withValues(alpha: 0.65),
                 ),
               ),
             ),
-            // right value
-            SizedBox(
-              width: kSideW,
+            // right value — fills other half
+            Expanded(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 10, color: color.withValues(alpha: 0.7)),
-                  const SizedBox(width: 3),
+                  Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
+                  const SizedBox(width: 5),
                   Text(
                     billedVal,
                     style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: color.withValues(alpha: 0.9)),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: color.withValues(alpha: 0.9),
+                    ),
                   ),
                 ],
               ),
@@ -3786,19 +3775,17 @@ class _BillingCompareRow extends StatelessWidget {
     }
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
 
-        // ── HEADER ROW: BILLABLE  [diff]  BILLED ───────────────────
+        // ── HEADER ROW: BILLABLE  [diff badge]  BILLED ─────────────
+        // Uses Expanded so both sides grow to fill the card width.
         Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             // BILLABLE side
-            SizedBox(
-              width: kSideW,
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -3806,54 +3793,53 @@ class _BillingCompareRow extends StatelessWidget {
                   Text(
                     'BILLABLE',
                     style: TextStyle(
-                      fontSize: 8,
+                      fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: AppTheme.teal.withValues(alpha: 0.7),
-                      letterSpacing: 0.5,
+                      color: AppTheme.teal.withValues(alpha: 0.75),
+                      letterSpacing: 0.8,
                     ),
                   ),
+                  const SizedBox(height: 1),
                   Text(
                     '${s.activeCount}',
                     style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 28,
                       fontWeight: FontWeight.w800,
                       color: AppTheme.teal,
-                      height: 1.1,
+                      height: 1.0,
                     ),
                   ),
                 ],
               ),
             ),
 
-            // Diff badge centred
-            SizedBox(
-              width: kDiffW,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: diffColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: diffColor.withValues(alpha: 0.4)),
-                  ),
-                  child: diffIcon != null
-                      ? Icon(diffIcon, size: 11, color: diffColor)
-                      : Text(
-                          diffLabel,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: diffColor,
-                          ),
-                        ),
+            // Diff badge — centred, fixed width
+            Container(
+              width: 52,
+              alignment: Alignment.center,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: diffColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: diffColor.withValues(alpha: 0.45), width: 1.5),
                 ),
+                child: diffIcon != null
+                    ? Icon(diffIcon, size: 14, color: diffColor)
+                    : Text(
+                        diffLabel,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: diffColor,
+                        ),
+                      ),
               ),
             ),
 
             // BILLED side
-            SizedBox(
-              width: kSideW,
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -3861,19 +3847,20 @@ class _BillingCompareRow extends StatelessWidget {
                   Text(
                     'BILLED',
                     style: TextStyle(
-                      fontSize: 8,
+                      fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: AppTheme.navyAccent.withValues(alpha: 0.7),
-                      letterSpacing: 0.5,
+                      color: AppTheme.navyAccent.withValues(alpha: 0.75),
+                      letterSpacing: 0.8,
                     ),
                   ),
+                  const SizedBox(height: 1),
                   Text(
                     '${s.billedCount}',
                     style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 28,
                       fontWeight: FontWeight.w800,
                       color: AppTheme.navyAccent,
-                      height: 1.1,
+                      height: 1.0,
                     ),
                   ),
                 ],
