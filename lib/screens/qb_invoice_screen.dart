@@ -3184,6 +3184,8 @@ class _MyAdminPlanTable extends StatelessWidget {
     for (final d in summary.activeDevices) {
       final status = d.billingStatus.toLowerCase();
       final label  = _shortPlanLabel(d.billingPlan, d.serialNumber);
+      // Camera devices appear in the CAM row, not the GPS plan table
+      if (d.isCamera) continue;
       if (status == 'suspended') {
         suspMap[label] = (suspMap[label] ?? 0) + 1;
       } else if (status == 'never activated' || status == 'never billed') {
@@ -3960,7 +3962,6 @@ class _BillingCompareRow extends StatelessWidget {
     }
 
     // ── which rows to show ──────────────────────────────────────────
-    final showGps  = s.geotabCount > 0 || s.qbGpsBilled > 0;
     final showCam  = s.cameraCount > 0 || s.qbCamBilled > 0;
     final showSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
     // N/A row: Standard customers only — CUA excludes Never Activated
@@ -3972,103 +3973,6 @@ class _BillingCompareRow extends StatelessWidget {
       if (gf > 0)            return '$total  GF$gf';
       if (ge > 0)            return '$total  GE$ge';
       return '$total';
-    }
-
-    // ── Build active-plan breakdown string  e.g. "GO 28 · ProPlus 6 · Pro 3" ──
-    // Sort by count descending so the most common plan comes first.
-    String planBreakdown(Map<String, int> counts) {
-      if (counts.isEmpty) return '';
-      final sorted = counts.entries.toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      return sorted.map((e) => '${e.key} ${e.value}').join(' · ');
-    }
-
-    // ── helper: one full-width detail row (GPS / Cam / Susp / N/A) ──
-    Widget detailRow({
-      required IconData icon,
-      required Color color,
-      required String rowLabel,
-      required String billableVal,
-      required String billedVal,
-      String? subtitle, // plan breakdown shown below billable number
-    }) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 5),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // left value — fills half the available space
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
-                      const SizedBox(width: 5),
-                      Text(
-                        billableVal,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: color.withValues(alpha: 0.9),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (subtitle != null && subtitle.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 18, top: 3),
-                      child: Text(
-                        subtitle,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: color.withValues(alpha: 0.85),
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            // centre label pill
-            Container(
-              width: 48,
-              alignment: Alignment.center,
-              child: Text(
-                rowLabel,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.4,
-                  color: AppTheme.textSecondary.withValues(alpha: 0.65),
-                ),
-              ),
-            ),
-            // right value — fills other half
-            Expanded(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
-                  const SizedBox(width: 5),
-                  Text(
-                    billedVal,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: color.withValues(alpha: 0.9),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
     }
 
     return Column(
@@ -4166,44 +4070,391 @@ class _BillingCompareRow extends StatelessWidget {
           ],
         ),
 
-        // ── DETAIL ROWS ─────────────────────────────────────────────
-        if (showGps)
-          detailRow(
-            icon: Icons.gps_fixed,
-            color: AppTheme.navyAccent,
-            rowLabel: 'GPS',
-            billableVal: '${s.geotabCount}',
-            billedVal: '${s.qbGpsBilled}',
-            subtitle: planBreakdown(s.activePlanCounts),
-          ),
-        if (showCam)
-          detailRow(
-            icon: Icons.videocam_outlined,
-            color: Colors.indigo,
-            rowLabel: 'CAM',
-            billableVal: camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
-            billedVal: '${s.qbCamBilled}',
-          ),
-        if (showSupp)
-          detailRow(
-            icon: Icons.pause_circle_outline,
-            color: Colors.orange,
-            rowLabel: 'SUSP',
-            billableVal: '${s.suspendedGeotabCount}',
-            billedVal: '${s.qbSuspendedBilled}',
-          ),
-        if (showNa)
-          detailRow(
-            icon: Icons.new_releases_outlined,
-            color: AppTheme.amber,
-            rowLabel: 'N/A',
-            // N/A devices appear on the BILLABLE side only — QB invoices them
-            // on the standard GPS SKU, not a separate line, so there is no
-            // isolated billed count to display.
-            billableVal: '${s.neverActivatedGeotabCount}',
-            billedVal: '—',
-          ),
+        // ── PLAN TABLES ─────────────────────────────────────────────
+        // Side-by-side: MyAdmin plan breakdown (left) | QB billed plans (right)
+        // Mirrors the QB Billed table layout for easy visual comparison.
+        const SizedBox(height: 8),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── LEFT: MyAdmin plan breakdown ──────────────────────
+            Expanded(
+              child: _CollapsedMyAdminPlanTable(summary: s),
+            ),
+            // ── centre gap with label pills for CAM / SUSP / N/A ──
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(width: 8),
+                if (showCam)
+                  _CompareLabel(
+                    icon: Icons.videocam_outlined,
+                    label: 'CAM',
+                    color: Colors.indigo,
+                    left: camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
+                    right: '${s.qbCamBilled}',
+                  ),
+                if (showSupp)
+                  _CompareLabel(
+                    icon: Icons.pause_circle_outline,
+                    label: 'SUSP',
+                    color: Colors.orange,
+                    left: '${s.suspendedGeotabCount}',
+                    right: '${s.qbSuspendedBilled}',
+                  ),
+                if (showNa)
+                  _CompareLabel(
+                    icon: Icons.new_releases_outlined,
+                    label: 'N/A',
+                    color: AppTheme.amber,
+                    left: '${s.neverActivatedGeotabCount}',
+                    right: '—',
+                  ),
+              ],
+            ),
+            // ── RIGHT: QB billed plan breakdown ───────────────────
+            Expanded(
+              child: _CollapsedQbPlanTable(summary: s),
+            ),
+          ],
+        ),
       ],
+    );
+  }
+}
+
+// ── Compact MyAdmin plan table for the collapsed billing-compare card ─────────
+/// Shows Plan | Qty rows for all active (+ suspended + N/A) devices.
+/// Mirrors the layout of _CollapsedQbPlanTable on the right side.
+class _CollapsedMyAdminPlanTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _CollapsedMyAdminPlanTable({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final activeMap = <String, int>{};
+    final suspMap   = <String, int>{};
+    final naMap     = <String, int>{};
+
+    for (final d in summary.activeDevices) {
+      final status = d.billingStatus.toLowerCase();
+      final label  = _shortPlanLabel(d.billingPlan, d.serialNumber);
+      // skip camera devices — they appear in the CAM row, not the plan table
+      if (d.isCamera) continue;
+      if (status == 'active') {
+        activeMap[label] = (activeMap[label] ?? 0) + 1;
+      } else if (status == 'suspended') {
+        suspMap[label] = (suspMap[label] ?? 0) + 1;
+      } else if ((status == 'never activated' || status == 'never billed') && !summary.isCua) {
+        naMap[label] = (naMap[label] ?? 0) + 1;
+      }
+    }
+
+    List<MapEntry<String, int>> sorted(Map<String, int> m) =>
+        m.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+
+    final activeRows = sorted(activeMap);
+    final suspRows   = sorted(suspMap);
+    final naRows     = sorted(naMap);
+    final allRows    = [...activeRows, ...suspRows, ...naRows];
+
+    if (allRows.isEmpty) return const SizedBox.shrink();
+
+    final totalQty = allRows.fold(0, (s, e) => s + e.value);
+
+    Widget planRow(MapEntry<String, int> e, int idx,
+        {bool isSusp = false, bool isNa = false}) {
+      Color labelColor = AppTheme.textPrimary;
+      if (isSusp) labelColor = Colors.orange.shade300;
+      if (isNa)   labelColor = AppTheme.amber;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        color: idx.isOdd
+            ? Colors.transparent
+            : AppTheme.navyDark.withValues(alpha: 0.03),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                e.key,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: labelColor,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Text(
+              '${e.value}',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.teal,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    int idx = 0;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.teal.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: const BoxDecoration(
+              color: AppTheme.navyDark,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(6)),
+            ),
+            child: const Row(
+              children: [
+                Expanded(
+                  child: Text('Plan',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70)),
+                ),
+                Text('Qty',
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white70)),
+              ],
+            ),
+          ),
+          // Active rows
+          ...activeRows.map((e) => planRow(e, idx++)),
+          // Suspended rows
+          if (suspRows.isNotEmpty) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            ...suspRows.map((e) => planRow(e, idx++, isSusp: true)),
+          ],
+          // N/A rows
+          if (naRows.isNotEmpty) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            ...naRows.map((e) => planRow(e, idx++, isNa: true)),
+          ],
+          // Total row
+          if (allRows.length > 1)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(6)),
+                border: Border(top: BorderSide(color: AppTheme.divider)),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('TOTAL',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54)),
+                  ),
+                  Text(
+                    '$totalQty',
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.teal),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Compact QB plan table for the collapsed billing-compare card ──────────────
+/// Shows Plan | Qty rows from the QB invoice lines.
+/// Mirrors the layout of _CollapsedMyAdminPlanTable on the left side.
+class _CollapsedQbPlanTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _CollapsedQbPlanTable({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final byPlan = summary.linesByPlan;
+    if (byPlan.isEmpty) return const SizedBox.shrink();
+
+    final plans = byPlan.keys.toList()
+      ..sort((a, b) {
+        int rank(String p) {
+          final pl = p.toLowerCase();
+          if (pl.contains('suspend')) return 2;
+          if (pl.contains('never') || pl.contains('n/a')) return 3;
+          return 0;
+        }
+        final ra = rank(a), rb = rank(b);
+        if (ra != rb) return ra - rb;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+
+    Widget planRow(String plan, int idx) {
+      final lines   = byPlan[plan]!;
+      final totalQty = lines.fold(0.0, (s, l) => s + l.qty);
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        color: idx.isOdd
+            ? Colors.transparent
+            : AppTheme.navyDark.withValues(alpha: 0.03),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                plan,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Text(
+              totalQty == totalQty.roundToDouble()
+                  ? totalQty.toInt().toString()
+                  : totalQty.toStringAsFixed(1),
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.navyAccent,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.navyAccent.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: const BoxDecoration(
+              color: AppTheme.navyDark,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(6)),
+            ),
+            child: const Row(
+              children: [
+                Expanded(
+                  child: Text('Plan',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70)),
+                ),
+                Text('Qty',
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white70)),
+              ],
+            ),
+          ),
+          // Plan rows
+          ...plans.asMap().entries.map((e) => planRow(e.value, e.key)),
+          // Total row
+          if (plans.length > 1)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(6)),
+                border: Border(top: BorderSide(color: AppTheme.divider)),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('TOTAL',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54)),
+                  ),
+                  Text(
+                    '${summary.billedCount}',
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.navyAccent),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Compact compare label pill (CAM / SUSP / N/A) between the two plan tables ─
+/// Shows a small row: left count | icon + label | right count
+/// Used between the MyAdmin and QB plan tables for non-GPS device types.
+class _CompareLabel extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final String left;
+  final String right;
+  const _CompareLabel({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.left,
+    required this.right,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: color.withValues(alpha: 0.7)),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+              color: color.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(left,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: color.withValues(alpha: 0.9))),
+          Text('/',
+              style: TextStyle(
+                  fontSize: 9, color: AppTheme.textSecondary.withValues(alpha: 0.5))),
+          Text(right,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: color.withValues(alpha: 0.9))),
+        ],
+      ),
     );
   }
 }
