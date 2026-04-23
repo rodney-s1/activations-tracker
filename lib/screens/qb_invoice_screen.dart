@@ -2624,7 +2624,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                     _HanoverCallout(summary: summary),
                   const SizedBox(height: 6),
                   if (summary.activeDevices.isNotEmpty) ...[
-                    _DeviceTable(devices: summary.activeDevices),
+                    _MyAdminPlanTable(summary: summary),
                     const SizedBox(height: 4),
                     // "View All" button
                     Align(
@@ -2711,6 +2711,28 @@ class _CustomerVerifyCard extends StatelessWidget {
 
 // ── Serial List Dialog ────────────────────────────────────────────────────────
 
+/// Simple discriminated union for the grouped serial list:
+/// either a plan-group header or a device row.
+class _ListItem {
+  final bool isHeader;
+  final String? label;
+  final int groupCount;
+  final MyAdminDevice? device;
+
+  const _ListItem._({
+    required this.isHeader,
+    this.label,
+    this.groupCount = 0,
+    this.device,
+  });
+
+  factory _ListItem.header(String label, int count) =>
+      _ListItem._(isHeader: true, label: label, groupCount: count);
+
+  factory _ListItem.device(MyAdminDevice d) =>
+      _ListItem._(isHeader: false, device: d);
+}
+
 class _SerialListDialog extends StatelessWidget {
   final String customerName;
   final List<MyAdminDevice> devices;
@@ -2724,6 +2746,35 @@ class _SerialListDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Sort: by status rank → short plan label → serial number
+    // This groups all ProPlus together, then GO, etc.
+    final sorted = [...devices]..sort((a, b) {
+        final rankA = _statusSortRank(a.billingStatus);
+        final rankB = _statusSortRank(b.billingStatus);
+        if (rankA != rankB) return rankA - rankB;
+        final labelA = _shortPlanLabel(a.billingPlan);
+        final labelB = _shortPlanLabel(b.billingPlan);
+        final planCmp = labelA.toLowerCase().compareTo(labelB.toLowerCase());
+        if (planCmp != 0) return planCmp;
+        return a.serialNumber.compareTo(b.serialNumber);
+      });
+
+    // Build flat list items: either a group header or a device row
+    final items = <_ListItem>[];
+    String? lastLabel;
+    for (final d in sorted) {
+      final label = _shortPlanLabel(d.billingPlan);
+      if (label != lastLabel) {
+        lastLabel = label;
+        final groupCount = sorted
+            .where((x) => _shortPlanLabel(x.billingPlan) == label &&
+                _statusSortRank(x.billingStatus) == _statusSortRank(d.billingStatus))
+            .length;
+        items.add(_ListItem.header(label, groupCount));
+      }
+      items.add(_ListItem.device(d));
+    }
+
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       child: ConstrainedBox(
@@ -2754,7 +2805,7 @@ class _SerialListDialog extends StatelessWidget {
                               color: Colors.white),
                         ),
                         Text(
-                          '${serials.length} active device${serials.length == 1 ? '' : 's'}',
+                          '${devices.length} active device${devices.length == 1 ? '' : 's'}',
                           style: const TextStyle(
                               fontSize: 11, color: AppTheme.tealLight),
                         ),
@@ -2775,10 +2826,10 @@ class _SerialListDialog extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
               color: AppTheme.navyDark.withValues(alpha: 0.6),
-              child: Row(
+              child: const Row(
                 children: [
-                  const SizedBox(width: 22), // # column
-                  const Expanded(
+                  SizedBox(width: 22), // # column
+                  Expanded(
                     flex: 5,
                     child: Text('Serial Number',
                         style: TextStyle(
@@ -2787,7 +2838,7 @@ class _SerialListDialog extends StatelessWidget {
                             color: AppTheme.tealLight,
                             letterSpacing: 0.3)),
                   ),
-                  const SizedBox(
+                  SizedBox(
                     width: 50,
                     child: Text('Status',
                         textAlign: TextAlign.center,
@@ -2797,9 +2848,9 @@ class _SerialListDialog extends StatelessWidget {
                             color: Colors.white54,
                             letterSpacing: 0.3)),
                   ),
-                  const Expanded(
-                    flex: 3,
-                    child: Text('Plan',
+                  SizedBox(
+                    width: 60,
+                    child: Text('RPC',
                         textAlign: TextAlign.right,
                         style: TextStyle(
                             fontSize: 9,
@@ -2812,22 +2863,63 @@ class _SerialListDialog extends StatelessWidget {
             ),
             const Divider(height: 1, color: AppTheme.divider),
 
-            // ── Serial list ───────────────────────────────────────────
+            // ── Grouped serial list ───────────────────────────────────
             Expanded(
               child: ListView.builder(
                 padding: const EdgeInsets.only(bottom: 4),
-                itemCount: serials.length,
+                itemCount: items.length,
                 itemBuilder: (ctx, i) {
-                  final d = devices.firstWhere(
-                      (dev) => dev.serialNumber == serials[i],
-                      orElse: () => devices[i]);
-                  final plan = d.billingPlan
-                      .replaceAll(' Mode: Live', '')
-                      .replaceAll(' Mode:', '')
-                      .replaceAll(': Live', '');
+                  final item = items[i];
+
+                  // ── Plan group header ──────────────────────────────
+                  if (item.isHeader) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 6),
+                      color: AppTheme.navyDark.withValues(alpha: 0.55),
+                      child: Row(
+                        children: [
+                          Text(
+                            item.label!,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.tealLight,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: AppTheme.teal.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${item.groupCount}',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.tealLight,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  // ── Device row ─────────────────────────────────────
+                  final d     = item.device!;
                   final badge = statusBadge(d.billingStatus);
-                  // Determine row colour: Hanover = teal tint, N/A = amber tint,
-                  // Suspended = orange tint, alternating grey otherwise
+
+                  // Row number among device rows only
+                  final deviceIdx = items
+                      .sublist(0, i)
+                      .where((x) => !x.isHeader)
+                      .length;
+
                   Color rowColor;
                   if (d.isHanover) {
                     rowColor = Colors.teal.withValues(alpha: 0.06);
@@ -2836,7 +2928,7 @@ class _SerialListDialog extends StatelessWidget {
                   } else if (badge?.label == 'SUSP') {
                     rowColor = Colors.orange.withValues(alpha: 0.05);
                   } else {
-                    rowColor = i.isEven
+                    rowColor = deviceIdx.isEven
                         ? Colors.transparent
                         : AppTheme.navyDark.withValues(alpha: 0.03);
                   }
@@ -2863,8 +2955,7 @@ class _SerialListDialog extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 8,
                           fontWeight: FontWeight.w700,
-                          color:
-                              isPlus ? Colors.deepPurple : Colors.indigo,
+                          color: isPlus ? Colors.deepPurple : Colors.indigo,
                         ),
                       ),
                     );
@@ -2880,26 +2971,33 @@ class _SerialListDialog extends StatelessWidget {
                         SizedBox(
                           width: 22,
                           child: Text(
-                            '${i + 1}.',
+                            '${deviceIdx + 1}.',
                             style: const TextStyle(
                                 fontSize: 9, color: Colors.grey),
                           ),
                         ),
-                        // Serial number — full width, no wrapping
+                        // Serial number
                         Expanded(
                           flex: 5,
-                          child: Text(
-                            serials[i],
-                            style: const TextStyle(
-                              fontSize: 10,
-                              fontFamily: 'monospace',
-                              color: AppTheme.textPrimary,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
+                          child: Row(
+                            children: [
+                              if (camPill != null) camPill,
+                              Expanded(
+                                child: Text(
+                                  d.serialNumber,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontFamily: 'monospace',
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        // Status badge (fixed width so serials don't jump)
+                        // Status badge
                         SizedBox(
                           width: 50,
                           child: badge != null
@@ -2926,25 +3024,17 @@ class _SerialListDialog extends StatelessWidget {
                                 )
                               : const SizedBox.shrink(),
                         ),
-                        // Plan + optional camera pill
-                        Expanded(
-                          flex: 3,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              if (camPill != null) camPill,
-                              Flexible(
-                                child: Text(
-                                  plan,
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                      fontSize: 9,
-                                      color: AppTheme.textSecondary),
-                                  overflow: TextOverflow.ellipsis,
-                                  maxLines: 1,
-                                ),
-                              ),
-                            ],
+                        // RPC
+                        SizedBox(
+                          width: 60,
+                          child: Text(
+                            d.ratePlanCode,
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontSize: 9,
+                                color: AppTheme.textSecondary),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
                           ),
                         ),
                       ],
@@ -3065,6 +3155,183 @@ void _downloadText(String content, String filename) {
     ]);
   } catch (e) {
     // Non-web platform: silently ignore
+  }
+}
+
+// ── MyAdmin Plan Table (MyAdmin side, grouped by plan — mirrors QB style) ─────
+
+class _MyAdminPlanTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _MyAdminPlanTable({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    // Build plan → count map from active billable devices only
+    // (same source as activePlanCounts, but we recompute here so we can also
+    //  add Suspended and N/A rows at the bottom, matching the QB table layout)
+    final activeMap   = <String, int>{};
+    final suspMap     = <String, int>{};
+    final naMap       = <String, int>{};
+
+    for (final d in summary.activeDevices) {
+      final status = d.billingStatus.toLowerCase();
+      final label  = _shortPlanLabel(d.billingPlan);
+      if (status == 'suspended') {
+        suspMap[label] = (suspMap[label] ?? 0) + 1;
+      } else if (status == 'never activated' || status == 'never billed') {
+        if (!summary.isCua) {
+          naMap[label] = (naMap[label] ?? 0) + 1;
+        }
+      } else if (status == 'active') {
+        activeMap[label] = (activeMap[label] ?? 0) + 1;
+      }
+    }
+
+    // Sort each group alphabetically
+    List<MapEntry<String, int>> sorted(Map<String, int> m) =>
+        m.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+
+    final activeRows = sorted(activeMap);
+    final suspRows   = sorted(suspMap);
+    final naRows     = sorted(naMap);
+    final allRows    = [...activeRows, ...suspRows, ...naRows];
+
+    if (allRows.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final totalQty = allRows.fold(0, (s, e) => s + e.value);
+
+    Widget planRow(MapEntry<String, int> e, int idx, {bool isSusp = false, bool isNa = false}) {
+      Color labelColor = AppTheme.textPrimary;
+      if (isSusp) labelColor = Colors.orange.shade300;
+      if (isNa)   labelColor = AppTheme.amber;
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        color: idx.isOdd
+            ? Colors.transparent
+            : AppTheme.navyDark.withValues(alpha: 0.03),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: Text(
+                e.key,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: labelColor,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            SizedBox(
+              width: 44,
+              child: Text(
+                '${e.value}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.teal,
+                ),
+              ),
+            ),
+            // Spacers to mirror QB table column widths (no Rate/Amount for MyAdmin)
+            const SizedBox(width: 120),
+          ],
+        ),
+      );
+    }
+
+    int idx = 0;
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: AppTheme.teal.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          // Header row
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: const BoxDecoration(
+              color: AppTheme.navyDark,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(7)),
+            ),
+            child: const Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Text('Plan',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70)),
+                ),
+                SizedBox(
+                  width: 44,
+                  child: Text('Qty',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70)),
+                ),
+                SizedBox(width: 120),
+              ],
+            ),
+          ),
+          // Active rows
+          ...activeRows.map((e) => planRow(e, idx++)),
+          // Suspended rows (if any) — with divider
+          if (suspRows.isNotEmpty) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            ...suspRows.map((e) => planRow(e, idx++, isSusp: true)),
+          ],
+          // N/A (Never Activated) rows — with divider
+          if (naRows.isNotEmpty) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            ...naRows.map((e) => planRow(e, idx++, isNa: true)),
+          ],
+          // Total row if multiple plan lines
+          if (allRows.length > 1)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: const BoxDecoration(
+                color: AppTheme.navyDark,
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(7)),
+                border: Border(top: BorderSide(color: AppTheme.divider)),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    flex: 3,
+                    child: Text('TOTAL',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white54)),
+                  ),
+                  SizedBox(
+                    width: 44,
+                    child: Text(
+                      '$totalQty',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.teal),
+                    ),
+                  ),
+                  const SizedBox(width: 120),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -3396,216 +3663,6 @@ int _statusSortRank(String billingStatus) {
     default:                return 1;
   }
 }
-
-class _DeviceTable extends StatelessWidget {
-  final List<MyAdminDevice> devices;
-  const _DeviceTable({required this.devices});
-
-  @override
-  Widget build(BuildContext context) {
-    // Sort by status rank → short plan label → serial number
-    final sorted = [...devices]..sort((a, b) {
-        final rankA = _statusSortRank(a.billingStatus);
-        final rankB = _statusSortRank(b.billingStatus);
-        if (rankA != rankB) return rankA - rankB;
-        final labelA = _shortPlanLabel(a.billingPlan);
-        final labelB = _shortPlanLabel(b.billingPlan);
-        final planCmp = labelA.toLowerCase().compareTo(labelB.toLowerCase());
-        if (planCmp != 0) return planCmp;
-        return a.serialNumber.compareTo(b.serialNumber);
-      });
-
-    // Build rows — inject a plan-group header whenever the short label changes
-    final rows = <Widget>[];
-    String? lastLabel;
-    int shownDevices = 0;
-    const maxRows = 30;
-
-    for (final d in sorted) {
-      if (shownDevices >= maxRows) break;
-      final label = _shortPlanLabel(d.billingPlan);
-      final badge = statusBadge(d.billingStatus);
-      final isHanover = d.isHanover;
-
-      // ── Plan group header ──────────────────────────────────────────
-      if (label != lastLabel) {
-        lastLabel = label;
-        final groupCount = sorted
-            .where((x) => _shortPlanLabel(x.billingPlan) == label)
-            .length;
-        rows.add(Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          color: AppTheme.navyDark.withValues(alpha: 0.6),
-          child: Row(
-            children: [
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.tealLight,
-                  letterSpacing: 0.3,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: AppTheme.teal.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  '$groupCount',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.tealLight,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ));
-      }
-
-      // ── Device row ─────────────────────────────────────────────────
-      rows.add(Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        color: isHanover
-            ? Colors.teal.withValues(alpha: 0.07)
-            : shownDevices.isEven
-                ? Colors.transparent
-                : AppTheme.teal.withValues(alpha: 0.02),
-        child: Row(
-          children: [
-            // Indent under the group header
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                d.serialNumber,
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontFamily: 'monospace',
-                  color: AppTheme.textPrimary,
-                ),
-              ),
-            ),
-            if (badge != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                margin: const EdgeInsets.only(right: 6),
-                decoration: BoxDecoration(
-                  color: badge.color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(3),
-                  border: Border.all(color: badge.color.withValues(alpha: 0.35)),
-                ),
-                child: Text(
-                  badge.label,
-                  style: TextStyle(
-                    fontSize: 8,
-                    fontWeight: FontWeight.w700,
-                    color: badge.color,
-                  ),
-                ),
-              ),
-            SizedBox(
-              width: 54,
-              child: isHanover
-                  ? Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 3, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: Colors.teal.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(3),
-                        border: Border.all(
-                            color: Colors.teal.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(
-                        d.ratePlanCode,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.teal,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    )
-                  : Text(
-                      d.ratePlanCode,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: AppTheme.textSecondary,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-            ),
-          ],
-        ),
-      ));
-
-      shownDevices++;
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: AppTheme.teal.withValues(alpha: 0.25)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        children: [
-          // Table header
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: const BoxDecoration(
-              color: AppTheme.navyDark,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(7)),
-            ),
-            child: const Row(
-              children: [
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Serial #',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.tealLight,
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 54,
-                  child: Text(
-                    'RPC',
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.tealLight,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          ...rows,
-          if (sorted.length > maxRows)
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Text(
-                '… and ${sorted.length - maxRows} more — tap View All',
-                style: const TextStyle(
-                    fontSize: 11, color: AppTheme.textSecondary),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Diff Callout ──────────────────────────────────────────────────────────────
 
 class _DiffCallout extends StatelessWidget {
