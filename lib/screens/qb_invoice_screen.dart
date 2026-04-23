@@ -20,6 +20,7 @@ import '../services/qb_ignore_keyword_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ── Enums & Models ────────────────────────────────────────────────────────────
 
@@ -816,6 +817,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   String _search = '';
   final Set<String> _expanded = {};
 
+  /// Customers the user has manually marked as audited (persisted).
+  final Set<String> _auditedCustomers = {};
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -833,8 +837,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
-    // Restore previously imported CSVs so data survives page refresh / reopen
-    WidgetsBinding.instance.addPostFrameCallback((_) => _restorePersistedCsvs());
+    // Restore previously imported CSVs + audited set so data survives page refresh / reopen
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadAuditedCustomers();
+      _restorePersistedCsvs();
+    });
     // Re-run restore after any cloud pull completes so MyAdmin + QB CSVs
     // are refreshed even if the pull happened after initState fired.
     CloudSyncService.statusNotifier.addListener(_onSyncStatusChanged);
@@ -847,6 +854,29 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         CloudSyncService.status == SyncStatus.idle) {
       _restorePersistedCsvs();
     }
+  }
+
+  // ── Audited customers (persisted via shared_preferences) ──────────────────
+
+  static const _kAuditedKey = 'audited_customers_v1';
+
+  Future<void> _loadAuditedCustomers() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(_kAuditedKey) ?? [];
+    if (mounted) setState(() => _auditedCustomers.addAll(saved));
+  }
+
+  Future<void> _toggleAudit(String customerName) async {
+    final key = customerName.toLowerCase();
+    setState(() {
+      if (_auditedCustomers.contains(key)) {
+        _auditedCustomers.remove(key);
+      } else {
+        _auditedCustomers.add(key);
+      }
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_kAuditedKey, _auditedCustomers.toList());
   }
 
   // ── Restore persisted CSV data on startup ──────────────────────────────────
@@ -1807,6 +1837,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       return _CustomerVerifyCard(
                         summary: s,
                         expanded: _expanded.contains(key),
+                        isAudited: _auditedCustomers.contains(key),
                         onToggle: () => setState(() {
                           if (_expanded.contains(key)) {
                             _expanded.remove(key);
@@ -1814,6 +1845,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                             _expanded.add(key);
                           }
                         }),
+                        onAuditToggle: () => _toggleAudit(s.customerName),
                         onCuaOverride: (isCua) => setState(() {
                           _cuaOverrides[s.customerName] = isCua;
                         }),
@@ -2563,14 +2595,18 @@ class _StepCard extends StatelessWidget {
 class _CustomerVerifyCard extends StatelessWidget {
   final QbCustomerSummary summary;
   final bool expanded;
+  final bool isAudited;
   final VoidCallback onToggle;
+  final VoidCallback onAuditToggle;
   /// Called when user manually tags Standard (false) or CUA (true)
   final void Function(bool isCua)? onCuaOverride;
 
   const _CustomerVerifyCard({
     required this.summary,
     required this.expanded,
+    required this.isAudited,
     required this.onToggle,
+    required this.onAuditToggle,
     this.onCuaOverride,
   });
 
@@ -2609,6 +2645,16 @@ class _CustomerVerifyCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
+      // Green tint overlay when audited
+      color: isAudited
+          ? Color.lerp(AppTheme.cardBg, const Color(0xFF2ECC71), 0.08)
+          : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: isAudited
+            ? const BorderSide(color: Color(0xFF2ECC71), width: 1.5)
+            : BorderSide.none,
+      ),
       child: Column(
         children: [
           // ── Header ──────────────────────────────────────────────────
@@ -2679,7 +2725,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Status badge + expand arrow on same line
+                          // Status badge + expand arrow + audit checkbox on same line
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -2710,9 +2756,54 @@ class _CustomerVerifyCard extends StatelessWidget {
                                 size: 18,
                                 color: AppTheme.textSecondary,
                               ),
+                              const SizedBox(width: 2),
+                              // ── Audit checkbox ──────────────────────
+                              GestureDetector(
+                                onTap: onAuditToggle,
+                                behavior: HitTestBehavior.opaque,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(4),
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 150),
+                                    width: 22,
+                                    height: 22,
+                                    decoration: BoxDecoration(
+                                      color: isAudited
+                                          ? const Color(0xFF2ECC71)
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(5),
+                                      border: Border.all(
+                                        color: isAudited
+                                            ? const Color(0xFF2ECC71)
+                                            : AppTheme.textSecondary
+                                                .withValues(alpha: 0.4),
+                                        width: 1.8,
+                                      ),
+                                    ),
+                                    child: isAudited
+                                        ? const Icon(Icons.check,
+                                            size: 14,
+                                            color: Colors.white)
+                                        : null,
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
-                          if (summary.totalBilled > 0) ...[
+                          if (isAudited) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              'Audited',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: const Color(0xFF2ECC71)
+                                    .withValues(alpha: 0.85),
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                          ],
+                          if (!isAudited && summary.totalBilled > 0) ...[
                             const SizedBox(height: 4),
                             Text(
                               Formatters.currency(summary.totalBilled),
@@ -2720,6 +2811,17 @@ class _CustomerVerifyCard extends StatelessWidget {
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
                                 color: AppTheme.textPrimary,
+                              ),
+                            ),
+                          ],
+                          if (isAudited && summary.totalBilled > 0) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              Formatters.currency(summary.totalBilled),
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: const Color(0xFF2ECC71).withValues(alpha: 0.85),
                               ),
                             ),
                           ],
