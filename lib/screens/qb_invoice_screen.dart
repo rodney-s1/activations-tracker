@@ -6,6 +6,7 @@
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:js' as js; // ignore: deprecated_member_use
 import 'dart:io';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -805,7 +806,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     super.dispose();
   }
 
-  // ── Import MyAdmin ────────────────────────────────────────────────────────
+  // ── Import MyAdmin (file picker) ─────────────────────────────────────────
 
   Future<void> _importMyAdmin() async {
     try {
@@ -815,7 +816,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         withData: true,
       );
       if (result == null || result.files.isEmpty) return;
-
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
@@ -825,72 +825,16 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       } else {
         return;
       }
-
-      // Extract report date from line 2
-      String? reportDate;
-      final firstLines = content.split(RegExp(r'\r?\n'));
-      if (firstLines.length > 1) {
-        final dateLine = firstLines[1].trim();
-        if (dateLine.startsWith('Report Date:')) {
-          reportDate = dateLine.replaceFirst('Report Date:', '').trim();
-        }
-      }
-
-      final parsed = parseMyAdminCsv(content);
-      if (!mounted) return;
-
-      if (parsed.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Could not parse MyAdmin report. Make sure this is the '
-                '"Device Management - Full Report" CSV from MyAdmin.'),
-            backgroundColor: AppTheme.red,
-          ),
-        );
-        return;
-      }
-
-      final totalDevices =
-          parsed.values.fold(0, (s, list) => s + list.length);
-
-      setState(() {
-        _myAdminData    = parsed;
-        _myAdminLoaded  = true;
-        _myAdminFileName = file.name;
-        _myAdminReportDate = reportDate;
-        _expanded.clear();
-        _auditRan = false; // require user to re-confirm before showing results
-      });
-
-      // Persist so the data survives page refresh / app reopen
-      await CsvPersistService.saveMyAdmin(
-        content:    content,
-        fileName:   file.name,
-        reportDate: reportDate,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'MyAdmin: $totalDevices devices across ${parsed.length} customers'),
-            backgroundColor: AppTheme.teal,
-          ),
-        );
-      }
+      await _processMyAdminContent(content, file.name);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Import error: $e'),
-          backgroundColor: AppTheme.red,
-        ),
+        SnackBar(content: Text('Import error: $e'), backgroundColor: AppTheme.red),
       );
     }
   }
 
-  // ── Import QB ─────────────────────────────────────────────────────────────
+  // ── Import QB (file picker) ───────────────────────────────────────────────
 
   Future<void> _importQb() async {
     try {
@@ -900,7 +844,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         withData: true,
       );
       if (result == null || result.files.isEmpty) return;
-
       final file = result.files.first;
       String content;
       if (file.bytes != null) {
@@ -910,56 +853,162 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       } else {
         return;
       }
-
-      final qbParsed = parseQbSalesCsvWithNames(content,
-          ignoreKeywords: QbIgnoreKeywordService.getAllKeywords());
-      if (!mounted) return;
-
-      if (qbParsed.lines.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Could not find invoice data. Make sure this is a '
-                '"Sales by Customer Detail" CSV export from QuickBooks.'),
-            backgroundColor: AppTheme.red,
-          ),
-        );
-        return;
-      }
-
-      setState(() {
-        _qbData              = qbParsed.lines;
-        _qbDisplayNameCache  = qbParsed.displayNames;
-        _qbLoaded            = true;
-        _qbFileName          = file.name;
-        _expanded.clear();
-        _auditRan = false; // require user to re-confirm before showing results
-      });
-
-      // Persist so the data survives page refresh / app reopen
-      await CsvPersistService.saveQb(
-        content:  content,
-        fileName: file.name,
-      );
-
-      final totalDevicesBilled = qbParsed.lines.values
-          .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))
-          .round();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-                'QB: $totalDevicesBilled devices billed across ${qbParsed.lines.length} customers'),
-            backgroundColor: AppTheme.teal,
-          ),
-        );
-      }
+      await _processQbContent(content, file.name);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Import error: $e'),
+        SnackBar(content: Text('Import error: $e'), backgroundColor: AppTheme.red),
+      );
+    }
+  }
+
+  // ── Drag-and-drop entry point ─────────────────────────────────────────────
+  // Called by _ImportBar when files are dropped onto either slot.
+  // Auto-detects which file is MyAdmin vs QB by sniffing the CSV header, so
+  // the user can drop both at once or one at a time without caring which slot.
+  Future<void> _processDroppedFiles(List<DropItem> files) async {
+    for (final file in files) {
+      try {
+        final bytes = await file.readAsBytes();
+        final content = decodeBytesToString(bytes);
+        final fileName = file.name.isNotEmpty ? file.name : 'dropped_file';
+
+        // ── Auto-detect file type ────────────────────────────────────────
+        // MyAdmin full report always contains "Device Status" and "Billing Plan"
+        // columns in the header row; QB CSVs contain "Memo/Description" or
+        // "Sales Rep".
+        final firstFewLines = content.split(RegExp(r'\r?\n')).take(6).join('\n').toLowerCase();
+        final isMyAdmin = firstFewLines.contains('billing plan') ||
+            firstFewLines.contains('device status') ||
+            firstFewLines.contains('serial number') && firstFewLines.contains('account');
+        final isQb = firstFewLines.contains('memo/description') ||
+            firstFewLines.contains('sales rep') ||
+            firstFewLines.contains('sales by customer');
+
+        if (!isMyAdmin && !isQb) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                    'Could not detect file type for "$fileName". '
+                    'Please use the MyAdmin Device Management Full Report or '
+                    'QuickBooks Sales by Customer Detail CSV.'),
+                backgroundColor: AppTheme.red,
+              ),
+            );
+          }
+          continue;
+        }
+
+        if (isMyAdmin) {
+          await _processMyAdminContent(content, fileName);
+        } else {
+          await _processQbContent(content, fileName);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error reading dropped file: $e'),
+              backgroundColor: AppTheme.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  // Shared logic extracted from _importMyAdmin so drag-drop can reuse it.
+  Future<void> _processMyAdminContent(String content, String fileName) async {
+    String? reportDate;
+    final firstLines = content.split(RegExp(r'\r?\n'));
+    if (firstLines.length > 1) {
+      final dateLine = firstLines[1].trim();
+      if (dateLine.startsWith('Report Date:')) {
+        reportDate = dateLine.replaceFirst('Report Date:', '').trim();
+      }
+    }
+
+    final parsed = parseMyAdminCsv(content);
+    if (!mounted) return;
+
+    if (parsed.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Could not parse MyAdmin report. Make sure this is the '
+              '"Device Management - Full Report" CSV from MyAdmin.'),
           backgroundColor: AppTheme.red,
+        ),
+      );
+      return;
+    }
+
+    final totalDevices = parsed.values.fold(0, (s, list) => s + list.length);
+    setState(() {
+      _myAdminData       = parsed;
+      _myAdminLoaded     = true;
+      _myAdminFileName   = fileName;
+      _myAdminReportDate = reportDate;
+      _expanded.clear();
+      _auditRan = false;
+    });
+
+    await CsvPersistService.saveMyAdmin(
+      content:    content,
+      fileName:   fileName,
+      reportDate: reportDate,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'MyAdmin: $totalDevices devices across ${parsed.length} customers'),
+          backgroundColor: AppTheme.teal,
+        ),
+      );
+    }
+  }
+
+  // Shared logic extracted from _importQb so drag-drop can reuse it.
+  Future<void> _processQbContent(String content, String fileName) async {
+    final qbParsed = parseQbSalesCsvWithNames(content,
+        ignoreKeywords: QbIgnoreKeywordService.getAllKeywords());
+    if (!mounted) return;
+
+    if (qbParsed.lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Could not find invoice data. Make sure this is a '
+              '"Sales by Customer Detail" CSV export from QuickBooks.'),
+          backgroundColor: AppTheme.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _qbData             = qbParsed.lines;
+      _qbDisplayNameCache = qbParsed.displayNames;
+      _qbLoaded           = true;
+      _qbFileName         = fileName;
+      _expanded.clear();
+      _auditRan = false;
+    });
+
+    await CsvPersistService.saveQb(content: content, fileName: fileName);
+
+    final totalBilled = qbParsed.lines.values
+        .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))
+        .round();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'QB: $totalBilled devices billed across ${qbParsed.lines.length} customers'),
+          backgroundColor: AppTheme.teal,
         ),
       );
     }
@@ -1586,6 +1635,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbFileName:      _qbFileName,
             onImportMyAdmin: _importMyAdmin,
             onImportQb:      _importQb,
+            onDropFiles:     _processDroppedFiles,
           ),
 
           // ── State machine: empty → ready-to-run → results ──────────────
@@ -1990,7 +2040,7 @@ class _FileConfirmCard extends StatelessWidget {
 
 // ── Import Bar ────────────────────────────────────────────────────────────────
 
-class _ImportBar extends StatelessWidget {
+class _ImportBar extends StatefulWidget {
   final bool myAdminLoaded;
   final String? myAdminFileName;
   final String? myAdminDate;
@@ -1998,6 +2048,7 @@ class _ImportBar extends StatelessWidget {
   final String? qbFileName;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
+  final Future<void> Function(List<DropItem>) onDropFiles;
 
   const _ImportBar({
     required this.myAdminLoaded,
@@ -2007,7 +2058,16 @@ class _ImportBar extends StatelessWidget {
     required this.qbFileName,
     required this.onImportMyAdmin,
     required this.onImportQb,
+    required this.onDropFiles,
   });
+
+  @override
+  State<_ImportBar> createState() => _ImportBarState();
+}
+
+class _ImportBarState extends State<_ImportBar> {
+  bool _myAdminHover = false;
+  bool _qbHover      = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2016,54 +2076,67 @@ class _ImportBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Row(
         children: [
-          // MyAdmin side
+          // ── MyAdmin drop slot ──────────────────────────────────────────
           Expanded(
-            child: _ImportSlot(
-              icon: Icons.devices,
-              label: 'MyAdmin Report',
-              sublabel: myAdminLoaded
-                  ? (myAdminDate ?? myAdminFileName ?? 'Loaded')
-                  : 'Device Management Full Report',
-              loaded: myAdminLoaded,
-              color: AppTheme.teal,
-              onTap: onImportMyAdmin,
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _myAdminHover = true),
+              onDragExited:  (_) => setState(() => _myAdminHover = false),
+              onDragDone: (details) {
+                setState(() => _myAdminHover = false);
+                widget.onDropFiles(details.files);
+              },
+              child: _ImportSlot(
+                icon: Icons.devices,
+                label: 'MyAdmin Report',
+                sublabel: widget.myAdminLoaded
+                    ? (widget.myAdminDate ?? widget.myAdminFileName ?? 'Loaded')
+                    : 'Drop CSV here or click to browse',
+                loaded: widget.myAdminLoaded,
+                color: AppTheme.teal,
+                hovering: _myAdminHover,
+                onTap: widget.onImportMyAdmin,
+              ),
             ),
           ),
           const SizedBox(width: 8),
           // VS divider
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  color: AppTheme.navyMid,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: const Center(
-                  child: Text('VS',
-                      style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white38)),
-                ),
-              ),
-            ],
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: AppTheme.navyMid,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white12),
+            ),
+            child: const Center(
+              child: Text('VS',
+                  style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white38)),
+            ),
           ),
           const SizedBox(width: 8),
-          // QB side
+          // ── QB drop slot ───────────────────────────────────────────────
           Expanded(
-            child: _ImportSlot(
-              icon: Icons.receipt_long,
-              label: 'QB Sales CSV',
-              sublabel: qbLoaded
-                  ? (qbFileName ?? 'Loaded')
-                  : 'Sales by Customer Detail',
-              loaded: qbLoaded,
-              color: AppTheme.navyAccent,
-              onTap: onImportQb,
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _qbHover = true),
+              onDragExited:  (_) => setState(() => _qbHover = false),
+              onDragDone: (details) {
+                setState(() => _qbHover = false);
+                widget.onDropFiles(details.files);
+              },
+              child: _ImportSlot(
+                icon: Icons.receipt_long,
+                label: 'QB Sales CSV',
+                sublabel: widget.qbLoaded
+                    ? (widget.qbFileName ?? 'Loaded')
+                    : 'Drop CSV here or click to browse',
+                loaded: widget.qbLoaded,
+                color: AppTheme.navyAccent,
+                hovering: _qbHover,
+                onTap: widget.onImportQb,
+              ),
             ),
           ),
         ],
@@ -2077,6 +2150,7 @@ class _ImportSlot extends StatelessWidget {
   final String label;
   final String sublabel;
   final bool loaded;
+  final bool hovering;
   final Color color;
   final VoidCallback onTap;
 
@@ -2085,34 +2159,46 @@ class _ImportSlot extends StatelessWidget {
     required this.label,
     required this.sublabel,
     required this.loaded,
+    required this.hovering,
     required this.color,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final borderColor = hovering
+        ? color.withValues(alpha: 0.85)
+        : loaded
+            ? color.withValues(alpha: 0.4)
+            : Colors.white.withValues(alpha: 0.1);
+    final bgColor = hovering
+        ? color.withValues(alpha: 0.18)
+        : loaded
+            ? color.withValues(alpha: 0.12)
+            : Colors.white.withValues(alpha: 0.04);
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
-          color: loaded
-              ? color.withValues(alpha: 0.12)
-              : Colors.white.withValues(alpha: 0.04),
+          color: bgColor,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: loaded
-                ? color.withValues(alpha: 0.4)
-                : Colors.white.withValues(alpha: 0.1),
+            color: borderColor,
+            width: hovering ? 1.5 : 1.0,
           ),
         ),
         child: Row(
           children: [
             Icon(
-              loaded ? Icons.check_circle : icon,
+              hovering
+                  ? Icons.file_download_outlined
+                  : (loaded ? Icons.check_circle : icon),
               size: 18,
-              color: loaded ? color : Colors.white38,
+              color: hovering ? color : (loaded ? color : Colors.white38),
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -2120,17 +2206,22 @@ class _ImportSlot extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    label,
+                    hovering ? 'Release to load' : label,
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: loaded ? color : Colors.white54,
+                      color: hovering
+                          ? color
+                          : (loaded ? color : Colors.white54),
                     ),
                   ),
                   Text(
                     sublabel,
-                    style: const TextStyle(
-                        fontSize: 10, color: Colors.white38),
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: hovering
+                            ? color.withValues(alpha: 0.7)
+                            : Colors.white38),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -2138,9 +2229,11 @@ class _ImportSlot extends StatelessWidget {
               ),
             ),
             Icon(
-              Icons.upload_file,
+              hovering ? Icons.file_download_outlined : Icons.upload_file,
               size: 14,
-              color: loaded ? color.withValues(alpha: 0.6) : Colors.white24,
+              color: hovering
+                  ? color.withValues(alpha: 0.9)
+                  : (loaded ? color.withValues(alpha: 0.6) : Colors.white24),
             ),
           ],
         ),
