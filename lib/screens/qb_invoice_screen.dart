@@ -4056,9 +4056,6 @@ class _BillingCompareRow extends StatelessWidget {
 
     // ── which rows to show ──────────────────────────────────────────
     final showCam  = s.cameraCount > 0 || s.qbCamBilled > 0;
-    final showSupp = s.suspendedGeotabCount > 0 || s.qbSuspendedBilled > 0;
-    // N/A row: Standard customers only — CUA excludes Never Activated
-    final showNa   = !s.isCua && s.neverActivatedGeotabCount > 0;
 
     // Camera detail suffix e.g. "55 GF12·GE3"
     String camDetail(int total, int gf, int ge) {
@@ -4165,7 +4162,6 @@ class _BillingCompareRow extends StatelessWidget {
 
         // ── PLAN TABLES ─────────────────────────────────────────────
         // Side-by-side: MyAdmin plan breakdown (left) | QB billed plans (right)
-        // Mirrors the QB Billed table layout for easy visual comparison.
         const SizedBox(height: 8),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -4174,43 +4170,54 @@ class _BillingCompareRow extends StatelessWidget {
             Expanded(
               child: _CollapsedMyAdminPlanTable(summary: s),
             ),
-            // ── centre gap with label pills for CAM / SUSP / N/A ──
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(width: 8),
-                if (showCam)
-                  _CompareLabel(
-                    icon: Icons.videocam_outlined,
-                    label: 'CAM',
-                    color: Colors.indigo,
-                    left: camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
-                    right: '${s.qbCamBilled}',
-                  ),
-                if (showSupp)
-                  _CompareLabel(
-                    icon: Icons.pause_circle_outline,
-                    label: 'SUSP',
-                    color: Colors.orange,
-                    left: '${s.suspendedGeotabCount}',
-                    right: '${s.qbSuspendedBilled}',
-                  ),
-                if (showNa)
-                  _CompareLabel(
-                    icon: Icons.new_releases_outlined,
-                    label: 'N/A',
-                    color: AppTheme.amber,
-                    left: '${s.neverActivatedGeotabCount}',
-                    right: '—',
-                  ),
-              ],
-            ),
+            const SizedBox(width: 8),
             // ── RIGHT: QB billed plan breakdown ───────────────────
             Expanded(
               child: _CollapsedQbPlanTable(summary: s),
             ),
           ],
         ),
+        // ── CAM row (below tables, only if cameras exist) ───────────
+        if (showCam)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              children: [
+                Icon(Icons.videocam_outlined, size: 12,
+                    color: Colors.indigo.withValues(alpha: 0.7)),
+                const SizedBox(width: 4),
+                Text('CAM',
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                        color: Colors.indigo.withValues(alpha: 0.7))),
+                const SizedBox(width: 8),
+                Text(
+                  camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.indigo.withValues(alpha: 0.9)),
+                ),
+                Text('  /  ',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textSecondary.withValues(alpha: 0.5))),
+                Text(
+                  '${s.qbCamBilled}',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.indigo.withValues(alpha: 0.9)),
+                ),
+                Text(' billed',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textSecondary.withValues(alpha: 0.6))),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -4498,60 +4505,6 @@ class _CollapsedQbPlanTable extends StatelessWidget {
 }
 
 // ── Compact compare label pill (CAM / SUSP / N/A) between the two plan tables ─
-/// Shows a small row: left count | icon + label | right count
-/// Used between the MyAdmin and QB plan tables for non-GPS device types.
-class _CompareLabel extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final String left;
-  final String right;
-  const _CompareLabel({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.left,
-    required this.right,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 13, color: color.withValues(alpha: 0.7)),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.4,
-              color: color.withValues(alpha: 0.7),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(left,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: color.withValues(alpha: 0.9))),
-          Text('/',
-              style: TextStyle(
-                  fontSize: 9, color: AppTheme.textSecondary.withValues(alpha: 0.5))),
-          Text(right,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: color.withValues(alpha: 0.9))),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Tag Chip (metadata labels) ────────────────────────────────────────────────
 /// Small inline label used for CUA, jobType, unknown, Hanover badges.
 class _TagChip extends StatelessWidget {
