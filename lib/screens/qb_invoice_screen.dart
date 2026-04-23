@@ -445,14 +445,15 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     if (ignoreLower.any((kw) => itemLower.contains(kw))) continue;
 
     // Skip non-Geotab/camera service items (after ignore-keyword check)
-    // Camera SKUs: Surfsight, Go Focus, Go Focus Plus, Smarter AI
+    // Camera SKUs: Surfsight, Go Focus, Go Focus Plus, Smarter AI, Sensata
     final isCameraSkuItem = itemLower.contains('surfsight') ||
         itemLower.contains('ss service') ||
         itemLower.contains('ss camera') ||
         itemLower.contains('go focus') ||
         itemLower.contains('gofocus') ||
         itemLower.contains('smarter ai') ||
-        itemLower.contains('smarterai');
+        itemLower.contains('smarterai') ||
+        itemLower.contains('sensata');
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
         !isCameraSkuItem) { continue; }
@@ -560,6 +561,7 @@ String _extractPlanLabel(String item) {
       lower.contains('focus plus')) { return 'Go Focus Plus'; }
   if (lower.contains('go focus') || lower.contains('gofocus')) { return 'Go Focus'; }
   if (lower.contains('smarter ai') || lower.contains('smarterai')) return 'Smarter AI';
+  if (lower.contains('sensata')) return 'Sensata';
 
   // ── Geotab / Hanover lines ────────────────────────────────────────────────
   if (lower.contains('hanover')) return 'Hanover';
@@ -597,19 +599,26 @@ String _extractPlanLabel(String item) {
 /// Returns the camera product label for a MyAdmin camera device,
 /// matching the QB SKU names used on the right-side plan table:
 ///
-///   Serial prefix GF  →  'Go Focus'
-///   Serial prefix GE  →  'Go Focus Plus'
-///   billingPlan contains 'smarter ai'            →  'Smarter AI'
-///   billingPlan contains 'go expand' (GE prefix) →  'Go Focus Plus'
-///   billingPlan contains 'go expand'             →  'Go Focus'
-///   Otherwise                                    →  'Surfsight'
+///   Serial prefix GF        →  'Go Focus'
+///   Serial prefix GE        →  'Go Focus Plus'
+///   Serial prefix EVDMKHSRF →  'Surfsight'
+///   Serial prefix EVDMKHKP2 →  'Sensata'
+///   billingPlan contains 'smarter ai'  →  'Smarter AI'
+///   billingPlan contains 'go expand'   →  'Go Focus'
+///   billingPlan contains 'surfsight'   →  'Surfsight'
+///   billingPlan contains 'sensata'     →  'Sensata'
+///   Otherwise                          →  'Surfsight'
 String _cameraLabel(MyAdminDevice d) {
   final sn = d.serialNumber.toUpperCase();
   if (sn.startsWith('GE')) return 'Go Focus Plus';
   if (sn.startsWith('GF')) return 'Go Focus';
+  // Full-prefix serial number matches for Sensata/Surfsight hardware
+  if (sn.startsWith('EVDMKHKP2')) return 'Sensata';
+  if (sn.startsWith('EVDMKHSRF')) return 'Surfsight';
   final bp = d.billingPlan.toLowerCase();
   if (bp.contains('smarter ai') || bp.contains('smarterai')) return 'Smarter AI';
   if (bp.contains('go expand')) return 'Go Focus';
+  if (bp.contains('sensata')) return 'Sensata';
   if (bp.contains('surfsight') || bp.contains('ss service') || bp.contains('ss camera')) {
     return 'Surfsight';
   }
@@ -1292,7 +1301,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // ── QB billed breakdown by category ─────────────────────────────────
       // Derive GPS vs Camera billed counts from QB plan labels for accurate
       // side-by-side comparison on the card.
-      const cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'};
+      const cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI', 'Sensata'};
       int qbGpsBilled = 0;
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
