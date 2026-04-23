@@ -149,6 +149,11 @@ class QbCustomerSummary {
   final int qbSuspendedBilled;  // QB Suspended-SKU device count from billed lines
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
+  /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
+  /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
+  /// Used to show a plan breakdown in the billing compare card.
+  final Map<String, int> activePlanCounts;
+
   /// True = Charged Upon Activation.
   /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
   final bool isCua;
@@ -176,6 +181,7 @@ class QbCustomerSummary {
     this.qbCamBilled = 0,
     this.qbSuspendedBilled = 0,
     required this.activeDevices,
+    this.activePlanCounts = const {},
     this.isCua = false,
     this.jobType = '',
   });
@@ -558,6 +564,23 @@ String _extractPlanLabel(String item) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Maps a raw MyAdmin billing plan string to a short display label.
+/// Used to build the active plan breakdown on the billing compare card.
+String _shortPlanLabel(String billingPlan) {
+  final l = billingPlan.toLowerCase().trim();
+  if (l.isEmpty) return 'Unknown';
+  if (l.contains('proplus') || l.contains('pro plus')) return 'ProPlus';
+  if (l.contains('pro'))        return 'Pro';
+  if (l.contains('hos'))        return 'HOS';
+  if (l.contains('base'))       return 'Base';
+  if (l.contains('regulatory')) return 'Regulatory';
+  if (l.contains('predictive')) return 'Coach';
+  if (l.contains('go'))         return 'GO';
+  // Fallback: first word of the plan name, max 8 chars
+  final first = billingPlan.trim().split(RegExp(r'\s+')).first;
+  return first.length > 8 ? first.substring(0, 8) : first;
+}
 
 /// Normalise a customer name for cross-source matching.
 ///
@@ -1067,6 +1090,18 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             return s == 'never activated' || s == 'never billed';
           }).length;
 
+      // ── Active plan breakdown (for card display) ────────────────────────
+      // Group ACTIVE (not suspended, not N/A) billable Geotab devices by
+      // a short plan label so the card can show e.g. "GO 28 · ProPlus 6 · Pro 3"
+      final activePlanCounts = <String, int>{};
+      for (final d in billableGeotab) {
+        final st = d.billingStatus.toLowerCase();
+        if (st == 'active') {
+          final label = _shortPlanLabel(d.billingPlan);
+          activePlanCounts[label] = (activePlanCounts[label] ?? 0) + 1;
+        }
+      }
+
       // Cost-share Hanover devices count toward billable (customer pays half)
       final hanoverBillableCount = hanoverCsQty.clamp(0, hanoverDevices.length);
       final totalBillable = billableGeotab.length + billableCameras.length + hanoverBillableCount;
@@ -1164,6 +1199,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbCamBilled:  qbCamBilled,
         qbSuspendedBilled: qbSuspendedBilled,
         activeDevices: devices,
+        activePlanCounts: activePlanCounts,
         isCua: isCua,
         jobType: jobType,
       );
@@ -3834,34 +3870,62 @@ class _BillingCompareRow extends StatelessWidget {
       return '$total';
     }
 
-    // ── helper: one full-width detail row (GPS / Cam / Susp) ──────
+    // ── Build active-plan breakdown string  e.g. "GO 28 · ProPlus 6 · Pro 3" ──
+    // Sort by count descending so the most common plan comes first.
+    String planBreakdown(Map<String, int> counts) {
+      if (counts.isEmpty) return '';
+      final sorted = counts.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      return sorted.map((e) => '${e.key} ${e.value}').join(' · ');
+    }
+
+    // ── helper: one full-width detail row (GPS / Cam / Susp / N/A) ──
     Widget detailRow({
       required IconData icon,
       required Color color,
       required String rowLabel,
       required String billableVal,
       required String billedVal,
+      String? subtitle, // plan breakdown shown below billable number
     }) {
       return Padding(
         padding: const EdgeInsets.only(top: 5),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // left value — fills half the available space
             Expanded(
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
-                  const SizedBox(width: 5),
-                  Text(
-                    billableVal,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: color.withValues(alpha: 0.9),
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 13, color: color.withValues(alpha: 0.75)),
+                      const SizedBox(width: 5),
+                      Text(
+                        billableVal,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: color.withValues(alpha: 0.9),
+                        ),
+                      ),
+                    ],
                   ),
+                  if (subtitle != null && subtitle.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 18, top: 2),
+                      child: Text(
+                        subtitle,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: color.withValues(alpha: 0.65),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -4006,6 +4070,7 @@ class _BillingCompareRow extends StatelessWidget {
             rowLabel: 'GPS',
             billableVal: '${s.geotabCount}',
             billedVal: '${s.qbGpsBilled}',
+            subtitle: planBreakdown(s.activePlanCounts),
           ),
         if (showCam)
           detailRow(
