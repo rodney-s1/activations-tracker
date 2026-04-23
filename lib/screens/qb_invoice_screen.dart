@@ -512,73 +512,131 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
 String _extractPlanLabel(String item) {
   final lower = item.toLowerCase();
 
-  // ── Phillips Connect ─────────────────────────────────────────────────────
-  // Phillips Connect Service SKU in QB corresponds to EG-prefix devices in MyAdmin
+  // ── Phillips Connect ──────────────────────────────────────────────────────
   if (lower.contains('phillips connect') || lower.contains('phillips-connect') ||
       lower.contains('phillipsconnect')) { return 'Phillips Connect'; }
 
+  // ── Digital Matter ────────────────────────────────────────────────────────
+  // QB SKUs: "Digital Matter Service Fee", "DM Service Fee", etc.
+  if (lower.contains('digital matter') || lower.contains('digitalmatter')) {
+    return 'Digital Matter';
+  }
+  if (RegExp(r'\bdm\b').hasMatch(lower) &&
+      (lower.contains('service') || lower.contains('fee'))) {
+    return 'Digital Matter';
+  }
+
+  // ── GoAnywhere ────────────────────────────────────────────────────────────
+  if (lower.contains('go anywhere') || lower.contains('goanywhere') ||
+      lower.contains('go-anywhere')) { return 'GoAnywhere'; }
+
+  // ── OEM vehicle telematics ────────────────────────────────────────────────
+  if (lower.contains('ford') && (lower.contains('service') || lower.contains('fee') ||
+      lower.contains('telematics') || lower.contains('geotab'))) { return 'Ford'; }
+  if (lower.contains('mack') && (lower.contains('service') || lower.contains('fee') ||
+      lower.contains('telematics') || lower.contains('geotab'))) { return 'Mack'; }
+  if (lower.contains('volvo') && (lower.contains('service') || lower.contains('fee') ||
+      lower.contains('telematics') || lower.contains('geotab'))) { return 'Volvo'; }
+  if (lower.contains('caterpillar') || (lower.contains('cat') &&
+      (lower.contains('service') || lower.contains('fee') ||
+       lower.contains('telematics')))) { return 'CAT'; }
+  if (lower.contains('john deere') || lower.contains('johndeere') ||
+      (lower.contains('deere') && (lower.contains('service') || lower.contains('fee')))) {
+    return 'John Deere';
+  }
+  if ((lower.contains(' gm ') || lower.contains('general motors')) &&
+      (lower.contains('service') || lower.contains('fee') ||
+       lower.contains('telematics'))) { return 'GM'; }
+  if (lower.contains('calamp') || lower.contains('cal amp')) { return 'CalAmp'; }
+  if (lower.contains('komatsu') && (lower.contains('service') || lower.contains('fee') ||
+      lower.contains('telematics'))) { return 'Komatsu'; }
+  if (lower.contains('hitachi') && (lower.contains('service') || lower.contains('fee') ||
+      lower.contains('telematics'))) { return 'Hitachi'; }
+
   // ── Camera product lines ──────────────────────────────────────────────────
-  // Surfsight / SS camera lines
   if (lower.contains('surfsight') || lower.contains('ss service') ||
       lower.contains('ss camera')) { return 'Surfsight'; }
-
-  // Go Focus Plus must be checked before Go Focus (longer match wins)
   if (lower.contains('go focus plus') || lower.contains('gofocus plus') ||
       lower.contains('focus plus')) { return 'Go Focus Plus'; }
-
-  // Go Focus (standalone — not Plus)
   if (lower.contains('go focus') || lower.contains('gofocus')) { return 'Go Focus'; }
-
-  // Smarter AI
   if (lower.contains('smarter ai') || lower.contains('smarterai')) return 'Smarter AI';
 
   // ── Geotab / Hanover lines ────────────────────────────────────────────────
-  // Hanover rate plan
   if (lower.contains('hanover')) return 'Hanover';
 
-  // Extract from innermost parenthetical e.g. "(Service Fee Geotab (HOS))"
-  // Try last paren group first
+  // Extract from innermost parenthetical e.g. "Service Fee Geotab (HOS V2)"
   final allParens = RegExp(r'\(([^()]+)\)').allMatches(item);
   for (final m in allParens.toList().reversed) {
     final inside = m.group(1)!.trim();
-    // look for known plan keywords inside
     final il = inside.toLowerCase();
     if (il.contains('hanover')) return 'Hanover';
     if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
     if (il.contains('pro')) return 'Pro';
-    if (il.contains('hos')) return 'HOS';
+    if (il.contains('hos') || il.contains('regulatory')) return 'Reg/HOS';
     if (il.contains('go plan') || il == 'go' || il.endsWith('(go)') ||
         il.startsWith('go')) { return 'GO'; }
-    if (il.contains('regulatory')) return 'Regulatory';
     if (il.contains('base')) return 'Base';
     if (il.contains('suspend')) return 'Suspend';
     if (il.contains('predictive')) return 'Predictive Coach';
   }
 
   // Fallback: scan item string directly
-  final il = lower;
-  if (il.contains('hanover')) return 'Hanover';
-  if (il.contains('proplus') || il.contains('pro plus')) return 'ProPlus';
-  if (il.contains('pro')) return 'Pro';
-  if (il.contains('hos')) return 'HOS';
-  if (il.contains('go plan') || RegExp(r'\bgo\b').hasMatch(il)) return 'GO';
-  if (il.contains('regulatory')) return 'Regulatory';
-  if (il.contains('base')) return 'Base';
-  if (il.contains('suspend')) return 'Suspend';
-  if (il.contains('predictive')) return 'Predictive Coach';
+  if (lower.contains('proplus') || lower.contains('pro plus')) return 'ProPlus';
+  if (lower.contains('pro')) return 'Pro';
+  if (lower.contains('hos') || lower.contains('regulatory')) return 'Reg/HOS';
+  if (lower.contains('go plan') || RegExp(r'\bgo\b').hasMatch(lower)) return 'GO';
+  if (lower.contains('base')) return 'Base';
+  if (lower.contains('suspend')) return 'Suspend';
+  if (lower.contains('predictive')) return 'Predictive Coach';
 
-  return item.length > 30 ? '${item.substring(0, 30)}…' : item;
+  return item.length > 30 ? item.substring(0, 30) + '…' : item;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Maps a raw MyAdmin billing plan string to a short QB SKU label.
-/// If [serialNumber] is provided and starts with 'EG', returns 'Phillips Connect'
-/// regardless of the billing plan — EG-prefix devices are Phillips Connect trackers
-/// billed under the Phillips Connect Service SKU in QB.
-/// Otherwise delegates to PlanMappingService (user-configurable in Settings → Plan Mapping).
+///
+/// Serial-number prefix overrides (checked first, before billing plan):
+///
+///   Phillips Connect : EG, EK
+///   Digital Matter   : CN, CL, DC, C1, HN, JQ, CY
+///   GoAnywhere       : B1
+///   OEM devices (billed separately from standard Geotab):
+///     Ford      : DW       Mack     : DY       Volvo  : D8
+///     CAT       : D5, DS   JohnDeere: DM       GM     : CO
+///     CalAmp    : C3       Komatsu  : JL       Hitachi: P8
+///
+/// These devices often show as "Pro" in MyAdmin but are billed under
+/// their own QB SKU — the serial prefix is the only reliable differentiator.
+/// Standard Geotab devices start with 'G' and fall through to PlanMappingService.
 String _shortPlanLabel(String billingPlan, [String serialNumber = '']) {
-  if (serialNumber.toUpperCase().startsWith('EG')) return 'Phillips Connect';
+  final sn = serialNumber.toUpperCase();
+  if (sn.length < 2) return PlanMappingService.resolve(billingPlan);
+  final p2 = sn.substring(0, 2);
+
+  // ── Phillips Connect ──────────────────────────────────────────────────────
+  if (p2 == 'EG' || p2 == 'EK') return 'Phillips Connect';
+
+  // ── Digital Matter ────────────────────────────────────────────────────────
+  if (const {'CN', 'CL', 'DC', 'C1', 'HN', 'JQ', 'CY'}.contains(p2)) {
+    return 'Digital Matter';
+  }
+
+  // ── GoAnywhere Assets ─────────────────────────────────────────────────────
+  if (p2 == 'B1') return 'GoAnywhere';
+
+  // ── OEM devices ───────────────────────────────────────────────────────────
+  if (p2 == 'DW') return 'Ford';
+  if (p2 == 'DY') return 'Mack';
+  if (p2 == 'D8') return 'Volvo';
+  if (p2 == 'D5' || p2 == 'DS') return 'CAT';
+  if (p2 == 'DM') return 'John Deere';
+  if (p2 == 'CO') return 'GM';
+  if (p2 == 'C3') return 'CalAmp';
+  if (p2 == 'JL') return 'Komatsu';
+  if (p2 == 'P8') return 'Hitachi';
+
+  // ── Standard Geotab (G-prefix) and everything else ────────────────────────
   return PlanMappingService.resolve(billingPlan);
 }
 
