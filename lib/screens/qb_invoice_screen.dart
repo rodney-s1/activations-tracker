@@ -3403,17 +3403,150 @@ class _DeviceTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Sort: active devices alphabetically by plan first, then by plan for other
-    // statuses, but always put Suspended at the bottom and Never Activated last.
+    // Sort by status rank → short plan label → serial number
     final sorted = [...devices]..sort((a, b) {
         final rankA = _statusSortRank(a.billingStatus);
         final rankB = _statusSortRank(b.billingStatus);
         if (rankA != rankB) return rankA - rankB;
-        // Within same status group: sort alphabetically by billing plan
-        final planCmp = a.billingPlan.toLowerCase().compareTo(b.billingPlan.toLowerCase());
+        final labelA = _shortPlanLabel(a.billingPlan);
+        final labelB = _shortPlanLabel(b.billingPlan);
+        final planCmp = labelA.toLowerCase().compareTo(labelB.toLowerCase());
         if (planCmp != 0) return planCmp;
         return a.serialNumber.compareTo(b.serialNumber);
       });
+
+    // Build rows — inject a plan-group header whenever the short label changes
+    final rows = <Widget>[];
+    String? lastLabel;
+    int shownDevices = 0;
+    const maxRows = 30;
+
+    for (final d in sorted) {
+      if (shownDevices >= maxRows) break;
+      final label = _shortPlanLabel(d.billingPlan);
+      final badge = statusBadge(d.billingStatus);
+      final isHanover = d.isHanover;
+
+      // ── Plan group header ──────────────────────────────────────────
+      if (label != lastLabel) {
+        lastLabel = label;
+        final groupCount = sorted
+            .where((x) => _shortPlanLabel(x.billingPlan) == label)
+            .length;
+        rows.add(Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          color: AppTheme.navyDark.withValues(alpha: 0.6),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.tealLight,
+                  letterSpacing: 0.3,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.teal.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '$groupCount',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.tealLight,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ));
+      }
+
+      // ── Device row ─────────────────────────────────────────────────
+      rows.add(Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        color: isHanover
+            ? Colors.teal.withValues(alpha: 0.07)
+            : shownDevices.isEven
+                ? Colors.transparent
+                : AppTheme.teal.withValues(alpha: 0.02),
+        child: Row(
+          children: [
+            // Indent under the group header
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                d.serialNumber,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ),
+            if (badge != null)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: badge.color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: badge.color.withValues(alpha: 0.35)),
+                ),
+                child: Text(
+                  badge.label,
+                  style: TextStyle(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w700,
+                    color: badge.color,
+                  ),
+                ),
+              ),
+            SizedBox(
+              width: 54,
+              child: isHanover
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 3, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(3),
+                        border: Border.all(
+                            color: Colors.teal.withValues(alpha: 0.5)),
+                      ),
+                      child: Text(
+                        d.ratePlanCode,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.teal,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    )
+                  : Text(
+                      d.ratePlanCode,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textSecondary,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+            ),
+          ],
+        ),
+      ));
+
+      shownDevices++;
+    }
 
     return Container(
       decoration: BoxDecoration(
@@ -3422,132 +3555,47 @@ class _DeviceTable extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Header
+          // Table header
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: const BoxDecoration(
               color: AppTheme.navyDark,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(7)),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(7)),
             ),
             child: const Row(
               children: [
+                SizedBox(width: 10),
                 Expanded(
-                    flex: 2,
-                    child: Text('Serial #',
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.tealLight))),
-                Expanded(
-                    flex: 3,
-                    child: Text('Plan',
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.tealLight))),
+                  child: Text(
+                    'Serial #',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.tealLight,
+                    ),
+                  ),
+                ),
                 SizedBox(
-                    width: 50,
-                    child: Text('RPC',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.tealLight))),
+                  width: 54,
+                  child: Text(
+                    'RPC',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.tealLight,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
-          // Rows (cap at 20 for performance — use View All for the rest)
-          ...sorted.take(20).toList().asMap().entries.map((e) {
-            final odd = e.key.isOdd;
-            final d   = e.value;
-            final plan = d.billingPlan
-                .replaceAll(' Mode: Live', '')
-                .replaceAll(' Mode:', '')
-                .replaceAll(': Live', '');
-            final badge = statusBadge(d.billingStatus);
-            // Hanover-plan rows get a distinct teal-tinted background
-            final isHanover = d.isHanover;
-            return Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              color: isHanover
-                  ? Colors.teal.withValues(alpha: 0.08)
-                  : odd
-                      ? Colors.transparent
-                      : AppTheme.teal.withValues(alpha: 0.03),
-              child: Row(
-                children: [
-                  Expanded(
-                      flex: 2,
-                      child: Text(d.serialNumber,
-                          style: const TextStyle(
-                              fontSize: 10,
-                              fontFamily: 'monospace',
-                              color: AppTheme.textPrimary))),
-                  Expanded(
-                      flex: 3,
-                      child: Text(plan,
-                          style: const TextStyle(
-                              fontSize: 10,
-                              color: AppTheme.textSecondary),
-                          overflow: TextOverflow.ellipsis)),
-                  if (badge != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 3, vertical: 1),
-                      margin: const EdgeInsets.only(right: 2),
-                      decoration: BoxDecoration(
-                        color: badge.color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(3),
-                        border: Border.all(
-                            color: badge.color.withValues(alpha: 0.35)),
-                      ),
-                      child: Text(badge.label,
-                          style: TextStyle(
-                              fontSize: 7,
-                              fontWeight: FontWeight.w700,
-                              color: badge.color)),
-                    ),
-                  SizedBox(
-                    width: 50,
-                    child: isHanover
-                        ? Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 3, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: Colors.teal.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(3),
-                              border: Border.all(
-                                  color: Colors.teal.withValues(alpha: 0.5)),
-                            ),
-                            child: Text(
-                              d.ratePlanCode,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  fontSize: 8,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.teal),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          )
-                        : Text(d.ratePlanCode,
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppTheme.textSecondary),
-                            overflow: TextOverflow.ellipsis),
-                  ),
-                ],
-              ),
-            );
-          }),
-          if (sorted.length > 20)
+          ...rows,
+          if (sorted.length > maxRows)
             Padding(
               padding: const EdgeInsets.all(8),
               child: Text(
-                '… and ${sorted.length - 20} more — tap View All',
+                '… and ${sorted.length - maxRows} more — tap View All',
                 style: const TextStyle(
                     fontSize: 11, color: AppTheme.textSecondary),
               ),
@@ -3907,13 +3955,13 @@ class _BillingCompareRow extends StatelessWidget {
                   ),
                   if (subtitle != null && subtitle.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(left: 18, top: 2),
+                      padding: const EdgeInsets.only(left: 18, top: 3),
                       child: Text(
                         subtitle,
                         style: TextStyle(
-                          fontSize: 10,
-                          color: color.withValues(alpha: 0.65),
-                          fontWeight: FontWeight.w500,
+                          fontSize: 12,
+                          color: color.withValues(alpha: 0.85),
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
