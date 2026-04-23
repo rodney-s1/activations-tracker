@@ -23,9 +23,9 @@ class PlanMappingService {
     ('ProPlus',         'ProPlus'),
     ('Pro Plus',        'ProPlus'),
     ('Pro',             'Pro'),
-    ('HOS',             'HOS'),
+    ('HOS',             'Reg/HOS'),
     ('Base',            'Base'),
-    ('Regulatory',      'Regulatory'),
+    ('Regulatory',      'Reg/HOS'),
     ('Predictive',      'Coach'),
     ('Suspend',         'Suspend'),
     ('Surfsight',       'Surfsight'),
@@ -40,7 +40,21 @@ class PlanMappingService {
       Hive.registerAdapter(PlanMappingAdapter());
     }
     _box = await Hive.openBox<PlanMapping>(_boxName);
-    if (_box!.isEmpty) await _seedDefaults();
+    if (_box!.isEmpty) {
+      await _seedDefaults();
+    } else {
+      await _migrateLabels();
+    }
+  }
+
+  /// One-time migration: rename old 'HOS' / 'Regulatory' labels to 'Reg/HOS'.
+  static Future<void> _migrateLabels() async {
+    for (final entry in _box!.values) {
+      if (entry.qbLabel == 'HOS' || entry.qbLabel == 'Regulatory') {
+        entry.qbLabel = 'Reg/HOS';
+        await entry.save();
+      }
+    }
   }
 
   static Future<void> _seedDefaults() async {
