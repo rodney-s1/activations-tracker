@@ -594,6 +594,29 @@ String _extractPlanLabel(String item) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Returns the camera product label for a MyAdmin camera device,
+/// matching the QB SKU names used on the right-side plan table:
+///
+///   Serial prefix GF  →  'Go Focus'
+///   Serial prefix GE  →  'Go Focus Plus'
+///   billingPlan contains 'smarter ai'            →  'Smarter AI'
+///   billingPlan contains 'go expand' (GE prefix) →  'Go Focus Plus'
+///   billingPlan contains 'go expand'             →  'Go Focus'
+///   Otherwise                                    →  'Surfsight'
+String _cameraLabel(MyAdminDevice d) {
+  final sn = d.serialNumber.toUpperCase();
+  if (sn.startsWith('GE')) return 'Go Focus Plus';
+  if (sn.startsWith('GF')) return 'Go Focus';
+  final bp = d.billingPlan.toLowerCase();
+  if (bp.contains('smarter ai') || bp.contains('smarterai')) return 'Smarter AI';
+  if (bp.contains('go expand')) return 'Go Focus';
+  if (bp.contains('surfsight') || bp.contains('ss service') || bp.contains('ss camera')) {
+    return 'Surfsight';
+  }
+  // Default: Surfsight is the most common unnamed camera type
+  return 'Surfsight';
+}
+
 /// Maps a raw MyAdmin billing plan string to a short QB SKU label.
 ///
 /// Serial-number prefix overrides (checked first, before billing plan):
@@ -3334,9 +3357,8 @@ class _MyAdminPlanTable extends StatelessWidget {
 
     for (final d in summary.activeDevices) {
       final status = d.billingStatus.toLowerCase();
-      final label  = _shortPlanLabel(d.billingPlan, d.serialNumber);
-      // Camera devices appear in the CAM row, not the GPS plan table
-      if (d.isCamera) continue;
+      // Derive label: cameras use their product type, not billing plan
+      final label = d.isCamera ? _cameraLabel(d) : _shortPlanLabel(d.billingPlan, d.serialNumber);
       if (status == 'suspended') {
         suspMap[label] = (suspMap[label] ?? 0) + 1;
       } else if (status == 'never activated' || status == 'never billed') {
@@ -4112,17 +4134,6 @@ class _BillingCompareRow extends StatelessWidget {
       diffIcon  = null;
     }
 
-    // ── which rows to show ──────────────────────────────────────────
-    final showCam  = s.cameraCount > 0 || s.qbCamBilled > 0;
-
-    // Camera detail suffix e.g. "55 GF12·GE3"
-    String camDetail(int total, int gf, int ge) {
-      if (gf > 0 && ge > 0) return '$total  GF$gf·GE$ge';
-      if (gf > 0)            return '$total  GF$gf';
-      if (ge > 0)            return '$total  GE$ge';
-      return '$total';
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -4235,47 +4246,7 @@ class _BillingCompareRow extends StatelessWidget {
             ),
           ],
         ),
-        // ── CAM row (below tables, only if cameras exist) ───────────
-        if (showCam)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Row(
-              children: [
-                Icon(Icons.videocam_outlined, size: 12,
-                    color: Colors.indigo.withValues(alpha: 0.7)),
-                const SizedBox(width: 4),
-                Text('CAM',
-                    style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
-                        color: Colors.indigo.withValues(alpha: 0.7))),
-                const SizedBox(width: 8),
-                Text(
-                  camDetail(s.cameraCount, s.goFocusCount, s.goFocusPlusCount),
-                  style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.indigo.withValues(alpha: 0.9)),
-                ),
-                Text('  /  ',
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: AppTheme.textSecondary.withValues(alpha: 0.5))),
-                Text(
-                  '${s.qbCamBilled}',
-                  style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.indigo.withValues(alpha: 0.9)),
-                ),
-                Text(' billed',
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: AppTheme.textSecondary.withValues(alpha: 0.6))),
-              ],
-            ),
-          ),
+        // cameras are now rows in _CollapsedMyAdminPlanTable — no separate CAM row needed
       ],
     );
   }
@@ -4296,9 +4267,8 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
 
     for (final d in summary.activeDevices) {
       final status = d.billingStatus.toLowerCase();
-      final label  = _shortPlanLabel(d.billingPlan, d.serialNumber);
-      // skip camera devices — they appear in the CAM row, not the plan table
-      if (d.isCamera) continue;
+      // Derive label: cameras use their product type, not billing plan
+      final label = d.isCamera ? _cameraLabel(d) : _shortPlanLabel(d.billingPlan, d.serialNumber);
       if (status == 'active') {
         activeMap[label] = (activeMap[label] ?? 0) + 1;
       } else if (status == 'suspended') {
