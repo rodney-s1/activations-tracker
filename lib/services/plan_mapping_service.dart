@@ -17,22 +17,23 @@ class PlanMappingService {
   // Each entry: [myAdminPlan (substring, case-insensitive), qbLabel]
   // Order matters — first match wins, so longer/more-specific strings come first.
   static const List<(String, String)> _defaults = [
-    ('GO Expand',       'GO'),
-    ('GO Plan',         'GO'),
-    ('GO Basic',        'GO'),
-    ('ProPlus',         'ProPlus'),
-    ('Pro Plus',        'ProPlus'),
-    ('Pro',             'Pro'),
-    ('HOS',             'Reg/HOS'),
-    ('Base',            'Base'),
-    ('Regulatory',      'Reg/HOS'),
-    ('Predictive',      'Coach'),
-    ('Suspend',         'Suspend'),
-    ('Surfsight',       'Surfsight'),
-    ('Go Focus Plus',   'Go Focus Plus'),
-    ('Go Focus',        'Go Focus'),
-    ('Smarter AI',      'Smarter AI'),
-    ('Hanover',         'Hanover'),
+    ('GO Expand',           'GO'),
+    ('GO Plan',             'GO'),
+    ('GO Basic',            'GO'),
+    ('ProPlus',             'ProPlus'),
+    ('Pro Plus',            'ProPlus'),
+    ('Pro',                 'Pro'),
+    ('HOS',                 'Reg/HOS'),
+    ('Base',                'Base'),
+    ('Regulatory',          'Reg/HOS'),
+    ('Predictive',          'Coach'),
+    ('Suspend',             'Suspend'),
+    ('Surfsight',           'Surfsight'),
+    ('Go Focus Plus',       'Go Focus Plus'),
+    ('Go Focus',            'Go Focus'),
+    ('Smarter AI',          'Smarter AI'),
+    ('Hanover',             'Hanover'),
+    ('Phillips Connect',    'Phillips Connect'),
   ];
 
   static Future<void> init() async {
@@ -47,13 +48,26 @@ class PlanMappingService {
     }
   }
 
-  /// One-time migration: rename old 'HOS' / 'Regulatory' labels to 'Reg/HOS'.
+  /// One-time migrations applied to existing Hive boxes:
+  ///   • 'HOS' / 'Regulatory' → 'Reg/HOS'
+  ///   • Seed 'Phillips Connect' entry if not already present
   static Future<void> _migrateLabels() async {
     for (final entry in _box!.values) {
       if (entry.qbLabel == 'HOS' || entry.qbLabel == 'Regulatory') {
         entry.qbLabel = 'Reg/HOS';
         await entry.save();
       }
+    }
+    // Add Phillips Connect default if missing
+    final hasPhillips = _box!.values.any(
+      (e) => e.myAdminPlan.toLowerCase().contains('phillips'),
+    );
+    if (!hasPhillips) {
+      await _box!.add(PlanMapping(
+        myAdminPlan: 'Phillips Connect',
+        qbLabel: 'Phillips Connect',
+        isDefault: true,
+      ));
     }
   }
 

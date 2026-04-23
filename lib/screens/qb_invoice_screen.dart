@@ -511,6 +511,11 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
 String _extractPlanLabel(String item) {
   final lower = item.toLowerCase();
 
+  // ── Phillips Connect ─────────────────────────────────────────────────────
+  // Phillips Connect Service SKU in QB corresponds to EG-prefix devices in MyAdmin
+  if (lower.contains('phillips connect') || lower.contains('phillips-connect') ||
+      lower.contains('phillipsconnect')) { return 'Phillips Connect'; }
+
   // ── Camera product lines ──────────────────────────────────────────────────
   // Surfsight / SS camera lines
   if (lower.contains('surfsight') || lower.contains('ss service') ||
@@ -567,9 +572,12 @@ String _extractPlanLabel(String item) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Maps a raw MyAdmin billing plan string to a short QB SKU label.
-/// Delegates to PlanMappingService (user-configurable in Settings → Plan Mapping).
-/// Falls back to first-word heuristic if no mapping matches.
-String _shortPlanLabel(String billingPlan) {
+/// If [serialNumber] is provided and starts with 'EG', returns 'Phillips Connect'
+/// regardless of the billing plan — EG-prefix devices are Phillips Connect trackers
+/// billed under the Phillips Connect Service SKU in QB.
+/// Otherwise delegates to PlanMappingService (user-configurable in Settings → Plan Mapping).
+String _shortPlanLabel(String billingPlan, [String serialNumber = '']) {
+  if (serialNumber.toUpperCase().startsWith('EG')) return 'Phillips Connect';
   return PlanMappingService.resolve(billingPlan);
 }
 
@@ -1088,7 +1096,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       for (final d in billableGeotab) {
         final st = d.billingStatus.toLowerCase();
         if (st == 'active') {
-          final label = _shortPlanLabel(d.billingPlan);
+          final label = _shortPlanLabel(d.billingPlan, d.serialNumber);
           activePlanCounts[label] = (activePlanCounts[label] ?? 0) + 1;
         }
       }
@@ -2752,8 +2760,8 @@ class _SerialListDialog extends StatelessWidget {
         final rankA = _statusSortRank(a.billingStatus);
         final rankB = _statusSortRank(b.billingStatus);
         if (rankA != rankB) return rankA - rankB;
-        final labelA = _shortPlanLabel(a.billingPlan);
-        final labelB = _shortPlanLabel(b.billingPlan);
+        final labelA = _shortPlanLabel(a.billingPlan, a.serialNumber);
+        final labelB = _shortPlanLabel(b.billingPlan, b.serialNumber);
         final planCmp = labelA.toLowerCase().compareTo(labelB.toLowerCase());
         if (planCmp != 0) return planCmp;
         return a.serialNumber.compareTo(b.serialNumber);
@@ -2763,11 +2771,11 @@ class _SerialListDialog extends StatelessWidget {
     final items = <_ListItem>[];
     String? lastLabel;
     for (final d in sorted) {
-      final label = _shortPlanLabel(d.billingPlan);
+      final label = _shortPlanLabel(d.billingPlan, d.serialNumber);
       if (label != lastLabel) {
         lastLabel = label;
         final groupCount = sorted
-            .where((x) => _shortPlanLabel(x.billingPlan) == label &&
+            .where((x) => _shortPlanLabel(x.billingPlan, x.serialNumber) == label &&
                 _statusSortRank(x.billingStatus) == _statusSortRank(d.billingStatus))
             .length;
         items.add(_ListItem.header(label, groupCount));
@@ -3175,7 +3183,7 @@ class _MyAdminPlanTable extends StatelessWidget {
 
     for (final d in summary.activeDevices) {
       final status = d.billingStatus.toLowerCase();
-      final label  = _shortPlanLabel(d.billingPlan);
+      final label  = _shortPlanLabel(d.billingPlan, d.serialNumber);
       if (status == 'suspended') {
         suspMap[label] = (suspMap[label] ?? 0) + 1;
       } else if (status == 'never activated' || status == 'never billed') {
