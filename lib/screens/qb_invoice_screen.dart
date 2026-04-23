@@ -395,13 +395,22 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     if (nameCell.isNotEmpty) {
       currentCustomer    = nameCell;
       currentCustomerKey = _normKey(nameCell);
-      // Strip QB "Parent:Child" colon prefix for display — we want "Child" only.
-      // e.g. "Berrett Pest Control Services:Berrett Pest Control Services - Dallas"
-      //   → "Berrett Pest Control Services - Dallas"
+      // Strip QB parent prefix for display:
+      //   Colon format "Parent:Child" → keep Child
+      //   Pipe format  "Parent | Location ST - 0140" → strip " ST - NNNN" store suffix
+      String cleanDisplayName;
       final colonIdx = nameCell.indexOf(':');
-      final cleanDisplayName = (colonIdx > 0 && colonIdx < nameCell.length - 1)
-          ? nameCell.substring(colonIdx + 1).trim()
-          : nameCell;
+      if (colonIdx > 0 && colonIdx < nameCell.length - 1) {
+        cleanDisplayName = nameCell.substring(colonIdx + 1).trim();
+      } else if (nameCell.contains(' | ')) {
+        // Strip trailing " ST - NNNN" or " - NNNN" store-number suffix
+        cleanDisplayName = nameCell
+            .replaceFirst(RegExp(r'\s+[A-Z]{2}\s+-\s+\d+$'), '')
+            .replaceFirst(RegExp(r'\s+-\s+\d+$'), '')
+            .trim();
+      } else {
+        cleanDisplayName = nameCell;
+      }
       displayNames.putIfAbsent(currentCustomerKey, () => cleanDisplayName);
     }
     if (numIdx  >= 0 && gc(numIdx).isNotEmpty)  currentInvoice = gc(numIdx);
@@ -568,14 +577,30 @@ String _normKey(String name) {
   s = _stripCurlyBraceSuffix(s);
   // 2. Strip parenthetical location/contact suffix, e.g. " (City State)"
   s = _stripParenSuffix(s);
-  // 3. Strip QB colon-parent prefix: QB exports "Parent:Child" — we only want
-  //    the child portion so it matches the MyAdmin name.
-  //    e.g. "Berrett Pest Control Services:Berrett Pest Control Services - Dallas"
-  //         → "Berrett Pest Control Services - Dallas"
-  //    If there is no colon the string is returned unchanged.
-  final colonIdx = s.indexOf(':');
-  if (colonIdx > 0 && colonIdx < s.length - 1) {
-    s = s.substring(colonIdx + 1).trim();
+  // 3. Strip QB parent prefix — QB exports two formats:
+  //    a) Colon:  "Parent:Child"              → keep Child
+  //       e.g. "Berrett Pest Control:Berrett Pest Control - Dallas"
+  //            → "Berrett Pest Control - Dallas"
+  //    b) Pipe:   "Parent | Location ST - NNNN" → keep "Parent | Location"
+  //       QB appends a state abbreviation + store number to pipe sub-customers
+  //       that MyAdmin omits.  Strip " ST - NNNN" and " - NNNN" suffixes on the
+  //       right side of the pipe so both sources normalise to the same key.
+  //       e.g. QB  "G&W Equipment Inc. | Charlotte NC - 0140"
+  //            MA  "G&W Equipment Inc. | Charlotte"
+  //            both → "g&w equipment inc | charlotte"
+  if (s.contains(' | ')) {
+    // Strip trailing " ST - NNNN" (state abbrev + dash + store number)
+    s = s.replaceFirst(
+        RegExp(r'\s+[A-Z]{2}\s+-\s+\d+$'), '');
+    // Also strip a bare " - NNNN" store-number suffix without state abbrev
+    s = s.replaceFirst(
+        RegExp(r'\s+-\s+\d+$'), '');
+  } else {
+    // Colon parent prefix
+    final colonIdx = s.indexOf(':');
+    if (colonIdx > 0 && colonIdx < s.length - 1) {
+      s = s.substring(colonIdx + 1).trim();
+    }
   }
   // 4. Lowercase and collapse whitespace
   s = s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -586,16 +611,30 @@ String _normKey(String name) {
   //    Remove commas, periods, apostrophes, and backticks.
   s = s.replaceAll(RegExp(r"[,.'`]"), '').replaceAll(RegExp(r'\s+'), ' ').trim();
   // 7. Strip trailing legal-entity suffixes that vary between QB and MyAdmin.
-  //    e.g. "Acme LLC" vs "Acme" / "Smith Co" vs "Smith Company" not handled
-  //    but "Smith LLC" vs "Smith" will now match.
+  //    Only strip from the last segment (after pipe if present) so company
+  //    names embedded in the parent portion are preserved.
   //    Order matters: check longer patterns first (llc before lc, etc.)
-  s = s.replaceFirst(
-      RegExp(
-          r'\s+(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
-          r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|'
-          r'dba|d\.?b\.?a\.?)$',
-          caseSensitive: false),
-      '').trim();
+  final pipeIdx = s.lastIndexOf(' | ');
+  if (pipeIdx >= 0) {
+    // Strip legal suffix from the child/location segment only
+    final parent = s.substring(0, pipeIdx);
+    var   child  = s.substring(pipeIdx + 3);
+    child = child.replaceFirst(
+        RegExp(
+            r'\s+(llc|llc|inc|incorporated|corp|corporation|'
+            r'ltd|limited|co|company|lp|llp|pllc|pc|dba)$',
+            caseSensitive: false),
+        '').trim();
+    s = '$parent | $child';
+  } else {
+    s = s.replaceFirst(
+        RegExp(
+            r'\s+(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
+            r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|'
+            r'dba|d\.?b\.?a\.?)$',
+            caseSensitive: false),
+        '').trim();
+  }
   // 8. Collapse any double-spaces introduced by suffix stripping
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
   return s;
