@@ -16,6 +16,7 @@ import '../services/cloud_sync_service.dart';
 import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
+import '../services/plan_mapping_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -453,18 +454,18 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         itemLower.contains('smarterai');
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
-        !isCameraSkuItem) continue;
+        !isCameraSkuItem) { continue; }
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
         itemLower.contains('shipping') ||
         itemLower.contains('early term') ||
-        itemLower.contains('mkt-fee')) continue;
+        itemLower.contains('mkt-fee')) { continue; }
 
     // Qty column R — number of devices billed on this line
     final qtyRaw = gc(qtyIdx).replaceAll(',', '');
     final qty    = double.tryParse(qtyRaw) ?? 0.0;
-    if (qty <= 0) continue; // skip lines with no devices
+    if (qty <= 0) { continue; } // skip lines with no devices
 
     final amount =
         amtIdx >= 0
@@ -513,14 +514,14 @@ String _extractPlanLabel(String item) {
   // ── Camera product lines ──────────────────────────────────────────────────
   // Surfsight / SS camera lines
   if (lower.contains('surfsight') || lower.contains('ss service') ||
-      lower.contains('ss camera')) return 'Surfsight';
+      lower.contains('ss camera')) { return 'Surfsight'; }
 
   // Go Focus Plus must be checked before Go Focus (longer match wins)
   if (lower.contains('go focus plus') || lower.contains('gofocus plus') ||
-      lower.contains('focus plus')) return 'Go Focus Plus';
+      lower.contains('focus plus')) { return 'Go Focus Plus'; }
 
   // Go Focus (standalone — not Plus)
-  if (lower.contains('go focus') || lower.contains('gofocus')) return 'Go Focus';
+  if (lower.contains('go focus') || lower.contains('gofocus')) { return 'Go Focus'; }
 
   // Smarter AI
   if (lower.contains('smarter ai') || lower.contains('smarterai')) return 'Smarter AI';
@@ -541,7 +542,7 @@ String _extractPlanLabel(String item) {
     if (il.contains('pro')) return 'Pro';
     if (il.contains('hos')) return 'HOS';
     if (il.contains('go plan') || il == 'go' || il.endsWith('(go)') ||
-        il.startsWith('go')) return 'GO';
+        il.startsWith('go')) { return 'GO'; }
     if (il.contains('regulatory')) return 'Regulatory';
     if (il.contains('base')) return 'Base';
     if (il.contains('suspend')) return 'Suspend';
@@ -565,21 +566,11 @@ String _extractPlanLabel(String item) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Maps a raw MyAdmin billing plan string to a short display label.
-/// Used to build the active plan breakdown on the billing compare card.
+/// Maps a raw MyAdmin billing plan string to a short QB SKU label.
+/// Delegates to PlanMappingService (user-configurable in Settings → Plan Mapping).
+/// Falls back to first-word heuristic if no mapping matches.
 String _shortPlanLabel(String billingPlan) {
-  final l = billingPlan.toLowerCase().trim();
-  if (l.isEmpty) return 'Unknown';
-  if (l.contains('proplus') || l.contains('pro plus')) return 'ProPlus';
-  if (l.contains('pro'))        return 'Pro';
-  if (l.contains('hos'))        return 'HOS';
-  if (l.contains('base'))       return 'Base';
-  if (l.contains('regulatory')) return 'Regulatory';
-  if (l.contains('predictive')) return 'Coach';
-  if (l.contains('go'))         return 'GO';
-  // Fallback: first word of the plan name, max 8 chars
-  final first = billingPlan.trim().split(RegExp(r'\s+')).first;
-  return first.length > 8 ? first.substring(0, 8) : first;
+  return PlanMappingService.resolve(billingPlan);
 }
 
 /// Normalise a customer name for cross-source matching.
@@ -1163,14 +1154,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // ── QB billed breakdown by category ─────────────────────────────────
       // Derive GPS vs Camera billed counts from QB plan labels for accurate
       // side-by-side comparison on the card.
-      const _cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'};
+      const cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI'};
       int qbGpsBilled = 0;
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
       for (final line in dedupedLines) {
         final lbl = line.planLabel;
         final lblLower = lbl.toLowerCase();
-        if (_cameraLabels.contains(lbl)) {
+        if (cameraLabels.contains(lbl)) {
           qbCamBilled += line.qty.round();
         } else if (lblLower.contains('suspend')) {
           qbSuspendedBilled += line.qty.round();

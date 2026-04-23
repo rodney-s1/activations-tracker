@@ -3,16 +3,17 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/qb_customer.dart';
 import '../models/qb_ignore_keyword.dart';
+import '../models/plan_mapping.dart';
 import '../services/app_provider.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
+import '../services/plan_mapping_service.dart';
 import '../services/settings_export_service.dart';
 import '../utils/app_theme.dart';
 class SettingsScreen extends StatefulWidget {
@@ -29,7 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 3, vsync: this);
+    _tabs = TabController(length: 4, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -61,6 +62,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           tabs: const [
             Tab(icon: Icon(Icons.business, size: 18), text: 'QB Customers'),
             Tab(icon: Icon(Icons.filter_list, size: 18), text: 'QB Filters'),
+            Tab(icon: Icon(Icons.map, size: 18), text: 'Plan Mapping'),
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
           ],
         ),
@@ -70,6 +72,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         children: const [
           _QbCustomersTab(),
           _QbFiltersTab(),
+          _PlanMappingTab(),
           _BackupRestoreTab(),
         ],
       ),
@@ -462,6 +465,7 @@ class _QbCustomerTileState extends State<_QbCustomerTile> {
                     if (mounted) setState(() {});
                     // Notify AppProvider so QB Verify re-reads the flag
                     if (mounted) {
+                      // ignore: use_build_context_synchronously
                       context.read<AppProvider>().notifyQbCustomersChanged();
                     }
                   }
@@ -724,6 +728,7 @@ class _QbFiltersTab extends StatefulWidget {
 
 class _QbFiltersTabState extends State<_QbFiltersTab> {
   final _ctrl = TextEditingController();
+  // ignore: unused_field
   String _pendingKeyword = ''; // mirrors _ctrl text — survives focus-loss on web
   List<QbIgnoreKeyword> _keywords = [];
 
@@ -1236,7 +1241,415 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// TAB 3 — Backup / Restore
+// TAB 3 — Plan Mapping
+// ════════════════════════════════════════════════════════════════════════════
+
+class _PlanMappingTab extends StatefulWidget {
+  const _PlanMappingTab();
+  @override
+  State<_PlanMappingTab> createState() => _PlanMappingTabState();
+}
+
+class _PlanMappingTabState extends State<_PlanMappingTab> {
+  List<PlanMapping> _mappings = [];
+  final _myAdminCtrl = TextEditingController();
+  final _qbCtrl      = TextEditingController();
+  PlanMapping? _editing; // non-null when editing an existing row inline
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAsync();
+  }
+
+  @override
+  void dispose() {
+    _myAdminCtrl.dispose();
+    _qbCtrl.dispose();
+    super.dispose();
+  }
+
+  void _load() => setState(() => _mappings = PlanMappingService.getAll());
+
+  Future<void> _loadAsync() async {
+    await PlanMappingService.ensureOpen();
+    _load();
+  }
+
+  Future<void> _add() async {
+    final ma = _myAdminCtrl.text.trim();
+    final qb = _qbCtrl.text.trim();
+    if (ma.isEmpty || qb.isEmpty) return;
+    await PlanMappingService.add(ma, qb);
+    _myAdminCtrl.clear();
+    _qbCtrl.clear();
+    _load();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Mapping "$ma → $qb" added.'),
+            backgroundColor: AppTheme.green,
+            duration: const Duration(seconds: 2)),
+      );
+    }
+  }
+
+  Future<void> _saveEdit(PlanMapping m) async {
+    final ma = _myAdminCtrl.text.trim();
+    final qb = _qbCtrl.text.trim();
+    if (ma.isEmpty || qb.isEmpty) return;
+    await PlanMappingService.update(m, ma, qb);
+    setState(() => _editing = null);
+    _myAdminCtrl.clear();
+    _qbCtrl.clear();
+    _load();
+  }
+
+  Future<void> _delete(PlanMapping m) async {
+    await PlanMappingService.delete(m);
+    if (_editing == m) {
+      setState(() => _editing = null);
+      _myAdminCtrl.clear();
+      _qbCtrl.clear();
+    }
+    _load();
+  }
+
+  Future<void> _resetDefaults() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reset to Defaults?'),
+        content: const Text(
+            'This will remove all custom mappings and restore the built-in defaults.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.amber),
+              child: const Text('Reset')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await PlanMappingService.resetToDefaults();
+    setState(() => _editing = null);
+    _myAdminCtrl.clear();
+    _qbCtrl.clear();
+    _load();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Plan mappings reset to defaults.'),
+            backgroundColor: AppTheme.green),
+      );
+    }
+  }
+
+  void _startEdit(PlanMapping m) {
+    setState(() => _editing = m);
+    _myAdminCtrl.text = m.myAdminPlan;
+    _qbCtrl.text      = m.qbLabel;
+  }
+
+  void _cancelEdit() {
+    setState(() => _editing = null);
+    _myAdminCtrl.clear();
+    _qbCtrl.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = _editing != null;
+    return Column(
+      children: [
+        // ── Info banner ─────────────────────────────────────────────────
+        Container(
+          width: double.infinity,
+          color: AppTheme.navyDark,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: const Text(
+            'Map MyAdmin billing plan names to QB SKU labels. '
+            'The audit uses these mappings to show a plan breakdown on each '
+            'customer card (e.g. "GO 28 · ProPlus 6"). '
+            'Matching is case-insensitive substring — the first matching rule wins.',
+            style: TextStyle(fontSize: 11, color: Colors.white70),
+          ),
+        ),
+
+        // ── Add / Edit form ─────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyMid,
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isEditing ? 'Edit Mapping' : 'Add Mapping',
+                style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.tealLight),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _myAdminCtrl,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'MyAdmin plan substring…',
+                        hintStyle: const TextStyle(
+                            fontSize: 11, color: Colors.white38),
+                        filled: true,
+                        fillColor: AppTheme.navyDark,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6),
+                            borderSide: BorderSide.none),
+                        suffixIcon: _myAdminCtrl.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear,
+                                    size: 14, color: Colors.white38),
+                                onPressed: () => setState(
+                                    () => _myAdminCtrl.clear()))
+                            : null,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      onSubmitted: (_) => isEditing ? _saveEdit(_editing!) : _add(),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Icon(Icons.arrow_forward,
+                        size: 16, color: AppTheme.tealLight),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _qbCtrl,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'QB label (e.g. GO, ProPlus)…',
+                        hintStyle: const TextStyle(
+                            fontSize: 11, color: Colors.white38),
+                        filled: true,
+                        fillColor: AppTheme.navyDark,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(6),
+                            borderSide: BorderSide.none),
+                        suffixIcon: _qbCtrl.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear,
+                                    size: 14, color: Colors.white38),
+                                onPressed: () =>
+                                    setState(() => _qbCtrl.clear()))
+                            : null,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                      onSubmitted: (_) => isEditing ? _saveEdit(_editing!) : _add(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (isEditing) ...[
+                    IconButton(
+                      icon: const Icon(Icons.check_circle,
+                          color: AppTheme.green, size: 22),
+                      tooltip: 'Save',
+                      onPressed: () => _saveEdit(_editing!),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.cancel,
+                          color: Colors.white38, size: 22),
+                      tooltip: 'Cancel',
+                      onPressed: _cancelEdit,
+                    ),
+                  ] else
+                    IconButton(
+                      icon: const Icon(Icons.add_circle,
+                          color: AppTheme.teal, size: 22),
+                      tooltip: 'Add',
+                      onPressed: _add,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        // ── Table header ────────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyDark,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Row(
+            children: const [
+              Expanded(
+                  flex: 5,
+                  child: Text('MyAdmin Billing Plan (substring)',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white54,
+                          letterSpacing: 0.5))),
+              Expanded(
+                  flex: 3,
+                  child: Text('QB Label',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white54,
+                          letterSpacing: 0.5))),
+              SizedBox(width: 80),
+            ],
+          ),
+        ),
+
+        // ── Mapping list ────────────────────────────────────────────────
+        Expanded(
+          child: _mappings.isEmpty
+              ? const Center(
+                  child: Text('No mappings yet.',
+                      style: TextStyle(color: AppTheme.textSecondary)))
+              : ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 80),
+                  itemCount: _mappings.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, color: AppTheme.divider),
+                  itemBuilder: (ctx, i) {
+                    final m = _mappings[i];
+                    final isEditingThis = _editing == m;
+                    return Container(
+                      color: isEditingThis
+                          ? AppTheme.teal.withValues(alpha: 0.06)
+                          : null,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            flex: 5,
+                            child: Row(
+                              children: [
+                                if (m.isDefault)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 6),
+                                    child: Tooltip(
+                                      message: 'Built-in default',
+                                      child: Icon(Icons.lock_outline,
+                                          size: 11,
+                                          color: Colors.white.withValues(alpha: 0.25)),
+                                    ),
+                                  ),
+                                Expanded(
+                                  child: Text(
+                                    m.myAdminPlan,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: isEditingThis
+                                            ? AppTheme.tealLight
+                                            : AppTheme.textPrimary),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            flex: 3,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.teal.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                    color:
+                                        AppTheme.teal.withValues(alpha: 0.3)),
+                              ),
+                              child: Text(
+                                m.qbLabel,
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.tealLight),
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: 80,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                IconButton(
+                                  icon: Icon(Icons.edit_outlined,
+                                      size: 16,
+                                      color: isEditingThis
+                                          ? AppTheme.teal
+                                          : Colors.white38),
+                                  tooltip: 'Edit',
+                                  onPressed: isEditingThis
+                                      ? _cancelEdit
+                                      : () => _startEdit(m),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 16, color: Colors.white38),
+                                  tooltip: 'Delete',
+                                  onPressed: () => _delete(m),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                      minWidth: 32, minHeight: 32),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+
+        // ── Footer: reset button ────────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: const BoxDecoration(
+            color: AppTheme.navyDark,
+            border: Border(top: BorderSide(color: AppTheme.divider)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('${_mappings.length} mapping${_mappings.length == 1 ? '' : 's'}',
+                  style: const TextStyle(
+                      fontSize: 11, color: Colors.white54)),
+              TextButton.icon(
+                onPressed: _resetDefaults,
+                icon: const Icon(Icons.restore, size: 14),
+                label: const Text('Reset to Defaults',
+                    style: TextStyle(fontSize: 11)),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppTheme.amber,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 6),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 4 — Backup / Restore
 // ════════════════════════════════════════════════════════════════════════════
 
 class _BackupRestoreTab extends StatelessWidget {

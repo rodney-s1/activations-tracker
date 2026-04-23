@@ -16,6 +16,7 @@ import 'services/cloud_sync_service.dart';
 import 'services/csv_persist_service.dart';
 import 'services/customer_rate_plan_override_service.dart';
 import 'services/item_price_list_service.dart';
+import 'services/plan_mapping_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_shell.dart';
 import 'utils/app_theme.dart';
@@ -33,6 +34,7 @@ void main() async {
   await CloudSyncService.init();
   await CustomerRatePlanOverrideService.init();
   await ItemPriceListService.init();
+  await PlanMappingService.init();
 
   // Initialise Google Sign-In — attempts silent restore of previous session.
   await AuthService.instance.init();
