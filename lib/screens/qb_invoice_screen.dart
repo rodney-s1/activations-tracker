@@ -21,7 +21,7 @@ import '../utils/formatters.dart';
 
 // ── Enums & Models ────────────────────────────────────────────────────────────
 
-enum VerifyStatus { match, overbilled, underbilled, qbOnly, activeOnly, cuaUnknown }
+enum VerifyStatus { match, overbilled, underbilled, qbOnly, activeOnly }
 
 /// A single device row parsed from the MyAdmin Full Report
 class MyAdminDevice {
@@ -153,11 +153,6 @@ class QbCustomerSummary {
   /// CUA customers only get billed for Active devices (not Suspended / Never Activated).
   final bool isCua;
 
-  /// True when this customer was NOT found in the QB Customer List at all.
-  /// isCua defaults to false in this case, but the billing rule may be wrong.
-  /// The user can manually override isCua via the card until QB data is updated.
-  final bool cuaStatusUnknown;
-
   /// Raw jobType from Column AK of the QB Customer List (e.g. "Standard", "Charge Upon Activation:Hanover").
   /// Empty string if not found in QB Customer List.
   final String jobType;
@@ -182,16 +177,14 @@ class QbCustomerSummary {
     this.qbSuspendedBilled = 0,
     required this.activeDevices,
     this.isCua = false,
-    this.cuaStatusUnknown = false,
     this.jobType = '',
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
   /// Unknown devices are visible in the list but excluded from the diff calculation.
-  /// cuaUnknown: customer appears in MyAdmin but was not found in the QB Customer List,
-  /// so CUA status is unknown — the billing rule applied may be wrong.
+  /// Standard is the default for all customers — CUA is set only via QB Customer List
+  /// or a manual per-session override on the card.
   VerifyStatus get status {
-    if (cuaStatusUnknown) return VerifyStatus.cuaUnknown;
     if (billedCount == 0 && activeCount == 0) return VerifyStatus.match;
     if (billedCount > 0 && activeCount == 0) return VerifyStatus.qbOnly;
     if (billedCount == 0 && activeCount > 0) return VerifyStatus.activeOnly;
@@ -711,7 +704,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   final Set<String> _expanded = {};
 
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
-  /// Populated when the user taps Standard/CUA toggle on a cuaUnknown card.
+  /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
+  /// Applied when the user taps the Standard/CUA toggle on any card.
   final Map<String, bool> _cuaOverrides = {};
 
   /// True once the user has clicked "Run Audit" — gates the results view.
@@ -722,7 +716,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 5, vsync: this);
+    _tabCtrl = TabController(length: 4, vsync: this);
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
@@ -1150,18 +1144,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         }
       }
 
-      // cuaStatusUnknown: true when the customer was not found in the QB
-      // Customer List AND the user has not set a manual override.
-      final hasManualOverride = manualOverride != null;
-      final cuaStatusUnknown = !hasManualOverride &&
-          !isCua &&
-          jobType.isEmpty &&
-          QbCustomerService.box.isOpen &&
-          cuaMap[displayName] == null &&
-          cuaMap[normDisplay] == null &&
-          cuaMap[_qbDisplayNameCache[key] ?? key] == null &&
-          cuaMap[key] == null;
-
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
         // billedCount = sum of Qty across deduped lines only (excludes prorated invoices)
@@ -1183,7 +1165,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbSuspendedBilled: qbSuspendedBilled,
         activeDevices: devices,
         isCua: isCua,
-        cuaStatusUnknown: cuaStatusUnknown,
         jobType: jobType,
       );
     }).toList();
@@ -1238,7 +1219,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbSuspendedBilled: existing.qbSuspendedBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:            existing.isCua,
-            cuaStatusUnknown: existing.cuaStatusUnknown,
             jobType:          existing.jobType,
           );
         }
@@ -1337,7 +1317,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
             isCua:            parent.isCua,
-            cuaStatusUnknown: parent.cuaStatusUnknown,
             jobType:          parent.jobType,
           );
         }
@@ -1407,7 +1386,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
           isCua:            parent.isCua,
-          cuaStatusUnknown: parent.cuaStatusUnknown,
           jobType:          parent.jobType,
         );
 
@@ -1483,11 +1461,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             .where((s) => s.status == VerifyStatus.qbOnly)
             .toList();
         break;
-      case 4: // CUA Unknown — customer not found in QB Customer List
-        list = all
-            .where((s) => s.status == VerifyStatus.cuaUnknown)
-            .toList();
-        break;
       default:
         list = all;
     }
@@ -1516,9 +1489,6 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .where((s) => s.status == VerifyStatus.activeOnly).length;
     final qbOnlyCount = summaries
         .where((s) => s.status == VerifyStatus.qbOnly).length;
-    final cuaUnknownCount = summaries
-        .where((s) => s.status == VerifyStatus.cuaUnknown).length;
-
     final showTabs = _auditRan && summaries.isNotEmpty;
 
     return Scaffold(
@@ -1565,15 +1535,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       ],
                     ]),
                   ),
-                  Tab(
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      const Text('CUA?'),
-                      if (cuaUnknownCount > 0) ...[
-                        const SizedBox(width: 4),
-                        _CountBadge(cuaUnknownCount, Colors.orange),
-                      ],
-                    ]),
-                  ),
+
                 ],
               )
             : null,
@@ -2401,7 +2363,6 @@ class _CustomerVerifyCard extends StatelessWidget {
       case VerifyStatus.underbilled: return AppTheme.red;
       case VerifyStatus.qbOnly:      return Colors.grey;
       case VerifyStatus.activeOnly:  return AppTheme.red;
-      case VerifyStatus.cuaUnknown:  return Colors.orange;
     }
   }
 
@@ -2412,7 +2373,6 @@ class _CustomerVerifyCard extends StatelessWidget {
       case VerifyStatus.underbilled: return Icons.error;
       case VerifyStatus.qbOnly:      return Icons.help_outline;
       case VerifyStatus.activeOnly:  return Icons.money_off;
-      case VerifyStatus.cuaUnknown:  return Icons.manage_accounts;
     }
   }
 
@@ -2424,7 +2384,6 @@ class _CustomerVerifyCard extends StatelessWidget {
       case VerifyStatus.underbilled: return 'Underbilled';
       case VerifyStatus.qbOnly:      return 'QB Only – No Devices';
       case VerifyStatus.activeOnly:  return 'Not Billed';
-      case VerifyStatus.cuaUnknown:  return 'CUA Unknown';
     }
   }
 
@@ -2574,8 +2533,9 @@ class _CustomerVerifyCard extends StatelessWidget {
                     ),
                   ],
 
-                  // ── CUA Unknown override buttons ────────────────────────
-                  if (summary.status == VerifyStatus.cuaUnknown && onCuaOverride != null) ...[
+                  // ── Standard / CUA type toggle (shown for non-CUA cards) ─────
+                  // Standard is the default. Tap CUA only for approved CUA accounts.
+                  if (onCuaOverride != null) ...[
                     const SizedBox(height: 8),
                     Row(
                       children: [
@@ -3617,14 +3577,6 @@ class _DiffCallout extends StatelessWidget {
                 'with no matching devices in MyAdmin. '
                 'Account may be closed — verify before sending invoice.';
         break;
-      case VerifyStatus.cuaUnknown:
-        color = Colors.orange;
-        icon  = Icons.manage_accounts;
-        msg   = 'This customer was not found in the QB Customer List — '
-                'billing type (Standard vs CUA) is unknown. '
-                'Use the buttons below to tag the correct type so the '
-                'billable count is calculated correctly.';
-        break;
       default:
         return const SizedBox.shrink();
     }
@@ -3676,7 +3628,6 @@ class _SummaryFooter extends StatelessWidget {
         case VerifyStatus.underbilled: statusLabel = 'Underbilled'; break;
         case VerifyStatus.activeOnly:  statusLabel = 'Not Billed'; break;
         case VerifyStatus.qbOnly:      statusLabel = 'QB Only - No Devices'; break;
-        case VerifyStatus.cuaUnknown:  statusLabel = 'CUA Unknown'; break;
       }
       String csvEsc(String v) {
         if (v.contains(',') || v.contains('"') || v.contains('\n')) {
