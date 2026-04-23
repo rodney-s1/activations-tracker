@@ -1068,6 +1068,52 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       final goFocusCount     = billableCameras.where((d) => d.isGoFocus).length;
       final goFocusPlusCount = billableCameras.where((d) => d.isGoFocusPlus).length;
 
+      // ── Deduplicate prorated invoices ────────────────────────────────────
+      // QB exports can contain two invoices for the same customer in the same
+      // month: the standard recurring invoice and a prorated invoice for devices
+      // that activated mid-cycle.  Summing both would double the billed count.
+      //
+      // Strategy: group lines by planLabel, find the most-recent invoice date
+      // per group, then keep only lines from that invoice date.  If all lines
+      // share the same invoice date there is nothing to deduplicate.
+      final List<QbInvoiceLine> dedupedLines;
+      if (qbLines.isEmpty) {
+        dedupedLines = qbLines;
+      } else {
+        // Collect the latest date seen for each planLabel
+        final latestDateByLabel = <String, String>{};
+        for (final line in qbLines) {
+          final lbl = line.planLabel.isEmpty ? '__other__' : line.planLabel;
+          final existing = latestDateByLabel[lbl];
+          if (existing == null || _compareDates(line.date, existing) > 0) {
+            latestDateByLabel[lbl] = line.date;
+          }
+        }
+        // If every label's latest date is the same, no prorated invoice exists
+        final uniqueDates = latestDateByLabel.values.toSet();
+        if (uniqueDates.length == 1) {
+          // All lines share one date — check whether any older-dated lines exist
+          final singleDate = uniqueDates.first;
+          final hasOlderLines = qbLines.any((l) => l.date != singleDate && l.date.isNotEmpty);
+          if (!hasOlderLines) {
+            dedupedLines = qbLines; // nothing to drop
+          } else {
+            // Keep only lines from the most-recent date overall
+            final latestOverall = qbLines
+                .map((l) => l.date)
+                .where((d) => d.isNotEmpty)
+                .reduce((a, b) => _compareDates(a, b) >= 0 ? a : b);
+            dedupedLines = qbLines.where((l) => l.date == latestOverall || l.date.isEmpty).toList();
+          }
+        } else {
+          // Multiple dates exist — keep each planLabel's lines from its latest date only
+          dedupedLines = qbLines.where((l) {
+            final lbl = l.planLabel.isEmpty ? '__other__' : l.planLabel;
+            return l.date == latestDateByLabel[lbl] || l.date.isEmpty;
+          }).toList();
+        }
+      }
+
       // ── QB billed breakdown by category ─────────────────────────────────
       // Derive GPS vs Camera billed counts from QB plan labels for accurate
       // side-by-side comparison on the card.
@@ -1075,7 +1121,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       int qbGpsBilled = 0;
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
-      for (final line in qbLines) {
+      for (final line in dedupedLines) {
         final lbl = line.planLabel;
         final lblLower = lbl.toLowerCase();
         if (_cameraLabels.contains(lbl)) {
@@ -1089,10 +1135,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
-        // billedCount = sum of Qty across all QB lines (devices invoiced, not row count)
-        billedCount: qbLines.fold(0, (s, l) => s + l.qty.round()),
-        totalBilled: qbLines.fold(0.0, (s, l) => s + l.amount),
-        qbLines: qbLines,
+        // billedCount = sum of Qty across deduped lines only (excludes prorated invoices)
+        billedCount: dedupedLines.fold(0, (s, l) => s + l.qty.round()),
+        totalBilled: dedupedLines.fold(0.0, (s, l) => s + l.amount),
+        qbLines: dedupedLines,
         activeCount: totalBillable,
         unknownCount: unknownDeviceCount,
         hanoverCount: hanoverExcluded,
@@ -1274,6 +1320,75 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
     }
 
+    // ── Pipe-format auto parent-child roll-up ─────────────────────────────
+    // QuickBooks sub-customers exported with a pipe separator
+    // (e.g. "G&W Equipment Inc. | Charlotte") are automatically children of
+    // the part before the pipe ("G&W Equipment Inc.").  We don't require a
+    // manual parentMap entry for these — detect and merge them here.
+    {
+      // Build a lookup of norm-key → index for all current summaries
+      Map<String, int> normIndex() {
+        final m = <String, int>{};
+        for (int i = 0; i < summaries.length; i++) {
+          m[_normKey(summaries[i].customerName)] = i;
+        }
+        return m;
+      }
+
+      final toRemovePipe = <int>{};
+
+      // Collect every summary whose customerName contains ' | '
+      // (after stripping device-type suffixes like {Cameras})
+      for (int ci = 0; ci < summaries.length; ci++) {
+        final rawName = summaries[ci].customerName;
+        // Strip {Cameras} / (location) suffixes before checking for pipe
+        final strippedName = _stripLocation(rawName);
+        if (!strippedName.contains(' | ')) continue;
+
+        // The parent is everything before the pipe
+        final parentRaw = strippedName.substring(0, strippedName.indexOf(' | ')).trim();
+        final parentNorm = _normKey(parentRaw);
+
+        // Find the parent summary (may or may not exist yet in our list)
+        final idx = normIndex();
+        final pi = idx[parentNorm];
+        if (pi == null || pi == ci) continue; // no matching parent row, skip
+
+        final child  = summaries[ci];
+        final parent = summaries[pi];
+
+        // Merge child device counts into the parent
+        summaries[pi] = QbCustomerSummary(
+          customerName:  parent.customerName,
+          billedCount:   parent.billedCount,
+          totalBilled:   parent.totalBilled,
+          qbLines:       parent.qbLines,
+          activeCount:   parent.activeCount + child.activeCount,
+          unknownCount:  parent.unknownCount + child.unknownCount,
+          hanoverCount:  parent.hanoverCount + child.hanoverCount,
+          hanoverCsQty:  parent.hanoverCsQty + child.hanoverCsQty,
+          cameraCount:   parent.cameraCount  + child.cameraCount,
+          geotabCount:   parent.geotabCount  + child.geotabCount,
+          suspendedGeotabCount: parent.suspendedGeotabCount + child.suspendedGeotabCount,
+          neverActivatedGeotabCount: parent.neverActivatedGeotabCount + child.neverActivatedGeotabCount,
+          qbGpsBilled:      parent.qbGpsBilled,
+          qbCamBilled:      parent.qbCamBilled,
+          qbSuspendedBilled: parent.qbSuspendedBilled,
+          goFocusCount:     parent.goFocusCount     + child.goFocusCount,
+          goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
+          activeDevices: [...parent.activeDevices, ...child.activeDevices],
+          isCua:    parent.isCua,
+          jobType:  parent.jobType,
+        );
+
+        toRemovePipe.add(ci);
+      }
+
+      for (final idx in toRemovePipe.toList().reversed) {
+        summaries.removeAt(idx);
+      }
+    }
+
     // Sort: issues first, then alphabetically
     summaries.sort((a, b) {
       final aOk = a.status == VerifyStatus.match ? 1 : 0;
@@ -1292,6 +1407,27 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     String s = _stripCurlyBraceSuffix(name); // strip {Cameras} etc first
     s = _stripParenSuffix(s);                // then strip (location) suffix
     return s;
+  }
+
+  /// Compare two QB date strings (M/D/YYYY or MM/DD/YYYY).
+  /// Returns negative if [a] is earlier, 0 if equal, positive if [a] is later.
+  static int _compareDates(String a, String b) {
+    DateTime? parseDate(String d) {
+      if (d.isEmpty) return null;
+      final parts = d.split('/');
+      if (parts.length != 3) return null;
+      final month = int.tryParse(parts[0]);
+      final day   = int.tryParse(parts[1]);
+      final year  = int.tryParse(parts[2]);
+      if (month == null || day == null || year == null) return null;
+      return DateTime(year, month, day);
+    }
+    final da = parseDate(a);
+    final db = parseDate(b);
+    if (da == null && db == null) return 0;
+    if (da == null) return -1;
+    if (db == null) return 1;
+    return da.compareTo(db);
   }
 
   // ── Filter for tab ────────────────────────────────────────────────────────
