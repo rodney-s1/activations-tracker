@@ -474,9 +474,15 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         itemLower.contains('smarter ai') ||
         itemLower.contains('smarterai') ||
         itemLower.contains('sensata');
+    // BlueArrow Fuel SKU: "BlueArrow Fuel:BlueArrow Fuel Service"
+    final isFuelSkuItem = itemLower.contains('bluearrow') ||
+        itemLower.contains('blue arrow') ||
+        (itemLower.contains('fuel') &&
+            (itemLower.contains('service') || itemLower.contains('fee')));
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
-        !isCameraSkuItem) { continue; }
+        !isCameraSkuItem &&
+        !isFuelSkuItem) { continue; }
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
