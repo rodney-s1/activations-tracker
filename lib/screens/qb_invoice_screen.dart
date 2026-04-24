@@ -3615,6 +3615,11 @@ class _MyAdminPlanTable extends StatelessWidget {
       Color labelColor = AppTheme.textPrimary;
       if (isSusp) labelColor = Colors.orange.shade300;
       if (isNa)   labelColor = AppTheme.amber;
+      final displayLabel = isSusp
+          ? '${e.key} – Suspended'
+          : isNa
+              ? '${e.key} – Never Activated'
+              : e.key;
 
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3626,7 +3631,7 @@ class _MyAdminPlanTable extends StatelessWidget {
             Expanded(
               flex: 3,
               child: Text(
-                e.key,
+                displayLabel,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
@@ -4521,6 +4526,11 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
       Color labelColor = AppTheme.textPrimary;
       if (isSusp) labelColor = Colors.orange.shade300;
       if (isNa)   labelColor = AppTheme.amber;
+      final displayLabel = isSusp
+          ? '${e.key} – Suspended'
+          : isNa
+              ? '${e.key} – Never Activated'
+              : e.key;
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         color: idx.isOdd
@@ -4530,7 +4540,7 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
           children: [
             Expanded(
               child: Text(
-                e.key,
+                displayLabel,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
