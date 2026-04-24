@@ -142,10 +142,18 @@ String _normKey(String name) {
   s = s.replaceAll(RegExp(r'\s*&\s*'), ' and ');
   // Strip punctuation
   s = s.replaceAll(RegExp(r"[,.'`]"), '').replaceAll(RegExp(r'\s+'), ' ').trim();
-  // Strip trailing legal suffixes
-  s = s.replaceAll(
-      RegExp(
-          r'\s+\b(inc|llc|ltd|corp|co|company|group|enterprises|services|solutions|associates|consulting)\b\.?$'),
-      '').trim();
+  // Multi-pass: strip trailing descriptor/legal suffixes until stable.
+  // e.g. "Wholesale Co." → strips "co" → strips "wholesale" → "combs produce"
+  String prev;
+  do {
+    prev = s;
+    s = s.replaceFirst(
+        RegExp(
+            r'\s+\b(inc|llc|ltd|corp|co|company|group|enterprises|wholesale|'
+            r'holdings|international|national|systems|technologies|tech|'
+            r'industries|partners|partnership|solutions|associates|'
+            r'consulting|services|plc|lp|llp|pllc|lllp)\b\.?$'),
+        '').trim();
+  } while (s != prev);
   return s;
 }

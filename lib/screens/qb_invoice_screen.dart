@@ -746,21 +746,37 @@ String _normKey(String name) {
     // Strip legal suffix from the child/location segment only
     final parent = s.substring(0, pipeIdx);
     var   child  = s.substring(pipeIdx + 3);
-    child = child.replaceFirst(
-        RegExp(
-            r'\s+(llc|llc|inc|incorporated|corp|corporation|'
-            r'ltd|limited|co|company|lp|llp|pllc|pc|dba)$',
-            caseSensitive: false),
-        '').trim();
+    // Multi-pass: strip trailing descriptor/legal suffixes from child segment
+    // until stable so "Enterprises LLC" → strips "LLC" then "Enterprises".
+    String prevChild;
+    do {
+      prevChild = child;
+      child = child.replaceFirst(
+          RegExp(
+              r'\s+\b(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
+              r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|dba|'
+              r'group|enterprises|wholesale|holdings|international|national|'
+              r'systems|technologies|tech|industries|partners|partnership|'
+              r'solutions|associates|consulting|services|plc|lllp)\b$',
+              caseSensitive: false),
+          '').trim();
+    } while (child != prevChild);
     s = '$parent | $child';
   } else {
-    s = s.replaceFirst(
-        RegExp(
-            r'\s+(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
-            r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|'
-            r'dba|d\.?b\.?a\.?)$',
-            caseSensitive: false),
-        '').trim();
+    // Multi-pass: strip trailing descriptor/legal suffixes until stable.
+    String prev;
+    do {
+      prev = s;
+      s = s.replaceFirst(
+          RegExp(
+              r'\s+\b(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
+              r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|dba|'
+              r'group|enterprises|wholesale|holdings|international|national|'
+              r'systems|technologies|tech|industries|partners|partnership|'
+              r'solutions|associates|consulting|services|plc|lllp)\b\.?$',
+              caseSensitive: false),
+          '').trim();
+    } while (s != prev);
   }
   // 8. Collapse any double-spaces introduced by suffix stripping
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
