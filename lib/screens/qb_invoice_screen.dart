@@ -567,8 +567,12 @@ String _extractPlanLabel(String item) {
       lower.contains('telematics'))) { return 'Hitachi'; }
 
   // ── Camera product lines ──────────────────────────────────────────────────
-  if (lower.contains('surfsight') || lower.contains('ss service') ||
-      lower.contains('ss camera')) { return 'Surfsight'; }
+  // "SS Service Fee" = Surfsight Direct (vendor-portal, not in MyAdmin) — must
+  // be checked BEFORE the generic 'surfsight' catch-all so it gets its own label.
+  if (lower.contains('ss service') || lower.contains('ss camera')) {
+    return 'Surfsight Direct';
+  }
+  if (lower.contains('surfsight')) { return 'Surfsight'; }
   if (lower.contains('go focus plus') || lower.contains('gofocus plus') ||
       lower.contains('focus plus')) { return 'Go Focus Plus'; }
   if (lower.contains('go focus') || lower.contains('gofocus')) { return 'Go Focus'; }
@@ -1386,7 +1390,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // ── QB billed breakdown by category ─────────────────────────────────
       // Derive GPS vs Camera billed counts from QB plan labels for accurate
       // side-by-side comparison on the card.
-      const cameraLabels = {'Surfsight', 'Go Focus', 'Go Focus Plus', 'Smarter AI', 'Sensata'};
+      const cameraLabels = {'Surfsight', 'Surfsight Direct', 'Go Focus', 'Go Focus Plus', 'Smarter AI', 'Sensata'};
       int qbGpsBilled = 0;
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
@@ -4836,22 +4840,31 @@ class _CollapsedQbPlanTable extends StatelessWidget {
       });
 
     Widget planRow(String plan, int idx) {
-      final lines   = byPlan[plan]!;
+      final lines    = byPlan[plan]!;
       final totalQty = lines.fold(0.0, (s, l) => s + l.qty);
+      final isDirect = plan == 'Surfsight Direct';
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        color: idx.isOdd
-            ? Colors.transparent
-            : AppTheme.navyDark.withValues(alpha: 0.03),
+        color: isDirect
+            ? Colors.indigo.withValues(alpha: 0.05)
+            : (idx.isOdd
+                ? Colors.transparent
+                : AppTheme.navyDark.withValues(alpha: 0.03)),
         child: Row(
           children: [
+            if (isDirect)
+              const Padding(
+                padding: EdgeInsets.only(right: 4),
+                child: Icon(Icons.videocam_outlined,
+                    size: 11, color: Colors.indigoAccent),
+              ),
             Expanded(
               child: Text(
                 plan,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary,
+                  color: isDirect ? Colors.indigoAccent : AppTheme.textPrimary,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
@@ -4860,10 +4873,10 @@ class _CollapsedQbPlanTable extends StatelessWidget {
               totalQty == totalQty.roundToDouble()
                   ? totalQty.toInt().toString()
                   : totalQty.toStringAsFixed(1),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: AppTheme.navyAccent,
+                color: isDirect ? Colors.indigoAccent : AppTheme.navyAccent,
               ),
             ),
           ],
