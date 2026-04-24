@@ -3122,6 +3122,47 @@ class _CustomerVerifyCard extends StatelessWidget {
                       ),
                     ),
 
+                  // ── Surfsight Direct callout (vendor-portal cameras) ──
+                  if (summary.surfsightDirectCount > 0) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.indigoAccent.withValues(alpha: 0.35)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.videocam_outlined,
+                              size: 15, color: Colors.indigoAccent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.white70),
+                                children: [
+                                  TextSpan(
+                                    text: '${summary.surfsightDirectCount} Surfsight Direct',
+                                    style: const TextStyle(
+                                      color: Colors.indigoAccent,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const TextSpan(
+                                    text: ' — billed in QB under "SS Service Fee" but not'
+                                        ' visible in MyAdmin. Included in BILLABLE total.',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
                   const SizedBox(height: 12),
 
                   // ── QB billed section (grouped by plan) ───────────
@@ -4152,26 +4193,31 @@ class _DiffCallout extends StatelessWidget {
           '${summary.unknownCount == 1 ? '' : 's'} shown in list, excluded from billing count.)'
         : '';
 
+    // Build a breakdown note when Surfsight Direct cameras contribute to the total
+    final directNote = summary.surfsightDirectCount > 0
+        ? ' (${summary.activeCount} MyAdmin + ${summary.surfsightDirectCount} Surfsight Direct)'
+        : '';
+
     switch (summary.status) {
       case VerifyStatus.overbilled:
         color = AppTheme.amber;
         icon  = Icons.warning_amber;
-        msg   = '${summary.billedCount} billed vs ${summary.activeCount} billable in MyAdmin — '
+        msg   = '${summary.billedCount} billed vs ${summary.totalBillable} billable$directNote — '
                 '${summary.diff} extra line${summary.diff == 1 ? '' : 's'} in QB. '
                 'Possible duplicate invoice or closed device still being billed.$unknownNote';
         break;
       case VerifyStatus.underbilled:
         color = AppTheme.red;
         icon  = Icons.error;
-        msg   = '${summary.activeCount} billable in MyAdmin vs ${summary.billedCount} billed — '
+        msg   = '${summary.totalBillable} billable$directNote vs ${summary.billedCount} billed — '
                 '${-summary.diff} device${-summary.diff == 1 ? '' : 's'} not fully invoiced. '
                 'Revenue leak — add missing line items to QB invoice.$unknownNote';
         break;
       case VerifyStatus.activeOnly:
         color = AppTheme.red;
         icon  = Icons.money_off;
-        msg   = '${summary.activeCount} billable device${summary.activeCount == 1 ? '' : 's'} '
-                'in MyAdmin with NO QB invoice. '
+        msg   = '${summary.totalBillable} billable device${summary.totalBillable == 1 ? '' : 's'}$directNote '
+                'with NO QB invoice. '
                 'This customer is not being billed at all.$unknownNote';
         break;
       case VerifyStatus.qbOnly:
@@ -4220,7 +4266,7 @@ class _SummaryFooter extends StatelessWidget {
   void _exportCsv() {
     final buf = StringBuffer();
     // Header
-    buf.writeln('Customer,Status,Billable,Billed,Diff,GPS Billable,GPS Billed,'
+    buf.writeln('Customer,Status,Billable (Total),MA Billable,Surfsight Direct,Billed,Diff,GPS Billable,GPS Billed,'
         'CAM Billable,CAM Billed,SUSP Billable,SUSP Billed,N/A (Never Act.),'
         'CUA,Job Type,QB Total,Unknown Devices,Hanover Direct');
 
@@ -4242,7 +4288,9 @@ class _SummaryFooter extends StatelessWidget {
       buf.writeln([
         csvEsc(s.customerName),
         statusLabel,
+        s.totalBillable,
         s.activeCount,
+        s.surfsightDirectCount,
         s.billedCount,
         s.diff,
         s.geotabCount,
@@ -4277,11 +4325,12 @@ class _SummaryFooter extends StatelessWidget {
     final notBilled   = summaries
         .where((s) => s.status == VerifyStatus.activeOnly)
         .length;
-    final totalBilled   = summaries.fold(0.0, (s, c) => s + c.totalBilled);
-    final totalActive   = summaries.fold(0, (s, c) => s + c.activeCount);
-    final totalCameras  = summaries.fold(0, (s, c) => s + c.cameraCount);
-    final totalUnknown  = summaries.fold(0, (s, c) => s + c.unknownCount);
-    final totalHanover  = summaries.fold(0, (s, c) => s + c.hanoverCount);
+    final totalBilled        = summaries.fold(0.0, (s, c) => s + c.totalBilled);
+    final totalActive        = summaries.fold(0, (s, c) => s + c.totalBillable);
+    final totalDirect        = summaries.fold(0, (s, c) => s + c.surfsightDirectCount);
+    final totalCameras       = summaries.fold(0, (s, c) => s + c.cameraCount);
+    final totalUnknown       = summaries.fold(0, (s, c) => s + c.unknownCount);
+    final totalHanover       = summaries.fold(0, (s, c) => s + c.hanoverCount);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -4295,9 +4344,12 @@ class _SummaryFooter extends StatelessWidget {
           Text('$total customers',
               style:
                   const TextStyle(fontSize: 11, color: Colors.white54)),
-          Text('$totalActive billable',
-              style:
-                  const TextStyle(fontSize: 11, color: AppTheme.tealLight)),
+          Text(
+            totalDirect > 0
+                ? '$totalActive billable ($totalDirect Direct)'
+                : '$totalActive billable',
+            style: const TextStyle(fontSize: 11, color: AppTheme.tealLight),
+          ),
           if (totalCameras > 0)
             Text('$totalCameras cameras',
                 style: const TextStyle(
