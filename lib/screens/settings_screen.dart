@@ -15,7 +15,10 @@ import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/settings_export_service.dart';
+import '../services/surfsight_direct_service.dart';
 import '../utils/app_theme.dart';
+import 'surfsight_direct_screen.dart';
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -30,7 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 4, vsync: this);
+    _tabs = TabController(length: 5, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -59,21 +62,25 @@ class _SettingsScreenState extends State<SettingsScreen>
           labelColor: AppTheme.tealLight,
           unselectedLabelColor: Colors.white60,
           indicatorColor: AppTheme.teal,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: const [
             Tab(icon: Icon(Icons.business, size: 18), text: 'QB Customers'),
             Tab(icon: Icon(Icons.filter_list, size: 18), text: 'QB Filters'),
             Tab(icon: Icon(Icons.map, size: 18), text: 'Plan Mapping'),
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
+            Tab(icon: Icon(Icons.store, size: 18), text: 'Vendor Data'),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabs,
-        children: const [
-          _QbCustomersTab(),
-          _QbFiltersTab(),
-          _PlanMappingTab(),
-          _BackupRestoreTab(),
+        children: [
+          const _QbCustomersTab(),
+          const _QbFiltersTab(),
+          const _PlanMappingTab(),
+          const _BackupRestoreTab(),
+          _VendorDataTab(),
         ],
       ),
     );
@@ -2025,6 +2032,143 @@ class _SectionCard extends StatelessWidget {
                   )),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 5 — Vendor Data
+// ════════════════════════════════════════════════════════════════════════════
+
+class _VendorDataTab extends StatelessWidget {
+  _VendorDataTab();
+
+  final SurfsightDirectService _surfsightService = SurfsightDirectService();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // Section header
+        const Padding(
+          padding: EdgeInsets.only(bottom: 12),
+          child: Text(
+            'Vendor Data Sources',
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w700),
+          ),
+        ),
+        const Text(
+          'Manage data imported from external vendor portals. These records '
+          'supplement the MyAdmin device list during the QB audit so cameras '
+          'billed outside of MyAdmin are properly accounted for.',
+          style: TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        const SizedBox(height: 20),
+
+        // ── Surfsight Direct tile ──────────────────────────────────────────
+        _VendorTile(
+          icon: Icons.videocam,
+          title: 'Surfsight Direct',
+          subtitle: 'Cameras billed in QB under "Surfsight Service : SS Service Fee" '
+              'that do not appear in MyAdmin.',
+          onTap: () async {
+            await _surfsightService.load();
+            if (!context.mounted) return;
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => SurfsightDirectScreen(
+                    service: _surfsightService),
+              ),
+            );
+          },
+        ),
+
+        // ── Placeholder for future vendors ────────────────────────────────
+        const SizedBox(height: 12),
+        Opacity(
+          opacity: 0.35,
+          child: _VendorTile(
+            icon: Icons.add_circle_outline,
+            title: 'More Vendors Coming Soon',
+            subtitle: 'Additional vendor data sources (e.g. Lytx, Netradyne, '
+                'Motive) will appear here.',
+            onTap: null,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Vendor tile card ──────────────────────────────────────────────────────────
+
+class _VendorTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  const _VendorTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppTheme.navyDark,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(
+            color: AppTheme.teal.withValues(alpha: 0.3)),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppTheme.teal.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: AppTheme.tealLight, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 4),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 11)),
+                  ],
+                ),
+              ),
+              if (onTap != null)
+                const Icon(Icons.chevron_right,
+                    color: Colors.white38),
+            ],
+          ),
         ),
       ),
     );

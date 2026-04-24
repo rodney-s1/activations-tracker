@@ -19,6 +19,7 @@ import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
 import '../services/billing_schedule_service.dart';
 import '../services/plan_mapping_service.dart';
+import '../services/surfsight_direct_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -153,6 +154,10 @@ class QbCustomerSummary {
   final int qbSuspendedBilled;  // QB Suspended-SKU device count from billed lines
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
+  /// Surfsight Direct cameras: billed in QB under "SS Service Fee" but not
+  /// in MyAdmin. Looked up from SurfsightDirectService after the audit runs.
+  final int surfsightDirectCount;
+
   /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
   /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
   /// Used to show a plan breakdown in the billing compare card.
@@ -188,22 +193,27 @@ class QbCustomerSummary {
     this.activePlanCounts = const {},
     this.isCua = false,
     this.jobType = '',
+    this.surfsightDirectCount = 0,
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
   /// Unknown devices are visible in the list but excluded from the diff calculation.
   /// Standard is the default for all customers — CUA is set only via QB Customer List
   /// or a manual per-session override on the card.
+  ///
+  /// [totalBillable] = MyAdmin active devices + Surfsight Direct cameras
+  int get totalBillable => activeCount + surfsightDirectCount;
+
   VerifyStatus get status {
-    if (billedCount == 0 && activeCount == 0) return VerifyStatus.match;
-    if (billedCount > 0 && activeCount == 0) return VerifyStatus.qbOnly;
-    if (billedCount == 0 && activeCount > 0) return VerifyStatus.activeOnly;
-    if (billedCount > activeCount) return VerifyStatus.overbilled;
-    if (billedCount < activeCount) return VerifyStatus.underbilled;
+    if (billedCount == 0 && totalBillable == 0) return VerifyStatus.match;
+    if (billedCount > 0 && totalBillable == 0) return VerifyStatus.qbOnly;
+    if (billedCount == 0 && totalBillable > 0) return VerifyStatus.activeOnly;
+    if (billedCount > totalBillable) return VerifyStatus.overbilled;
+    if (billedCount < totalBillable) return VerifyStatus.underbilled;
     return VerifyStatus.match;
   }
 
-  int get diff => billedCount - activeCount; // positive = over, negative = under
+  int get diff => billedCount - totalBillable; // positive = over, negative = under
 
   /// Group QB lines by plan label for the multi-plan display.
   Map<String, List<QbInvoiceLine>> get linesByPlan {
@@ -827,6 +837,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   /// When true, dormant non-monthly customers are hidden from all tab lists.
   bool _hideNonMonthly = true;
 
+  /// Surfsight Direct camera counts (vendor portal data, not in MyAdmin).
+  final SurfsightDirectService _surfsightDirectService = SurfsightDirectService();
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -844,10 +857,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
-    // Restore previously imported CSVs + audited set + billing schedules
+    // Restore previously imported CSVs + audited set + billing schedules +
+    // Surfsight Direct vendor data
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _loadAuditedCustomers();
       await _loadBillingSchedules();
+      await _surfsightDirectService.load();
       _restorePersistedCsvs();
     });
     // Re-run restore after any cloud pull completes so MyAdmin + QB CSVs
@@ -1622,6 +1637,43 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
       for (final idx in toRemovePipe.toList().reversed) {
         summaries.removeAt(idx);
+      }
+    }
+
+    // ── Inject Surfsight Direct counts ────────────────────────────────────
+    // After all summaries are built, look up each customer's Surfsight Direct
+    // camera count from the vendor portal data and attach it.  This adds
+    // cameras that are billed in QB under "SS Service Fee" but never appear
+    // in MyAdmin, so the diff and status reflect the true billable total.
+    for (int i = 0; i < summaries.length; i++) {
+      final directCount =
+          _surfsightDirectService.countFor(summaries[i].customerName);
+      if (directCount > 0) {
+        final s = summaries[i];
+        summaries[i] = QbCustomerSummary(
+          customerName: s.customerName,
+          billedCount: s.billedCount,
+          totalBilled: s.totalBilled,
+          qbLines: s.qbLines,
+          activeCount: s.activeCount,
+          unknownCount: s.unknownCount,
+          hanoverCount: s.hanoverCount,
+          hanoverCsQty: s.hanoverCsQty,
+          cameraCount: s.cameraCount,
+          goFocusCount: s.goFocusCount,
+          goFocusPlusCount: s.goFocusPlusCount,
+          geotabCount: s.geotabCount,
+          suspendedGeotabCount: s.suspendedGeotabCount,
+          neverActivatedGeotabCount: s.neverActivatedGeotabCount,
+          qbGpsBilled: s.qbGpsBilled,
+          qbCamBilled: s.qbCamBilled,
+          qbSuspendedBilled: s.qbSuspendedBilled,
+          activeDevices: s.activeDevices,
+          activePlanCounts: s.activePlanCounts,
+          isCua: s.isCua,
+          jobType: s.jobType,
+          surfsightDirectCount: directCount,
+        );
       }
     }
 
@@ -4392,7 +4444,7 @@ class _BillingCompareRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 1),
                   Text(
-                    '${s.activeCount}',
+                    '${s.totalBillable}',
                     style: TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w800,
@@ -4400,6 +4452,15 @@ class _BillingCompareRow extends StatelessWidget {
                       height: 1.0,
                     ),
                   ),
+                  // Show breakdown sub-label when Direct cameras add to total
+                  if (s.surfsightDirectCount > 0)
+                    Text(
+                      '${s.activeCount} MA + ${s.surfsightDirectCount} Direct',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.teal.withValues(alpha: 0.65),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -4517,9 +4578,10 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
     final naRows     = sorted(naMap);
     final allRows    = [...activeRows, ...suspRows, ...naRows];
 
-    if (allRows.isEmpty) return const SizedBox.shrink();
+    final directCount = summary.surfsightDirectCount;
+    if (allRows.isEmpty && directCount == 0) return const SizedBox.shrink();
 
-    final totalQty = allRows.fold(0, (s, e) => s + e.value);
+    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount;
 
     Widget planRow(MapEntry<String, int> e, int idx,
         {bool isSusp = false, bool isNa = false}) {
@@ -4606,8 +4668,42 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
             const Divider(height: 1, color: AppTheme.divider),
             ...naRows.map((e) => planRow(e, idx++, isNa: true)),
           ],
+          // Surfsight Direct row (vendor portal cameras not in MyAdmin)
+          if (directCount > 0) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              color: Colors.indigo.withValues(alpha: 0.05),
+              child: Row(
+                children: [
+                  const Icon(Icons.videocam_outlined,
+                      size: 11, color: Colors.indigoAccent),
+                  const SizedBox(width: 4),
+                  const Expanded(
+                    child: Text(
+                      'Surfsight Direct',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.indigoAccent,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '$directCount',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.indigoAccent,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           // Total row
-          if (allRows.length > 1)
+          if (allRows.length + (directCount > 0 ? 1 : 0) > 1)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: const BoxDecoration(
