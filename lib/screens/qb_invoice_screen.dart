@@ -567,12 +567,20 @@ String _extractPlanLabel(String item) {
       lower.contains('telematics'))) { return 'Hitachi'; }
 
   // ── Camera product lines ──────────────────────────────────────────────────
-  // "SS Service Fee" = Surfsight Direct (vendor-portal, not in MyAdmin) — must
-  // be checked BEFORE the generic 'surfsight' catch-all so it gets its own label.
-  if (lower.contains('ss service') || lower.contains('ss camera')) {
+  // "Surfsight Service:SS Service Fee" = Surfsight Direct (vendor-portal cameras,
+  // not visible in MyAdmin).  Must match the PARENT prefix "surfsight service"
+  // specifically so that "Geotab Service:SS Camera Service Fee" (regular Surfsight
+  // cameras that ARE in MyAdmin) falls through to the plain 'Surfsight' label below.
+  if (lower.contains('surfsight service') ||
+      lower.contains('surfsight:') ||
+      (lower.contains('surfsight') && lower.contains('ss service'))) {
     return 'Surfsight Direct';
   }
-  if (lower.contains('surfsight')) { return 'Surfsight'; }
+  // "Geotab Service:SS Camera Service Fee" and plain surfsight SKUs → Surfsight
+  if (lower.contains('surfsight') || lower.contains('ss camera') ||
+      lower.contains('ss service')) {
+    return 'Surfsight';
+  }
   if (lower.contains('go focus plus') || lower.contains('gofocus plus') ||
       lower.contains('focus plus')) { return 'Go Focus Plus'; }
   if (lower.contains('go focus') || lower.contains('gofocus')) { return 'Go Focus'; }
