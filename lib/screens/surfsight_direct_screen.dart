@@ -536,14 +536,16 @@ class _EntryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
+    return ColoredBox(
+      color: AppTheme.cardBg,
+      child: ListTile(
       dense: true,
       contentPadding:
           const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       title: Text(
         entry.orgName,
         style: const TextStyle(
-            color: Colors.white, fontSize: 13),
+            color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w500),
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -583,7 +585,8 @@ class _EntryRow extends StatelessWidget {
           ),
         ],
       ),
-    );
+      ),  // ListTile
+    );   // ColoredBox
   }
 }
 
