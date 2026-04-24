@@ -20,6 +20,7 @@ import '../services/qb_ignore_keyword_service.dart';
 import '../services/billing_schedule_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/surfsight_direct_service.dart';
+import '../services/bluearrow_fuel_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -158,6 +159,10 @@ class QbCustomerSummary {
   /// in MyAdmin. Looked up from SurfsightDirectService after the audit runs.
   final int surfsightDirectCount;
 
+  /// BlueArrow Fuel card count: billed in QB under "BlueArrow Fuel:BlueArrow Fuel Service".
+  /// Parsed from the monthly fuel-card-count CSV and injected after the audit runs.
+  final int blueArrowFuelCount;
+
   /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
   /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
   /// Used to show a plan breakdown in the billing compare card.
@@ -194,6 +199,7 @@ class QbCustomerSummary {
     this.isCua = false,
     this.jobType = '',
     this.surfsightDirectCount = 0,
+    this.blueArrowFuelCount = 0,
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -201,8 +207,8 @@ class QbCustomerSummary {
   /// Standard is the default for all customers — CUA is set only via QB Customer List
   /// or a manual per-session override on the card.
   ///
-  /// [totalBillable] = MyAdmin active devices + Surfsight Direct cameras
-  int get totalBillable => activeCount + surfsightDirectCount;
+  /// [totalBillable] = MyAdmin active devices + Surfsight Direct cameras + BlueArrow Fuel cards
+  int get totalBillable => activeCount + surfsightDirectCount + blueArrowFuelCount;
 
   VerifyStatus get status {
     if (billedCount == 0 && totalBillable == 0) return VerifyStatus.match;
@@ -868,6 +874,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   /// Surfsight Direct camera counts (vendor portal data, not in MyAdmin).
   final SurfsightDirectService _surfsightDirectService = SurfsightDirectService();
 
+  /// BlueArrow Fuel card counts (parsed from monthly CSV import on this screen).
+  final BlueArrowFuelService _blueArrowFuelService = BlueArrowFuelService();
+  bool _fuelLoaded = false;
+  String? _fuelFileName;
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -891,6 +902,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       await _loadAuditedCustomers();
       await _loadBillingSchedules();
       await _surfsightDirectService.load();
+      // Restore fuel CSV filename (content is session-only)
+      final fuelFile = await CsvPersistService.loadFuelCsvFileName();
+      if (fuelFile != null && mounted) {
+        setState(() => _fuelFileName = fuelFile);
+      }
       _restorePersistedCsvs();
     });
     // Re-run restore after any cloud pull completes so MyAdmin + QB CSVs
@@ -1049,6 +1065,53 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     }
   }
 
+  // ── Import BlueArrow Fuel CSV (file picker) ─────────────────────────────
+
+  Future<void> _importFuelCsv() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'txt'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      String content;
+      if (file.bytes != null) {
+        content = decodeBytesToString(file.bytes!);
+      } else if (file.path != null) {
+        content = await File(file.path!).readAsString();
+      } else {
+        return;
+      }
+      await _processFuelContent(content, file.name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import error: $e'), backgroundColor: AppTheme.red),
+      );
+    }
+  }
+
+  Future<void> _processFuelContent(String content, String fileName) async {
+    final result = _blueArrowFuelService.import(content);
+    if (!mounted) return;
+    setState(() {
+      _fuelLoaded   = true;
+      _fuelFileName = fileName;
+      _auditRan     = false;
+    });
+    await CsvPersistService.saveFuelCsv(fileName: fileName);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            'BlueArrow Fuel: ${result.totalCards} fuel cards across '
+            '${result.totalCustomers} customers'),
+        backgroundColor: Colors.teal.shade700,
+      ),
+    );
+  }
+
   // ── Drag-and-drop entry point ─────────────────────────────────────────────
   // Called by _ImportBar when files are dropped onto either slot.
   // Auto-detects which file is MyAdmin vs QB by sniffing the CSV header, so
@@ -1071,15 +1134,19 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         final isQb = firstFewLines.contains('memo/description') ||
             firstFewLines.contains('sales rep') ||
             firstFewLines.contains('sales by customer');
+        // BlueArrow Fuel CSV always starts with "Resellers" on line 1 and
+        // has "Previous Count" in the header row on line 2.
+        final isFuel = firstFewLines.contains('resellers') &&
+            firstFewLines.contains('previous count');
 
-        if (!isMyAdmin && !isQb) {
+        if (!isMyAdmin && !isQb && !isFuel) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
                     'Could not detect file type for "$fileName". '
-                    'Please use the MyAdmin Device Management Full Report or '
-                    'QuickBooks Sales by Customer Detail CSV.'),
+                    'Please use the MyAdmin Full Report, QuickBooks Sales by '
+                    'Customer Detail CSV, or BlueArrow Fuel Card Count CSV.'),
                 backgroundColor: AppTheme.red,
               ),
             );
@@ -1089,6 +1156,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
         if (isMyAdmin) {
           await _processMyAdminContent(content, fileName);
+        } else if (isFuel) {
+          await _processFuelContent(content, fileName);
         } else {
           await _processQbContent(content, fileName);
         }
@@ -1705,6 +1774,44 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
     }
 
+    // ── Inject BlueArrow Fuel counts ──────────────────────────────────────
+    // If a fuel CSV was imported this session, attach the fuel card count to
+    // each matching customer so the diff and status include fuel cards.
+    if (_blueArrowFuelService.hasData) {
+      for (int i = 0; i < summaries.length; i++) {
+        final fuelCount =
+            _blueArrowFuelService.countFor(summaries[i].customerName);
+        if (fuelCount > 0) {
+          final s = summaries[i];
+          summaries[i] = QbCustomerSummary(
+            customerName: s.customerName,
+            billedCount: s.billedCount,
+            totalBilled: s.totalBilled,
+            qbLines: s.qbLines,
+            activeCount: s.activeCount,
+            unknownCount: s.unknownCount,
+            hanoverCount: s.hanoverCount,
+            hanoverCsQty: s.hanoverCsQty,
+            cameraCount: s.cameraCount,
+            goFocusCount: s.goFocusCount,
+            goFocusPlusCount: s.goFocusPlusCount,
+            geotabCount: s.geotabCount,
+            suspendedGeotabCount: s.suspendedGeotabCount,
+            neverActivatedGeotabCount: s.neverActivatedGeotabCount,
+            qbGpsBilled: s.qbGpsBilled,
+            qbCamBilled: s.qbCamBilled,
+            qbSuspendedBilled: s.qbSuspendedBilled,
+            activeDevices: s.activeDevices,
+            activePlanCounts: s.activePlanCounts,
+            isCua: s.isCua,
+            jobType: s.jobType,
+            surfsightDirectCount: s.surfsightDirectCount,
+            blueArrowFuelCount: fuelCount,
+          );
+        }
+      }
+    }
+
     // Sort: issues first, then alphabetically
     summaries.sort((a, b) {
       final aOk = a.status == VerifyStatus.match ? 1 : 0;
@@ -1863,15 +1970,20 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             myAdminDate:     _myAdminReportDate,
             qbLoaded:        _qbLoaded,
             qbFileName:      _qbFileName,
+            fuelLoaded:      _fuelLoaded,
+            fuelFileName:    _fuelFileName,
             onImportMyAdmin: _importMyAdmin,
             onImportQb:      _importQb,
+            onImportFuel:    _importFuelCsv,
             onDropFiles:     _processDroppedFiles,
           ),
 
           // ── State machine: empty → ready-to-run → results ──────────────
           if (!hasAnyData)
             _EmptyState(
-                onImportMyAdmin: _importMyAdmin, onImportQb: _importQb)
+                onImportMyAdmin: _importMyAdmin,
+                onImportQb: _importQb,
+                onImportFuel: _importFuelCsv)
           else if (!_auditRan)
             _ReadyToRunScreen(
               myAdminLoaded:   _myAdminLoaded,
@@ -1879,14 +1991,17 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               myAdminDate:     _myAdminReportDate,
               qbLoaded:        _qbLoaded,
               qbFileName:      _qbFileName,
+              fuelLoaded:      _fuelLoaded,
+              fuelFileName:    _fuelFileName,
               bothReady:       bothLoaded,
               onImportMyAdmin: _importMyAdmin,
               onImportQb:      _importQb,
+              onImportFuel:    _importFuelCsv,
               onRun: () async {
-                // Always reload Surfsight Direct data from SharedPreferences
-                // so any changes made in Settings → Vendor Data are picked up
-                // without needing a full app restart.
+                // Reload Surfsight Direct data (Settings → Vendor Data changes)
                 await _surfsightDirectService.load();
+                // BlueArrow Fuel data is already in-memory from the import;
+                // no extra reload needed (session-scoped).
                 if (mounted) setState(() => _auditRan = true);
               },
             )
@@ -2051,9 +2166,12 @@ class _ReadyToRunScreen extends StatelessWidget {
   final String? myAdminDate;
   final bool qbLoaded;
   final String? qbFileName;
+  final bool fuelLoaded;
+  final String? fuelFileName;
   final bool bothReady;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
+  final VoidCallback onImportFuel;
   final VoidCallback onRun;
 
   const _ReadyToRunScreen({
@@ -2062,9 +2180,12 @@ class _ReadyToRunScreen extends StatelessWidget {
     required this.myAdminDate,
     required this.qbLoaded,
     required this.qbFileName,
+    required this.fuelLoaded,
+    required this.fuelFileName,
     required this.bothReady,
     required this.onImportMyAdmin,
     required this.onImportQb,
+    required this.onImportFuel,
     required this.onRun,
   });
 
@@ -2145,6 +2266,21 @@ class _ReadyToRunScreen extends StatelessWidget {
               onReplace: onImportQb,
             ),
 
+            const SizedBox(height: 12),
+
+            _FileConfirmCard(
+              step: 3,
+              icon: Icons.local_gas_station,
+              title: 'BlueArrow Fuel CSV',
+              subtitle: 'Monthly Fuel Card Count Changes (optional)',
+              loaded: fuelLoaded,
+              fileName: fuelFileName,
+              detail: fuelLoaded ? 'Fuel counts loaded — included in audit' : null,
+              loadedColor: Colors.orange.shade700,
+              optional: true,
+              onReplace: onImportFuel,
+            ),
+
             const SizedBox(height: 32),
 
             // ── Run button ──────────────────────────────────────────────
@@ -2199,6 +2335,7 @@ class _FileConfirmCard extends StatelessWidget {
   final String? fileName;
   final String? detail;
   final Color loadedColor;
+  final bool optional;
   final VoidCallback onReplace;
 
   const _FileConfirmCard({
@@ -2210,12 +2347,13 @@ class _FileConfirmCard extends StatelessWidget {
     required this.fileName,
     required this.detail,
     required this.loadedColor,
+    this.optional = false,
     required this.onReplace,
   });
 
   @override
   Widget build(BuildContext context) {
-    final color = loaded ? loadedColor : Colors.grey;
+    final color = loaded ? loadedColor : (optional ? loadedColor.withValues(alpha: 0.45) : Colors.grey);
 
     return Container(
       decoration: BoxDecoration(
@@ -2325,7 +2463,7 @@ class _FileConfirmCard extends StatelessWidget {
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
             child: Text(
-              loaded ? 'Replace' : 'Import',
+              loaded ? 'Replace' : (optional && !loaded ? 'Import (optional)' : 'Import'),
               style: const TextStyle(
                   fontSize: 11, fontWeight: FontWeight.w700),
             ),
@@ -2344,8 +2482,11 @@ class _ImportBar extends StatefulWidget {
   final String? myAdminDate;
   final bool qbLoaded;
   final String? qbFileName;
+  final bool fuelLoaded;
+  final String? fuelFileName;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
+  final VoidCallback onImportFuel;
   final Future<void> Function(List<DropItem>) onDropFiles;
 
   const _ImportBar({
@@ -2354,8 +2495,11 @@ class _ImportBar extends StatefulWidget {
     required this.myAdminDate,
     required this.qbLoaded,
     required this.qbFileName,
+    required this.fuelLoaded,
+    required this.fuelFileName,
     required this.onImportMyAdmin,
     required this.onImportQb,
+    required this.onImportFuel,
     required this.onDropFiles,
   });
 
@@ -2366,6 +2510,7 @@ class _ImportBar extends StatefulWidget {
 class _ImportBarState extends State<_ImportBar> {
   bool _myAdminHover = false;
   bool _qbHover      = false;
+  bool _fuelHover    = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2434,6 +2579,29 @@ class _ImportBarState extends State<_ImportBar> {
                 color: AppTheme.navyAccent,
                 hovering: _qbHover,
                 onTap: widget.onImportQb,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // ── BlueArrow Fuel drop slot (optional) ────────────────────────
+          Expanded(
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _fuelHover = true),
+              onDragExited:  (_) => setState(() => _fuelHover = false),
+              onDragDone: (details) {
+                setState(() => _fuelHover = false);
+                widget.onDropFiles(details.files);
+              },
+              child: _ImportSlot(
+                icon: Icons.local_gas_station,
+                label: 'Fuel CSV',
+                sublabel: widget.fuelLoaded
+                    ? (widget.fuelFileName ?? 'Loaded')
+                    : 'Optional — drop or click',
+                loaded: widget.fuelLoaded,
+                color: Colors.orange.shade700,
+                hovering: _fuelHover,
+                onTap: widget.onImportFuel,
               ),
             ),
           ),
@@ -2545,10 +2713,12 @@ class _ImportSlot extends StatelessWidget {
 class _EmptyState extends StatelessWidget {
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
+  final VoidCallback onImportFuel;
 
   const _EmptyState({
     required this.onImportMyAdmin,
     required this.onImportQb,
+    required this.onImportFuel,
   });
 
   @override
@@ -2581,7 +2751,7 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 28),
 
-            // Two-card import instructions
+            // Three-card import instructions
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2608,6 +2778,19 @@ class _EmptyState extends StatelessWidget {
                         'QuickBooks → Reports → Sales → Sales by Customer Detail → Export CSV',
                     buttonLabel: 'Import QB CSV',
                     onTap: onImportQb,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StepCard(
+                    step: '3',
+                    color: Colors.orange.shade700,
+                    icon: Icons.local_gas_station,
+                    title: 'BlueArrow Fuel CSV',
+                    body:
+                        'BlueArrow → Monthly Fuel Card Count Changes CSV (optional — import each month)',
+                    buttonLabel: 'Import Fuel CSV',
+                    onTap: onImportFuel,
                   ),
                 ),
               ],
@@ -3168,12 +3351,11 @@ class _CustomerVerifyCard extends StatelessWidget {
                           Expanded(
                             child: RichText(
                               text: TextSpan(
-                                style: const TextStyle(
-                                    fontSize: 11, color: Colors.indigo),
                                 children: [
                                   TextSpan(
                                     text: '${summary.surfsightDirectCount} Surfsight Direct',
                                     style: const TextStyle(
+                                      fontSize: 11,
                                       color: Colors.indigoAccent,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -3182,7 +3364,53 @@ class _CustomerVerifyCard extends StatelessWidget {
                                     text: ' — billed in QB under "SS Service Fee" but not'
                                         ' visible in MyAdmin. Included in BILLABLE total.',
                                     style: TextStyle(
+                                      fontSize: 11,
                                       color: Color(0xFF303060),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // ── BlueArrow Fuel callout ─────────────────────────────
+                  if (summary.blueArrowFuelCount > 0) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.07),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: Colors.orange.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.local_gas_station,
+                              size: 15, color: Colors.orange.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: RichText(
+                              text: TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: '${summary.blueArrowFuelCount} BlueArrow Fuel',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.orange.shade700,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const TextSpan(
+                                    text: ' — fuel cards billed in QB under'
+                                        ' "BlueArrow Fuel Service". Included in BILLABLE total.',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF4A3000),
                                     ),
                                   ),
                                 ],
@@ -4224,10 +4452,14 @@ class _DiffCallout extends StatelessWidget {
           '${summary.unknownCount == 1 ? '' : 's'} shown in list, excluded from billing count.)'
         : '';
 
-    // Build a breakdown note when Surfsight Direct cameras contribute to the total
-    final directNote = summary.surfsightDirectCount > 0
-        ? ' (${summary.activeCount} MyAdmin + ${summary.surfsightDirectCount} Surfsight Direct)'
-        : '';
+    // Build a breakdown note when Surfsight Direct cameras or BlueArrow Fuel cards contribute to the total
+    final List<String> parts = [];
+    if (summary.surfsightDirectCount > 0 || summary.blueArrowFuelCount > 0) {
+      parts.add('${summary.activeCount} MyAdmin');
+      if (summary.surfsightDirectCount > 0) parts.add('${summary.surfsightDirectCount} Surfsight Direct');
+      if (summary.blueArrowFuelCount > 0) parts.add('${summary.blueArrowFuelCount} Fuel');
+    }
+    final directNote = parts.isNotEmpty ? ' (${parts.join(' + ')})' : '';
 
     switch (summary.status) {
       case VerifyStatus.overbilled:
@@ -4297,7 +4529,7 @@ class _SummaryFooter extends StatelessWidget {
   void _exportCsv() {
     final buf = StringBuffer();
     // Header
-    buf.writeln('Customer,Status,Billable (Total),MA Billable,Surfsight Direct,Billed,Diff,GPS Billable,GPS Billed,'
+    buf.writeln('Customer,Status,Billable (Total),MA Billable,Surfsight Direct,BlueArrow Fuel,Billed,Diff,GPS Billable,GPS Billed,'
         'CAM Billable,CAM Billed,SUSP Billable,SUSP Billed,N/A (Never Act.),'
         'CUA,Job Type,QB Total,Unknown Devices,Hanover Direct');
 
@@ -4322,6 +4554,7 @@ class _SummaryFooter extends StatelessWidget {
         s.totalBillable,
         s.activeCount,
         s.surfsightDirectCount,
+        s.blueArrowFuelCount,
         s.billedCount,
         s.diff,
         s.geotabCount,
@@ -4359,6 +4592,7 @@ class _SummaryFooter extends StatelessWidget {
     final totalBilled        = summaries.fold(0.0, (s, c) => s + c.totalBilled);
     final totalActive        = summaries.fold(0, (s, c) => s + c.totalBillable);
     final totalDirect        = summaries.fold(0, (s, c) => s + c.surfsightDirectCount);
+    final totalFuel          = summaries.fold(0, (s, c) => s + c.blueArrowFuelCount);
     final totalCameras       = summaries.fold(0, (s, c) => s + c.cameraCount);
     final totalUnknown       = summaries.fold(0, (s, c) => s + c.unknownCount);
     final totalHanover       = summaries.fold(0, (s, c) => s + c.hanoverCount);
@@ -4376,9 +4610,11 @@ class _SummaryFooter extends StatelessWidget {
               style:
                   const TextStyle(fontSize: 11, color: Colors.white54)),
           Text(
-            totalDirect > 0
-                ? '$totalActive billable ($totalDirect Direct)'
-                : '$totalActive billable',
+            [
+              '$totalActive billable',
+              if (totalDirect > 0) '$totalDirect Direct',
+              if (totalFuel > 0) '$totalFuel Fuel',
+            ].join(' / '),
             style: const TextStyle(fontSize: 11, color: AppTheme.tealLight),
           ),
           if (totalCameras > 0)
@@ -4541,10 +4777,14 @@ class _BillingCompareRow extends StatelessWidget {
                       height: 1.0,
                     ),
                   ),
-                  // Show breakdown sub-label when Direct cameras add to total
-                  if (s.surfsightDirectCount > 0)
+                  // Show breakdown sub-label when Direct cameras or Fuel cards add to total
+                  if (s.surfsightDirectCount > 0 || s.blueArrowFuelCount > 0)
                     Text(
-                      '${s.activeCount} MA + ${s.surfsightDirectCount} Direct',
+                      [
+                        '${s.activeCount} MA',
+                        if (s.surfsightDirectCount > 0) '${s.surfsightDirectCount} Direct',
+                        if (s.blueArrowFuelCount > 0) '${s.blueArrowFuelCount} Fuel',
+                      ].join(' + '),
                       style: TextStyle(
                         fontSize: 10,
                         color: AppTheme.teal.withValues(alpha: 0.65),
@@ -4668,9 +4908,10 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
     final allRows    = [...activeRows, ...suspRows, ...naRows];
 
     final directCount = summary.surfsightDirectCount;
-    if (allRows.isEmpty && directCount == 0) return const SizedBox.shrink();
+    final fuelCount   = summary.blueArrowFuelCount;
+    if (allRows.isEmpty && directCount == 0 && fuelCount == 0) return const SizedBox.shrink();
 
-    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount;
+    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount + fuelCount;
 
     Widget planRow(MapEntry<String, int> e, int idx,
         {bool isSusp = false, bool isNa = false}) {
@@ -4791,8 +5032,42 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
               ),
             ),
           ],
+          // BlueArrow Fuel row (monthly fuel card count, not in MyAdmin)
+          if (fuelCount > 0) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              color: Colors.orange.withValues(alpha: 0.05),
+              child: Row(
+                children: [
+                  Icon(Icons.local_gas_station,
+                      size: 11, color: Colors.orange.shade700),
+                  const SizedBox(width: 4),
+                  const Expanded(
+                    child: Text(
+                      'BlueArrow Fuel',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.deepOrange,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '$fuelCount',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.deepOrange,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           // Total row
-          if (allRows.length + (directCount > 0 ? 1 : 0) > 1)
+          if (allRows.length + (directCount > 0 ? 1 : 0) + (fuelCount > 0 ? 1 : 0) > 1)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: const BoxDecoration(

@@ -18,6 +18,7 @@
 //   csv_activations_filename — original filename shown in the UI
 //   csv_qb_customer_content  — raw text of the QB Customer List (persisted permanently)
 //   csv_qb_customer_filename — filename of the QB Customer List
+//   csv_fuel_filename        — last imported BlueArrow Fuel CSV filename (display only)
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -36,6 +37,9 @@ class CsvPersistService {
   // QB Customer List — persisted permanently, restored on every startup
   static const _kQbCustomerContent  = 'csv_qb_customer_content';
   static const _kQbCustomerFile     = 'csv_qb_customer_filename';
+
+  // BlueArrow Fuel CSV — session-only (like MyAdmin/QB Sales); only filename persisted
+  static const _kFuelFile = 'csv_fuel_filename';
 
   // ── MyAdmin ───────────────────────────────────────────────────────────────
   // Content is NOT persisted (too large for localStorage).
@@ -148,6 +152,25 @@ class CsvPersistService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kQbCustomerContent);
     await prefs.remove(_kQbCustomerFile);
+  }
+
+  // ── BlueArrow Fuel CSV ──────────────────────────────────────────────────────
+  // Content is NOT persisted (session-only, re-imported each month).
+  // Only the filename is saved so the import slot can show it after a reload.
+
+  static Future<void> saveFuelCsv({required String fileName}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kFuelFile, fileName);
+  }
+
+  static Future<String?> loadFuelCsvFileName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_kFuelFile);
+  }
+
+  static Future<void> clearFuelCsv() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kFuelFile);
   }
 
   // ── Cloud sync helpers ─────────────────────────────────────────────────────
