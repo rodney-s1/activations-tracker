@@ -595,13 +595,15 @@ class _EntryRow extends StatelessWidget {
 InputDecoration _inputDecoration(String label) => InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: Colors.white54, fontSize: 13),
+      floatingLabelStyle: const TextStyle(color: AppTheme.tealLight, fontSize: 13),
+      filled: true,
+      fillColor: const Color(0xFF1A2540), // dark navy matching the dialog background
       enabledBorder: OutlineInputBorder(
-        borderSide:
-            BorderSide(color: Colors.white24),
+        borderSide: const BorderSide(color: Colors.white24),
         borderRadius: BorderRadius.circular(8),
       ),
       focusedBorder: OutlineInputBorder(
-        borderSide: const BorderSide(color: AppTheme.teal),
+        borderSide: const BorderSide(color: AppTheme.teal, width: 1.5),
         borderRadius: BorderRadius.circular(8),
       ),
       errorBorder: OutlineInputBorder(
@@ -609,9 +611,8 @@ InputDecoration _inputDecoration(String label) => InputDecoration(
         borderRadius: BorderRadius.circular(8),
       ),
       focusedErrorBorder: OutlineInputBorder(
-        borderSide: BorderSide(color: Colors.red.shade400),
+        borderSide: BorderSide(color: Colors.red.shade400, width: 1.5),
         borderRadius: BorderRadius.circular(8),
       ),
-      errorStyle:
-          const TextStyle(color: Colors.red, fontSize: 11),
+      errorStyle: const TextStyle(color: Colors.red, fontSize: 11),
     );
