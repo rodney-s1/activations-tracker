@@ -3169,7 +3169,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                             child: RichText(
                               text: TextSpan(
                                 style: const TextStyle(
-                                    fontSize: 11, color: Colors.white70),
+                                    fontSize: 11, color: Colors.indigo),
                                 children: [
                                   TextSpan(
                                     text: '${summary.surfsightDirectCount} Surfsight Direct',
@@ -3181,6 +3181,9 @@ class _CustomerVerifyCard extends StatelessWidget {
                                   const TextSpan(
                                     text: ' — billed in QB under "SS Service Fee" but not'
                                         ' visible in MyAdmin. Included in BILLABLE total.',
+                                    style: TextStyle(
+                                      color: Color(0xFF303060),
+                                    ),
                                   ),
                                 ],
                               ),
