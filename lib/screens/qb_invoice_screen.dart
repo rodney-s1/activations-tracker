@@ -153,6 +153,7 @@ class QbCustomerSummary {
   final int qbGpsBilled;        // QB GPS/Geotab device count from billed lines
   final int qbCamBilled;        // QB Camera device count from billed lines
   final int qbSuspendedBilled;  // QB Suspended-SKU device count from billed lines
+  final int qbFuelBilled;       // QB BlueArrow Fuel line count (separate from GPS/Camera)
   final List<MyAdminDevice> activeDevices; // ALL devices (billable + unknown + hanover)
 
   /// Surfsight Direct cameras: billed in QB under "SS Service Fee" but not
@@ -194,6 +195,7 @@ class QbCustomerSummary {
     this.qbGpsBilled = 0,
     this.qbCamBilled = 0,
     this.qbSuspendedBilled = 0,
+    this.qbFuelBilled = 0,
     required this.activeDevices,
     this.activePlanCounts = const {},
     this.isCua = false,
@@ -571,6 +573,13 @@ String _extractPlanLabel(String item) {
       lower.contains('telematics'))) { return 'Komatsu'; }
   if (lower.contains('hitachi') && (lower.contains('service') || lower.contains('fee') ||
       lower.contains('telematics'))) { return 'Hitachi'; }
+
+  // ── BlueArrow Fuel ─────────────────────────────────────────────────────────
+  // QB SKU: "BlueArrow Fuel:BlueArrow Fuel Service"
+  if (lower.contains('bluearrow') || lower.contains('blue arrow') ||
+      (lower.contains('fuel') && (lower.contains('service') || lower.contains('fee')))) {
+    return 'BlueArrow Fuel';
+  }
 
   // ── Camera product lines ──────────────────────────────────────────────────
   // "Surfsight Service:SS Service Fee" = Surfsight Direct (vendor-portal cameras,
@@ -1483,10 +1492,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       int qbGpsBilled = 0;
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
+      int qbFuelBilled = 0;
       for (final line in dedupedLines) {
         final lbl = line.planLabel;
         final lblLower = lbl.toLowerCase();
-        if (cameraLabels.contains(lbl)) {
+        if (lbl == 'BlueArrow Fuel') {
+          qbFuelBilled += line.qty.round();
+        } else if (cameraLabels.contains(lbl)) {
           qbCamBilled += line.qty.round();
         } else if (lblLower.contains('suspend')) {
           qbSuspendedBilled += line.qty.round();
@@ -1514,6 +1526,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbGpsBilled:  qbGpsBilled,
         qbCamBilled:  qbCamBilled,
         qbSuspendedBilled: qbSuspendedBilled,
+        qbFuelBilled: qbFuelBilled,
         activeDevices: devices,
         activePlanCounts: activePlanCounts,
         isCua: isCua,
@@ -1569,6 +1582,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbGpsBilled:  existing.qbGpsBilled,
             qbCamBilled:  existing.qbCamBilled,
             qbSuspendedBilled: existing.qbSuspendedBilled,
+            qbFuelBilled: existing.qbFuelBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:            existing.isCua,
             jobType:          existing.jobType,
@@ -1594,6 +1608,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbGpsBilled:  qbLines.fold(0, (s, l) => s + l.qty.round()),
           qbCamBilled:  0,
           qbSuspendedBilled: 0,
+          qbFuelBilled: 0,
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
@@ -1665,6 +1680,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbGpsBilled:      parent.qbGpsBilled,
             qbCamBilled:      parent.qbCamBilled,
             qbSuspendedBilled: parent.qbSuspendedBilled,
+            qbFuelBilled:     parent.qbFuelBilled,
             goFocusCount:     parent.goFocusCount     + child.goFocusCount,
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -1734,6 +1750,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbGpsBilled:      parent.qbGpsBilled,
           qbCamBilled:      parent.qbCamBilled,
           qbSuspendedBilled: parent.qbSuspendedBilled,
+          qbFuelBilled:     parent.qbFuelBilled,
           goFocusCount:     parent.goFocusCount     + child.goFocusCount,
           goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -1777,6 +1794,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbGpsBilled: s.qbGpsBilled,
           qbCamBilled: s.qbCamBilled,
           qbSuspendedBilled: s.qbSuspendedBilled,
+          qbFuelBilled: s.qbFuelBilled,
           activeDevices: s.activeDevices,
           activePlanCounts: s.activePlanCounts,
           isCua: s.isCua,
@@ -1813,6 +1831,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbGpsBilled: s.qbGpsBilled,
             qbCamBilled: s.qbCamBilled,
             qbSuspendedBilled: s.qbSuspendedBilled,
+            qbFuelBilled: s.qbFuelBilled,
             activeDevices: s.activeDevices,
             activePlanCounts: s.activePlanCounts,
             isCua: s.isCua,
@@ -4541,8 +4560,8 @@ class _SummaryFooter extends StatelessWidget {
   void _exportCsv() {
     final buf = StringBuffer();
     // Header
-    buf.writeln('Customer,Status,Billable (Total),MA Billable,Surfsight Direct,BlueArrow Fuel,Billed,Diff,GPS Billable,GPS Billed,'
-        'CAM Billable,CAM Billed,SUSP Billable,SUSP Billed,N/A (Never Act.),'
+    buf.writeln('Customer,Status,Billable (Total),MA Billable,Surfsight Direct,BlueArrow Fuel (Billable),Billed,Diff,GPS Billable,GPS Billed,'
+        'CAM Billable,CAM Billed,SUSP Billable,SUSP Billed,Fuel Billed (QB),N/A (Never Act.),'
         'CUA,Job Type,QB Total,Unknown Devices,Hanover Direct');
 
     for (final s in summaries) {
@@ -4575,6 +4594,7 @@ class _SummaryFooter extends StatelessWidget {
         s.qbCamBilled,
         s.suspendedGeotabCount,
         s.qbSuspendedBilled,
+        s.qbFuelBilled,
         s.neverActivatedGeotabCount,
         s.isCua ? 'CUA' : 'Standard',
         csvEsc(s.jobType),
