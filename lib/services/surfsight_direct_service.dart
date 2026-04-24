@@ -33,6 +33,14 @@ class SurfsightDirectEntry {
 class SurfsightDirectService {
   static const _kKey = 'surfsight_direct_v1';
 
+  // ── Singleton ─────────────────────────────────────────────────────────────
+  // One shared instance across all screens so the audit card always sees
+  // the same in-memory data that the Settings → Vendor Data page just saved.
+  static final SurfsightDirectService _instance = SurfsightDirectService._internal();
+  factory SurfsightDirectService() => _instance;
+  SurfsightDirectService._internal();
+  // ─────────────────────────────────────────────────────────────────────────
+
   List<SurfsightDirectEntry> _entries = [];
 
   List<SurfsightDirectEntry> get entries => List.unmodifiable(_entries);

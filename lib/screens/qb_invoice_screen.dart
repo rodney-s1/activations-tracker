@@ -1854,7 +1854,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               bothReady:       bothLoaded,
               onImportMyAdmin: _importMyAdmin,
               onImportQb:      _importQb,
-              onRun:           () => setState(() => _auditRan = true),
+              onRun: () async {
+                // Always reload Surfsight Direct data from SharedPreferences
+                // so any changes made in Settings → Vendor Data are picked up
+                // without needing a full app restart.
+                await _surfsightDirectService.load();
+                if (mounted) setState(() => _auditRan = true);
+              },
             )
           else ...[
             // Search bar
