@@ -76,6 +76,11 @@ class BlueArrowFuelService {
   // Built when a CSV is imported; cleared when a new CSV replaces it.
   final Map<String, int> _counts = {};
 
+  // normKey → original proper-cased QB customer name (first seen wins).
+  // Used so fuel-only customers display a readable name in the audit
+  // even when they have no MyAdmin devices and no QB invoice lines.
+  final Map<String, String> _displayNames = {};
+
   bool get hasData => _counts.isNotEmpty;
 
   // ── Import ────────────────────────────────────────────────────────────────
@@ -92,13 +97,18 @@ class BlueArrowFuelService {
     for (final e in result.entries) {
       final key = _normKey(e.qbCustomerName);
       _counts[key] = (_counts[key] ?? 0) + e.currentCount;
+      // Keep the first (best-cased) name seen for each key
+      _displayNames.putIfAbsent(key, () => e.qbCustomerName);
     }
 
     return result;
   }
 
   /// Clear all loaded data (e.g. when the user removes the file).
-  void clear() => _counts.clear();
+  void clear() {
+    _counts.clear();
+    _displayNames.clear();
+  }
 
   // ── Lookup ────────────────────────────────────────────────────────────────
 
@@ -113,8 +123,13 @@ class BlueArrowFuelService {
   /// Grand total across all customers (for the import snackbar).
   int get grandTotal => _counts.values.fold(0, (s, v) => s + v);
 
-  /// All QB customer names that have a non-zero count.
-  List<String> get customerNames => _counts.keys.toList()..sort();
+  /// All normalised keys that have a non-zero count.
+  /// Used to seed allKeys in _buildSummaries.
+  List<String> get customerKeys => _counts.keys.toList()..sort();
+
+  /// Returns the original proper-cased QB customer name for a given normKey,
+  /// or null if not found.  Used to populate displayName for fuel-only rows.
+  String? displayNameFor(String normKey) => _displayNames[normKey];
 }
 
 // ── CSV Parser (pure function, no state) ─────────────────────────────────────

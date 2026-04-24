@@ -1273,11 +1273,20 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   // ── Build Summaries ───────────────────────────────────────────────────────
 
   List<QbCustomerSummary> _buildSummaries() {
-    // Collect all customer keys from both sides
+    // Collect all customer keys from MyAdmin, QB, and the fuel service so that
+    // customers who are billed only via a 3rd-party vendor CSV (e.g. BlueArrow
+    // Fuel) still get a summary row even when they have no MyAdmin devices and
+    // no QB invoice lines yet.
     final allKeys = {
       ..._myAdminData.keys,
       ..._qbData.keys,
     };
+
+    // Add any fuel-only customers that aren't already in the set.
+    // customerKeys returns normalised keys — same format as _myAdminData / _qbData.
+    if (_blueArrowFuelService.hasData) {
+      allKeys.addAll(_blueArrowFuelService.customerKeys);
+    }
 
     // Load the CUA flags once (name → isCua).
     // Use normalized map so slight name differences still match
@@ -1292,12 +1301,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       // Build display name:
       //  1. Prefer stripped MyAdmin name (proper casing, no location suffix)
       //  2. Fall back to QB display-name cache (preserves QB casing)
-      //  3. Last resort: the normalised key itself
+      //  3. Fall back to fuel service original name (for fuel-only customers)
+      //  4. Last resort: the normalised key itself
       String displayName;
       if (devices.isNotEmpty) {
         displayName = _stripLocation(devices.first.customer);
       } else {
-        displayName = _qbDisplayNameCache[key] ?? key;
+        displayName = _qbDisplayNameCache[key]
+            ?? _blueArrowFuelService.displayNameFor(key)
+            ?? key;
       }
 
       // Look up CUA flag using normalised key first, then display name, then QB cache name.
