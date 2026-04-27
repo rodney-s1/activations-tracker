@@ -813,6 +813,40 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
   Future<void> _add() async {
     final kw = _ctrl.text.trim();
     if (kw.isEmpty) return;
+
+    // Guard: 'Rosco' must never be a filter keyword — Rosco QB lines must
+    // flow through the parser to populate qbRoscoBilled for PDF reconciliation.
+    if (kw.toLowerCase() == 'rosco') {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: AppTheme.amber),
+                SizedBox(width: 8),
+                Text('Cannot Filter Rosco'),
+              ],
+            ),
+            content: const Text(
+              '"Rosco" cannot be added as a filter keyword.\n\n'
+              'Rosco QB lines (Service Fee Rosco, Wifi Service Fee, etc.) '
+              'must be imported so they can be counted and reconciled '
+              'against the Rosco PDF invoice.\n\n'
+              'Filtering them out would silently break Rosco billing reconciliation.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Got it'),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
     try {
       final live = await QbIgnoreKeywordService.getAllAsync();
       if (live.any((k) => k.keyword.toLowerCase() == kw.toLowerCase())) {
@@ -1100,7 +1134,7 @@ class _QbFiltersTabState extends State<_QbFiltersTab> {
                   controller: _ctrl,
                   textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
-                    hintText: 'Add keyword (e.g. Rosco, Xtract)…',
+                    hintText: 'Add keyword (e.g. Xtract, TopFly)…',
                     prefixIcon: Icon(Icons.add_circle_outline, color: AppTheme.teal),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   ),

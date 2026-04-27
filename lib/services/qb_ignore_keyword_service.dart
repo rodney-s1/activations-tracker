@@ -5,7 +5,13 @@
 //
 // Default keywords pre-loaded on first install:
 //   Credit Card, BlueArrow Fuel, Predictive Coach, Shipping, FedEx,
-//   Fleetio, Rosco, Xtract, Integration, TopFly, LifeSaver
+//   Fleetio, Xtract, Integration, TopFly, LifeSaver, Drivewayze
+//
+// NOTE: 'Rosco' is intentionally NOT a default keyword — Rosco SKUs
+// ("Service Fee Rosco", "Wifi Service Fee", etc.) must flow through the
+// parser so they can be counted in qbRoscoBilled and reconciled against
+// the Rosco PDF invoice.  Adding 'Rosco' to the filter will silently
+// break Rosco billing reconciliation.
 //
 // Also stores the "New Activations ignore text" — the memo/description substring
 // used to skip prorated first-month lines from Column L of the QB CSV.
@@ -25,6 +31,9 @@ class QbIgnoreKeywordService {
   static const String _prefKeyNewActivations = 'qb_new_activations_ignore_text';
   static String _newActivationsText = defaultNewActivationsText;
 
+  // IMPORTANT: 'Rosco' is intentionally absent from this list.
+  // Rosco QB lines must NOT be filtered — they are parsed and counted in
+  // qbRoscoBilled for reconciliation against the Rosco PDF invoice.
   static const List<String> defaultKeywords = [
     'Credit Card',
     'BlueArrow Fuel',
@@ -32,11 +41,12 @@ class QbIgnoreKeywordService {
     'Shipping',
     'FedEx',
     'Fleetio',
-    'Rosco',
     'Xtract',
     'Integration',
     'TopFly',
     'LifeSaver',
+    'Drivewayze',
+    'Service Fee DoForms',
   ];
 
   static Future<void> init() async {
