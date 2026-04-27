@@ -918,6 +918,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   /// confirm the inputs before seeing fresh results.
   bool _auditRan = false;
 
+  /// True while the user is dragging files over the full-screen drop zone.
+  bool _globalDropHover = false;
+
   @override
   void initState() {
     super.initState();
@@ -2019,7 +2022,16 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               )
             : null,
       ),
-      body: Column(
+      body: DropTarget(
+        onDragEntered: (_) => setState(() => _globalDropHover = true),
+        onDragExited:  (_) => setState(() => _globalDropHover = false),
+        onDragDone: (details) {
+          setState(() => _globalDropHover = false);
+          _processDroppedFiles(details.files);
+        },
+        child: Stack(
+          children: [
+            Column(
         children: [
           // ── Import action bar (always visible) ─────────────────────────
           _ImportBar(
@@ -2210,6 +2222,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           if (summaries.isNotEmpty)
             _SummaryFooter(summaries: summaries),
         ],
+            ),
+            // ── Full-screen drop overlay ──────────────────────────────
+            if (_globalDropHover)
+              _FullScreenDropOverlay(),
+          ],
+        ),
       ),
     );
   }
@@ -2569,6 +2587,7 @@ class _ImportBarState extends State<_ImportBar> {
   bool _myAdminHover = false;
   bool _qbHover      = false;
   bool _fuelHover    = false;
+  bool _allHover     = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2660,6 +2679,56 @@ class _ImportBarState extends State<_ImportBar> {
                 color: Colors.orange.shade700,
                 hovering: _fuelHover,
                 onTap: widget.onImportFuel,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // ── "Drop All Here" unified slot ───────────────────────────────
+          DropTarget(
+            onDragEntered: (_) => setState(() => _allHover = true),
+            onDragExited:  (_) => setState(() => _allHover = false),
+            onDragDone: (details) {
+              setState(() => _allHover = false);
+              widget.onDropFiles(details.files);
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: 110,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: _allHover
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _allHover
+                      ? Colors.white.withValues(alpha: 0.7)
+                      : Colors.white.withValues(alpha: 0.15),
+                  width: _allHover ? 1.5 : 1.0,
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _allHover
+                        ? Icons.file_download_outlined
+                        : Icons.folder_copy_outlined,
+                    size: 18,
+                    color: _allHover ? Colors.white : Colors.white38,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _allHover ? 'Release to load' : 'Drop All\nFiles Here',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: _allHover ? Colors.white : Colors.white38,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -2761,6 +2830,148 @@ class _ImportSlot extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Full-Screen Drop Overlay ──────────────────────────────────────────────────
+
+/// Shown as a Stack overlay whenever the user drags files over the screen.
+/// Provides a clear visual cue that files can be dropped anywhere.
+class _FullScreenDropOverlay extends StatelessWidget {
+  const _FullScreenDropOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: 1.0,
+          duration: const Duration(milliseconds: 120),
+          child: Container(
+            decoration: BoxDecoration(
+              color: AppTheme.navyAccent.withValues(alpha: 0.10),
+              border: Border.all(
+                color: AppTheme.navyAccent.withValues(alpha: 0.6),
+                width: 2.5,
+              ),
+            ),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(28),
+                    decoration: BoxDecoration(
+                      color: AppTheme.navyDark.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: AppTheme.navyAccent.withValues(alpha: 0.5),
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.navyAccent.withValues(alpha: 0.2),
+                          blurRadius: 24,
+                          spreadRadius: 4,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.file_download_outlined,
+                          size: 52,
+                          color: AppTheme.navyAccent.withValues(alpha: 0.9),
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Drop Files to Import',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text(
+                          'MyAdmin Report, QB Sales CSV, and/or Fuel CSV\n'
+                          'will be auto-detected and loaded automatically.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.white60,
+                            height: 1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        // File type chips
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            _DropChip(
+                              icon: Icons.devices,
+                              label: 'MyAdmin Report',
+                              color: AppTheme.teal,
+                            ),
+                            _DropChip(
+                              icon: Icons.receipt_long,
+                              label: 'QB Sales CSV',
+                              color: AppTheme.navyAccent,
+                            ),
+                            _DropChip(
+                              icon: Icons.local_gas_station,
+                              label: 'Fuel CSV',
+                              color: Colors.orange,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DropChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _DropChip({required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }
