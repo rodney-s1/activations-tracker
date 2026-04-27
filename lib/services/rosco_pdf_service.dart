@@ -4,10 +4,19 @@
 // per-QB-customer billable-unit map for use in the QB Verify audit.
 //
 // The PDF is a multi-invoice document (all invoices in one file).  Each invoice:
-//   • SOLD TO:  Blue Arrow Telematics (always — the reseller)
-//   • SHIP TO:  The end-customer name (e.g. "GUILFORD EMS")
-//   • Lines:    Contract rows: "N  Contract: XXXX  Billing Period: …  QTY  $PRICE  $EXT"
-//               followed by a plan description line: "RoscoLive Verizon 24 mos 1GB"
+//   • SOLD TO:   Blue Arrow Telematics (always the reseller — IGNORED by parser)
+//   • SHIPPING TO: The end-customer name (e.g. "GUILFORD EMS") — this is the
+//                  name used for QB matching.
+//   • Lines:     Contract rows: "N  Contract: XXXX  Billing Period: …  QTY  $PRICE  $EXT"
+//                followed by a plan description line: "RoscoLive Verizon 24 mos 1GB"
+//
+// Parsing strategy:
+//   The parser looks ONLY at the "SHIPPING TO:" label to find the customer name.
+//   The "SOLD TO:" / "Blue Arrow Telematics" side is completely ignored.
+//   pdf.js annotates each text item with "~~X:NNN~~" (X position) — these are
+//   stripped before regex matching.  The "SHIPPING TO:" name may appear on the
+//   same line as the label or on the very next non-junk line (when pdf.js splits
+//   the two-column header table across different Y bands).
 //
 // QB SKU mapping (column L in QB Sales CSV):
 //   $15.00 / $18.00 → "Service Fee Rosco Pro - Data Limit 1GB Track & Trace + Storage + Live Streaming for DV6"
@@ -15,8 +24,8 @@
 //   $25.00          → "Service Fee Rosco (Pro)"
 //
 // Name normalisation:
-//   PDF "Ship To" names are often abbreviations (e.g. "GUILFORD EMS") while QB
-//   uses full names (e.g. "Guilford County Emergency Services").  The service
+//   PDF "SHIPPING TO" names are often abbreviations (e.g. "GUILFORD EMS") while
+//   QB uses full names (e.g. "Guilford County Emergency Services").  The service
 //   uses the same multi-pass _normKey() as the rest of the audit so fuzzy matches
 //   work automatically, PLUS a hard-coded alias table for known mismatches.
 //
@@ -227,10 +236,7 @@ class RoscoPdfService {
 ///     because the QB parser uses normKey matching.
 RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
   // ── Strip X-position annotations added by pdf.js extractor ────────────────
-  // Each text item is annotated as "text~~X:NNN~~" so we can detect columns.
-  // We need TWO versions of each line:
-  //   • clean:  annotations removed  → used for regex matching
-  //   • raw:    annotations kept     → used for column detection
+  // Each text item is annotated as "text~~X:NNN~~" — strip them for clean matching.
   final rawLines   = pdfText.split(RegExp(r'\r?\n'));
   final cleanLines = rawLines
       .map((l) => l.replaceAll(RegExp(r'~~X:\d+~~'), '').trim())
@@ -243,52 +249,38 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
   String? currentShipTo;
   String? currentInvoiceNum;
   final Set<String> seenInvoices = {}; // deduplicate multi-page invoices
-  bool _expectShipToNextLine = false;  // fallback: name on line after "Blue Arrow"
+
+  // State machine for reading SHIPPING TO name
+  // The PDF has a two-column header table:
+  //   SOLD TO: Blue Arrow Telematics ...  |  SHIPPING TO: GUILFORD EMS
+  // pdf.js may split these onto separate Y-band lines.
+  // Strategy: when we see "SHIPPING TO:" we capture the name that follows
+  // on the same line or the very next non-empty, non-junk line.
+  bool _expectShipToNextLine = false;
 
   // Customers to ignore entirely
   const ignoreNames = {'spartan fire', 'baker roofing'};
 
-  /// Strip X-annotations from a single raw line and split into (text, x) pairs.
-  List<({String text, int x})> _parseAnnotations(String raw) {
-    final result = <({String text, int x})>[];
-    final pattern = RegExp(r'(.*?)~~X:(\d+)~~');
-    for (final m in pattern.allMatches(raw)) {
-      final txt = m.group(1)!;
-      final x   = int.tryParse(m.group(2)!) ?? 0;
-      if (txt.isNotEmpty) result.add((text: txt, x: x));
-    }
-    return result;
-  }
-
-  /// Extract the right-column (ship-to) name from a line that contains X annotations.
-  /// Rosco invoices: left column ends ~x=300; right column (ship-to) starts ~x=320+.
-  /// We look for a text chunk whose X > midpoint of the page (~300 pts for letter).
-  String? _extractRightColumn(String raw) {
-    final items = _parseAnnotations(raw);
-    if (items.isEmpty) return null;
-    // Find items clearly in the right half (x > 280 on a ~595pt wide page)
-    final rightItems = items.where((e) => e.x > 280).toList();
-    if (rightItems.isEmpty) return null;
-    final name = rightItems.map((e) => e.text).join(' ').trim();
-    // Reject if it looks like an address / label / email
-    if (name.isEmpty) return null;
-    final nl = name.toLowerCase();
-    if (nl.contains('@') ||
-        nl.contains('http') ||
-        nl == 'shipping to:' ||
-        nl == 'ship to:' ||
-        RegExp(r'^\d').hasMatch(name) || // starts with a digit (address line)
-        name.length < 2) return null;
-    return name;
+  /// Returns true if a line looks like junk to skip when reading the ship-to name.
+  /// Junk = empty, email address, starts with digit (street address), known labels.
+  bool _isJunkLine(String line) {
+    if (line.isEmpty) return true;
+    final ll = line.toLowerCase();
+    if (ll.contains('@')) return true;
+    if (ll.contains('http')) return true;
+    if (RegExp(r'^\d').hasMatch(line)) return true; // street address
+    if (ll == 'shipping to:' || ll == 'ship to:') return true;
+    if (ll == 'sold to:' || ll == 'sell to:') return true;
+    if (ll.startsWith('sales person') || ll.startsWith('ship date') ||
+        ll.startsWith('ship via') || ll.startsWith('pack slip')) return true;
+    return false;
   }
 
   for (int i = 0; i < cleanLines.length; i++) {
-    final line    = cleanLines[i];
-    final rawLine = rawLines[i];
-    if (line.isEmpty) continue;
+    final line = cleanLines[i];
 
     // ── New invoice header ─────────────────────────────────────────────────
-    // "90-21 144th Place, Jamaica, New York 11435~~X:72~~ Invoice #: 895699~~X:430~~"
+    // "90-21 144th Place, Jamaica, New York 11435  Invoice #: 895699"
     final invMatch = RegExp(r'Invoice #:\s*(\d+)').firstMatch(line);
     if (invMatch != null) {
       final invNum = invMatch.group(1)!;
@@ -301,71 +293,42 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
       continue;
     }
 
-    // ── "SHIPPING TO:" label line ──────────────────────────────────────────
-    // When pdf.js splits header columns onto separate Y bands we may see a
-    // standalone "SHIPPING TO:" line.  The ship-to name is the right-column
-    // text on the SAME line, or on the very next non-empty line.
-    if (line.toUpperCase().contains('SHIPPING TO:') ||
-        line.toUpperCase().contains('SHIP TO:')) {
-      // Try to get name from right column of THIS line
-      final rightName = _extractRightColumn(rawLine);
-      if (rightName != null && rightName.toUpperCase() != 'SHIPPING TO:' &&
-          rightName.toUpperCase() != 'SHIP TO:') {
-        final nl = rightName.toLowerCase();
-        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-        if (!shouldIgnore) currentShipTo = rightName;
-      }
-      // Either way: if we didn't get a name, look at the next line
-      if (currentShipTo == null) _expectShipToNextLine = true;
-      continue;
-    }
-
-    // ── Fallback: line immediately after "SHIPPING TO:" ────────────────────
-    if (_expectShipToNextLine) {
+    // ── SHIPPING TO: label ─────────────────────────────────────────────────
+    // The label and name may appear on the same line:
+    //   "SHIPPING TO: GUILFORD EMS"
+    // Or the name may be on the very next non-junk line:
+    //   "SHIPPING TO:"
+    //   "GUILFORD EMS"
+    final lineUpper = line.toUpperCase();
+    if (lineUpper.contains('SHIPPING TO:') || lineUpper.contains('SHIP TO:')) {
       _expectShipToNextLine = false;
-      final nl = line.toLowerCase();
-      // Skip address-looking lines, emails, or known labels
-      if (!nl.contains('@') &&
-          !nl.contains('http') &&
-          !RegExp(r'^\d').hasMatch(line) &&
-          line.length >= 2) {
-        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-        if (!shouldIgnore) currentShipTo = line;
-      }
-      continue;
-    }
 
-    // ── Ship-To: same line as "Blue Arrow Telematics" ─────────────────────
-    // Case A: single line  → "Blue Arrow Telematics(Was Gps Mobil Sol) GUILFORD EMS"
-    // Case B: right column → Blue Arrow text left, ship-to right (X > 280)
-    if (line.contains('Blue Arrow Telematics')) {
-      // Case A: name follows the closing paren on the same clean line
-      final shipMatch =
-          RegExp(r'Blue Arrow Telematics\([^)]*\)\s+(.+)').firstMatch(line);
-      if (shipMatch != null) {
-        final name = shipMatch.group(1)!.trim();
-        // Strip any trailing X-annotations that leaked into clean text
-        final cleanName = name.replaceAll(RegExp(r'~~X:\d+~~'), '').trim();
-        if (cleanName.isNotEmpty) {
-          final nl = cleanName.toLowerCase();
-          final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-          currentShipTo = shouldIgnore ? null : cleanName;
-          _expectShipToNextLine = false;
-          continue;
-        }
-      }
+      // Extract everything after "SHIPPING TO:" on the same line
+      final afterLabel = line
+          .replaceFirst(RegExp(r'.*?SHIPPING TO:\s*', caseSensitive: false), '')
+          .replaceFirst(RegExp(r'.*?SHIP TO:\s*', caseSensitive: false), '')
+          .trim();
 
-      // Case B: ship-to is in the right column of the annotated raw line
-      final rightName = _extractRightColumn(rawLine);
-      if (rightName != null) {
-        final nl = rightName.toLowerCase();
+      if (afterLabel.isNotEmpty && !_isJunkLine(afterLabel)) {
+        final nl = afterLabel.toLowerCase();
         final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-        currentShipTo = shouldIgnore ? null : rightName;
-        _expectShipToNextLine = false;
+        currentShipTo = shouldIgnore ? null : afterLabel;
       } else {
-        // Case C: ship-to may be on the very next line (different Y band)
+        // Name is on the next non-junk line
         _expectShipToNextLine = true;
       }
+      continue;
+    }
+
+    // ── Line immediately after "SHIPPING TO:" (if name wasn't on label line) ─
+    if (_expectShipToNextLine) {
+      if (!_isJunkLine(line)) {
+        _expectShipToNextLine = false;
+        final nl = line.toLowerCase();
+        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
+        currentShipTo = shouldIgnore ? null : line;
+      }
+      // if it IS junk, stay in _expectShipToNextLine=true and try the next line
       continue;
     }
 
