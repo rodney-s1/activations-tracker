@@ -1157,15 +1157,23 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
         // ── Auto-detect file type ────────────────────────────────────────
         // MyAdmin full report always contains "Device Status" and "Billing Plan"
-        // columns in the header row; QB CSVs contain "Memo/Description" or
-        // "Sales Rep".
+        // columns in the header row; QB CSVs contain various header patterns
+        // depending on how the export was generated.
         final firstFewLines = content.split(RegExp(r'\r?\n')).take(6).join('\n').toLowerCase();
         final isMyAdmin = firstFewLines.contains('billing plan') ||
             firstFewLines.contains('device status') ||
             firstFewLines.contains('serial number') && firstFewLines.contains('account');
+        // QB "Sales by Customer Detail" exports vary:
+        //   • Some versions produce a "Memo/Description" column header
+        //   • Others produce just "Memo" + "Name" + "Qty" + "Sales Price"
+        //   • Some include "Sales Rep" or a title row with "Sales by Customer"
+        //   • All versions contain "Num" (invoice number) + "Amount" + "Type"
         final isQb = firstFewLines.contains('memo/description') ||
             firstFewLines.contains('sales rep') ||
-            firstFewLines.contains('sales by customer');
+            firstFewLines.contains('sales by customer') ||
+            // Catch exports that use plain "memo" column (interleaved-blank format)
+            (firstFewLines.contains('memo') && firstFewLines.contains('qty') && firstFewLines.contains('sales price')) ||
+            (firstFewLines.contains('memo') && firstFewLines.contains('qty') && firstFewLines.contains('amount') && firstFewLines.contains('num'));
         // BlueArrow Fuel CSV always starts with "Resellers" on line 1 and
         // has "Previous Count" in the header row on line 2.
         final isFuel = firstFewLines.contains('resellers') &&
