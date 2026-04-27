@@ -33,6 +33,14 @@
 // MyAdmin and QB CSVs).  The calling screen is responsible for persisting the
 // raw file content if desired.
 
+/// A single sub-account row under a reseller (column A = account name,
+/// column C = current count).
+class FuelSubAccount {
+  final String accountName;
+  final int currentCount;
+  const FuelSubAccount({required this.accountName, required this.currentCount});
+}
+
 class BlueArrowFuelEntry {
   /// QB customer name (reseller name for reseller sub-customers; direct
   /// customer name for direct customers).
@@ -57,10 +65,15 @@ class BlueArrowParseResult {
   final int totalCustomers;
   final int totalCards;
 
+  /// Per-reseller sub-account breakdown: normKey(resellerName) → list of sub-accounts.
+  /// Empty for direct customers (they have no sub-accounts).
+  final Map<String, List<FuelSubAccount>> subAccounts;
+
   const BlueArrowParseResult({
     required this.entries,
     required this.totalCustomers,
     required this.totalCards,
+    this.subAccounts = const {},
   });
 }
 
@@ -81,6 +94,10 @@ class BlueArrowFuelService {
   // even when they have no MyAdmin devices and no QB invoice lines.
   final Map<String, String> _displayNames = {};
 
+  // normKey(resellerName) → list of FuelSubAccount rows from the Fuel CSV.
+  // Only populated for reseller entries; direct customers have no sub-accounts.
+  final Map<String, List<FuelSubAccount>> _subAccounts = {};
+
   bool get hasData => _counts.isNotEmpty;
 
   // ── Import ────────────────────────────────────────────────────────────────
@@ -89,6 +106,7 @@ class BlueArrowFuelService {
   /// Returns a summary of what was loaded.
   BlueArrowParseResult import(String csvContent) {
     _counts.clear();
+    _subAccounts.clear();
 
     final result = parseBlueArrowFuelCsv(csvContent);
 
@@ -101,6 +119,11 @@ class BlueArrowFuelService {
       _displayNames.putIfAbsent(key, () => e.qbCustomerName);
     }
 
+    // Store sub-account breakdowns
+    result.subAccounts.forEach((normKey, accounts) {
+      _subAccounts[normKey] = accounts;
+    });
+
     return result;
   }
 
@@ -108,6 +131,7 @@ class BlueArrowFuelService {
   void clear() {
     _counts.clear();
     _displayNames.clear();
+    _subAccounts.clear();
   }
 
   // ── Lookup ────────────────────────────────────────────────────────────────
@@ -118,6 +142,13 @@ class BlueArrowFuelService {
   int countFor(String qbCustomerName) {
     final key = _normKey(qbCustomerName);
     return _counts[key] ?? 0;
+  }
+
+  /// Returns the sub-account breakdown list for a given QB customer (reseller) name.
+  /// Returns an empty list for direct customers or unknown customers.
+  List<FuelSubAccount> subAccountsFor(String qbCustomerName) {
+    final key = _normKey(qbCustomerName);
+    return _subAccounts[key] ?? const [];
   }
 
   /// Grand total across all customers (for the import snackbar).
@@ -141,6 +172,9 @@ BlueArrowParseResult parseBlueArrowFuelCsv(String csvContent) {
   // many rows (one per sub-customer).
   final Map<String, int> resellerTotals  = {};
   final Map<String, int> directTotals    = {};
+
+  // Per-reseller sub-account list: normKey(reseller) → list of rows
+  final Map<String, List<FuelSubAccount>> subAccountMap = {};
 
   // Section tracking
   // 0 = before any known section header
@@ -203,6 +237,14 @@ BlueArrowParseResult parseBlueArrowFuelCsv(String csvContent) {
       if (reseller.isEmpty || reseller == 'N/A') continue;
       resellerTotals[reseller] =
           (resellerTotals[reseller] ?? 0) + currentCount;
+
+      // Also store sub-account detail under the reseller's norm key
+      final rKey = _normKey(reseller);
+      subAccountMap.putIfAbsent(rKey, () => []);
+      subAccountMap[rKey]!.add(FuelSubAccount(
+        accountName: account,
+        currentCount: currentCount,
+      ));
     } else if (section == 2) {
       // Direct Customers section: credit the count to the ACCOUNT name
       directTotals[account] =
@@ -223,12 +265,18 @@ BlueArrowParseResult parseBlueArrowFuelCsv(String csvContent) {
   // Sort for deterministic output
   entries.sort((a, b) => a.qbCustomerName.compareTo(b.qbCustomerName));
 
+  // Sort sub-account lists by account name
+  subAccountMap.forEach((key, list) {
+    list.sort((a, b) => a.accountName.compareTo(b.accountName));
+  });
+
   final totalCards = entries.fold(0, (s, e) => s + e.currentCount);
 
   return BlueArrowParseResult(
     entries: entries,
     totalCustomers: entries.length,
     totalCards: totalCards,
+    subAccounts: subAccountMap,
   );
 }
 

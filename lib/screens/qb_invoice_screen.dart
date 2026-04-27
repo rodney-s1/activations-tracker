@@ -102,6 +102,9 @@ class QbInvoiceLine {
   final double unitPrice;
   final double amount;
   final String planLabel;  // short plan name, e.g. "Pro", "GO", "HOS"
+  /// Column L (Memo/Description) — for BlueArrow Fuel lines this contains
+  /// the sub-account name, e.g. "BA Fuel Service - Fox's Pizza Den".
+  final String memo;
 
   const QbInvoiceLine({
     required this.invoiceNumber,
@@ -111,6 +114,7 @@ class QbInvoiceLine {
     required this.unitPrice,
     required this.amount,
     this.planLabel = '',
+    this.memo = '',
   });
 }
 
@@ -164,6 +168,10 @@ class QbCustomerSummary {
   /// Parsed from the monthly fuel-card-count CSV and injected after the audit runs.
   final int blueArrowFuelCount;
 
+  /// Sub-account breakdown from the Fuel CSV (column A) for this reseller.
+  /// Each entry is {accountName, currentCount}.  Empty for direct customers.
+  final List<FuelSubAccount> fuelSubAccounts;
+
   /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
   /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
   /// Used to show a plan breakdown in the billing compare card.
@@ -202,6 +210,7 @@ class QbCustomerSummary {
     this.jobType = '',
     this.surfsightDirectCount = 0,
     this.blueArrowFuelCount = 0,
+    this.fuelSubAccounts = const [],
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -511,6 +520,10 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     // Extract a short plan label from the item description
     final planLabel = _extractPlanLabel(item);
 
+    // Capture the raw memo/description column (column L) for sub-account name
+    // extraction on BlueArrow Fuel lines (e.g. "BA Fuel Service - Fox's Pizza Den").
+    final rawMemo = memoIdx >= 0 ? gc(memoIdx) : '';
+
     result.putIfAbsent(currentCustomerKey, () => []);
     result[currentCustomerKey]!.add(QbInvoiceLine(
       invoiceNumber: currentInvoice,
@@ -520,6 +533,7 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
       unitPrice:     unitPrice,
       amount:        amount > 0 ? amount : qty * unitPrice,
       planLabel:     planLabel,
+      memo:          rawMemo,
     ));
   }
 
@@ -1537,6 +1551,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         activePlanCounts: activePlanCounts,
         isCua: isCua,
         jobType: jobType,
+        fuelSubAccounts: const [],
       );
     }).toList();
 
@@ -1592,6 +1607,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:            existing.isCua,
             jobType:          existing.jobType,
+            fuelSubAccounts:  existing.fuelSubAccounts,
           );
         }
       } else {
@@ -1618,6 +1634,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
+          fuelSubAccounts: const [],
         ));
       }
     }
@@ -1692,6 +1709,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
             isCua:            parent.isCua,
             jobType:          parent.jobType,
+            fuelSubAccounts:  parent.fuelSubAccounts,
           );
         }
         // Whether or not the parent was found in the list, always remove the
@@ -1762,6 +1780,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
           isCua:            parent.isCua,
           jobType:          parent.jobType,
+          fuelSubAccounts:  parent.fuelSubAccounts,
         );
 
         toRemovePipe.add(ci);
@@ -1806,6 +1825,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           isCua: s.isCua,
           jobType: s.jobType,
           surfsightDirectCount: directCount,
+          fuelSubAccounts: s.fuelSubAccounts,
         );
       }
     }
@@ -1844,6 +1864,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             jobType: s.jobType,
             surfsightDirectCount: s.surfsightDirectCount,
             blueArrowFuelCount: fuelCount,
+            fuelSubAccounts: _blueArrowFuelService.subAccountsFor(s.customerName),
           );
         }
       }
@@ -3414,50 +3435,9 @@ class _CustomerVerifyCard extends StatelessWidget {
                     ),
                   ],
 
-                  // ── BlueArrow Fuel callout ─────────────────────────────
-                  if (summary.blueArrowFuelCount > 0) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.07),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                            color: Colors.orange.withValues(alpha: 0.4)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.local_gas_station,
-                              size: 15, color: Colors.orange.shade700),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: RichText(
-                              text: TextSpan(
-                                children: [
-                                  TextSpan(
-                                    text: '${summary.blueArrowFuelCount} BlueArrow Fuel',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.orange.shade700,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const TextSpan(
-                                    text: ' — fuel cards billed in QB under'
-                                        ' "BlueArrow Fuel Service". Included in BILLABLE total.',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Color(0xFF4A3000),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                  // ── BlueArrow Fuel billable breakdown ─────────────────
+                  if (summary.blueArrowFuelCount > 0)
+                    _FuelBillableTable(summary: summary),
 
                   const SizedBox(height: 12),
 
@@ -3481,6 +3461,9 @@ class _CustomerVerifyCard extends StatelessWidget {
                             fontStyle: FontStyle.italic),
                       ),
                     ),
+                  // ── BlueArrow Fuel billed sub-account breakdown ────
+                  if (summary.qbFuelBilled > 0)
+                    _FuelBilledTable(summary: summary),
 
                   // Diff callout
                   if (summary.status != VerifyStatus.match) ...[
@@ -4139,6 +4122,260 @@ class _MyAdminPlanTable extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ── BlueArrow Fuel Billable Table (Fuel CSV sub-accounts) ────────────────────
+/// Shows the per-account breakdown from the Fuel CSV (column A) for a reseller.
+/// Displayed on the MyAdmin/Billable side of the expanded card.
+class _FuelBillableTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _FuelBillableTable({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final subs = summary.fuelSubAccounts;
+    // Filter to only rows with count > 0 for display; still show total from blueArrowFuelCount
+    final displayRows = subs.where((s) => s.currentCount > 0).toList();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.15),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(7)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.local_gas_station,
+                      size: 13, color: Colors.orange.shade700),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'BlueArrow Fuel — Billable (Fuel CSV)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.orange.shade800,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${summary.blueArrowFuelCount}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.orange.shade800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Sub-account rows from Fuel CSV column A
+            if (displayRows.isNotEmpty) ...displayRows.asMap().entries.map((e) {
+              final odd = e.key.isOdd;
+              final sub = e.value;
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                color: odd
+                    ? Colors.transparent
+                    : Colors.orange.withValues(alpha: 0.03),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        sub.accountName,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Text(
+                      '${sub.currentCount}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.orange.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+            if (displayRows.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Text(
+                  'Total: ${summary.blueArrowFuelCount} fuel card'
+                  '${summary.blueArrowFuelCount == 1 ? '' : 's'} '
+                  '(no sub-account detail available)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.orange.shade700,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── BlueArrow Fuel Billed Table (QB Sales CSV memo breakdown) ────────────────
+/// Shows the per-sub-account billed quantities extracted from the QB Sales CSV
+/// memo column (e.g. "BA Fuel Service - Fox's Pizza Den").
+/// Displayed on the QB Billed side of the expanded card.
+class _FuelBilledTable extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _FuelBilledTable({required this.summary});
+
+  /// Strip common fuel memo prefixes to get the sub-account name.
+  /// "BA Fuel Service - Fox's Pizza Den" → "Fox's Pizza Den"
+  /// "BlueArrow Fuel Service - Penn Mar" → "Penn Mar"
+  static String _extractSubAccount(String memo) {
+    final prefixes = [
+      'ba fuel service - ',
+      'bluearrow fuel service - ',
+      'blue arrow fuel service - ',
+      'ba fuel - ',
+      'bluearrow fuel - ',
+    ];
+    final lower = memo.toLowerCase();
+    for (final prefix in prefixes) {
+      if (lower.startsWith(prefix)) {
+        return memo.substring(prefix.length).trim();
+      }
+    }
+    // Return original if no known prefix matched
+    return memo.trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Collect all BlueArrow Fuel QB lines for this customer
+    final fuelLines = summary.qbLines
+        .where((l) => l.planLabel == 'BlueArrow Fuel')
+        .toList();
+
+    // Group by sub-account name (from memo), summing qty
+    final Map<String, double> bySubAccount = {};
+    for (final line in fuelLines) {
+      final subName = line.memo.isNotEmpty
+          ? _extractSubAccount(line.memo)
+          : line.description;
+      bySubAccount[subName] = (bySubAccount[subName] ?? 0) + line.qty;
+    }
+
+    final rows = bySubAccount.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppTheme.navyAccent.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: AppTheme.navyAccent.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppTheme.navyAccent.withValues(alpha: 0.12),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(7)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.local_gas_station,
+                      size: 13, color: AppTheme.navyAccent),
+                  const SizedBox(width: 6),
+                  const Expanded(
+                    child: Text(
+                      'BlueArrow Fuel — Billed (QB CSV)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.navyAccent,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${summary.qbFuelBilled}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.navyAccent,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // One row per sub-account
+            ...rows.asMap().entries.map((e) {
+              final odd = e.key.isOdd;
+              final entry = e.value;
+              final qty = entry.value;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                color: odd
+                    ? Colors.transparent
+                    : AppTheme.navyDark.withValues(alpha: 0.03),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        entry.key,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Text(
+                      qty == qty.roundToDouble()
+                          ? qty.toInt().toString()
+                          : qty.toStringAsFixed(1),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.navyAccent,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
       ),
     );
   }
