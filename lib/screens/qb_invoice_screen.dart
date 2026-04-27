@@ -247,10 +247,13 @@ class QbCustomerSummary {
   int get diff => billedCount - totalBillable; // positive = over, negative = under
 
   /// Group QB lines by plan label for the multi-plan display.
+  /// Rosco lines are intentionally excluded — they appear in the separate
+  /// Rosco compare row (PDF count vs QB billed), not the GPS/Camera table.
   Map<String, List<QbInvoiceLine>> get linesByPlan {
     final map = <String, List<QbInvoiceLine>>{};
     for (final line in qbLines) {
       final key = line.planLabel.isEmpty ? line.description : line.planLabel;
+      if (key == 'Rosco') continue; // reconciled separately via _RoscoCompareRow
       map.putIfAbsent(key, () => []).add(line);
     }
     return map;
@@ -3882,8 +3885,7 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // billedCount excludes Rosco lines (reconciled separately below).
                   _SideHeader(
                     icon: Icons.receipt_long,
-                    label: 'QB Billed (${summary.billedCount}'  // Rosco excluded
-                        '${summary.qbRoscoBilled > 0 ? " + ${summary.qbRoscoBilled} Rosco" : ""} devices)',
+                    label: 'QB Billed (${summary.billedCount} devices)',
                     color: AppTheme.navyAccent,
                   ),
                   const SizedBox(height: 6),
@@ -5680,13 +5682,14 @@ class _BillingCompareRow extends StatelessWidget {
                       height: 1.0,
                     ),
                   ),
-                  // Show breakdown sub-label when Direct cameras or Fuel cards add to total
-                  if (s.surfsightDirectCount > 0 || s.blueArrowFuelCount > 0)
+                  // Show breakdown sub-label when Direct cameras, Fuel cards, or Rosco PDF units add to total
+                  if (s.surfsightDirectCount > 0 || s.blueArrowFuelCount > 0 || s.roscoBillableCount > 0)
                     Text(
                       [
                         '${s.activeCount} MA',
                         if (s.surfsightDirectCount > 0) '${s.surfsightDirectCount} Direct',
                         if (s.blueArrowFuelCount > 0) '${s.blueArrowFuelCount} Fuel',
+                        if (s.roscoBillableCount > 0) '${s.roscoBillableCount} Rosco',
                       ].join(' + '),
                       style: TextStyle(
                         fontSize: 10,
@@ -5747,6 +5750,15 @@ class _BillingCompareRow extends StatelessWidget {
                       height: 1.0,
                     ),
                   ),
+                  // Show Rosco QB billed sub-label when Rosco lines are present
+                  if (s.qbRoscoBilled > 0)
+                    Text(
+                      '+ ${s.qbRoscoBilled} Rosco (QB)',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.deepPurple.shade300,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -5814,7 +5826,8 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
     final fuelCount   = summary.blueArrowFuelCount;
     if (allRows.isEmpty && directCount == 0 && fuelCount == 0) return const SizedBox.shrink();
 
-    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount + fuelCount;
+    final roscoCount = summary.roscoBillableCount;
+    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount + fuelCount + roscoCount;
 
     Widget planRow(MapEntry<String, int> e, int idx,
         {bool isSusp = false, bool isNa = false}) {
@@ -5935,6 +5948,40 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
               ),
             ),
           ],
+          // Rosco PDF row (billable units from Rosco AR invoice, not in MyAdmin)
+          if (summary.roscoBillableCount > 0) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              color: Colors.deepPurple.withValues(alpha: 0.05),
+              child: Row(
+                children: [
+                  Icon(Icons.videocam_rounded,
+                      size: 11, color: Colors.deepPurple.shade300),
+                  const SizedBox(width: 4),
+                  const Expanded(
+                    child: Text(
+                      'Rosco (PDF)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.deepPurple,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '${summary.roscoBillableCount}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.deepPurple.shade300,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           // BlueArrow Fuel row (monthly fuel card count, not in MyAdmin)
           if (fuelCount > 0) ...[
             const Divider(height: 1, color: AppTheme.divider),
@@ -5970,7 +6017,7 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
             ),
           ],
           // Total row
-          if (allRows.length + (directCount > 0 ? 1 : 0) + (fuelCount > 0 ? 1 : 0) > 1)
+          if (allRows.length + (directCount > 0 ? 1 : 0) + (fuelCount > 0 ? 1 : 0) + (summary.roscoBillableCount > 0 ? 1 : 0) > 1)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: const BoxDecoration(
@@ -6104,17 +6151,51 @@ class _CollapsedQbPlanTable extends StatelessWidget {
               ],
             ),
           ),
-          // Plan rows
+          // Plan rows (Rosco excluded from byPlan — reconciled in _RoscoCompareRow)
           ...plans.asMap().entries.map((e) => planRow(e.value, e.key)),
-          // Total row — sum from visible plan rows so Rosco is included when
-          // present and the footer always matches the sum of the rows above it.
-          if (plans.length > 1)
+          // Rosco QB billed row — shown separately from GPS/Camera plans
+          if (summary.qbRoscoBilled > 0) ...[
+            const Divider(height: 1, color: AppTheme.divider),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              color: Colors.deepPurple.withValues(alpha: 0.05),
+              child: Row(
+                children: [
+                  Icon(Icons.videocam_rounded,
+                      size: 11, color: Colors.deepPurple.shade300),
+                  const SizedBox(width: 4),
+                  const Expanded(
+                    child: Text(
+                      'Rosco (QB)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.deepPurple,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '${summary.qbRoscoBilled}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.deepPurple.shade300,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          // Total row — GPS/Camera plans only (Rosco reconciled separately)
+          if (plans.length + (summary.qbRoscoBilled > 0 ? 1 : 0) > 1)
             Builder(builder: (context) {
               final totalQtyAllPlans = byPlan.values
                   .fold(0.0, (s, lines) => s + lines.fold(0.0, (s2, l) => s2 + l.qty));
-              final display = totalQtyAllPlans == totalQtyAllPlans.roundToDouble()
-                  ? totalQtyAllPlans.toInt().toString()
-                  : totalQtyAllPlans.toStringAsFixed(1);
+              final totalWithRosco = totalQtyAllPlans + summary.qbRoscoBilled;
+              final display = totalWithRosco == totalWithRosco.roundToDouble()
+                  ? totalWithRosco.toInt().toString()
+                  : totalWithRosco.toStringAsFixed(1);
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: const BoxDecoration(
