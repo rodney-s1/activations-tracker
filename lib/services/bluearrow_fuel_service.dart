@@ -156,7 +156,7 @@ BlueArrowParseResult parseBlueArrowFuelCsv(String csvContent) {
     final lower = line.toLowerCase().replaceAll('"', '');
 
     // ── Section header detection ───────────────────────────────────────────
-    if (lower == 'resellers') {
+    if (lower.startsWith('resellers')) {
       section = 1;
       continue;
     }
