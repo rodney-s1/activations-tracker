@@ -5826,8 +5826,9 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
     final fuelCount   = summary.blueArrowFuelCount;
     if (allRows.isEmpty && directCount == 0 && fuelCount == 0) return const SizedBox.shrink();
 
-    final roscoCount = summary.roscoBillableCount;
-    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount + fuelCount + roscoCount;
+    // TOTAL footer = MyAdmin devices + Direct + Fuel only.
+    // Rosco PDF row is informational — reconciled separately, not added to BILLABLE total.
+    final totalQty = allRows.fold(0, (s, e) => s + e.value) + directCount + fuelCount;
 
     Widget planRow(MapEntry<String, int> e, int idx,
         {bool isSusp = false, bool isNa = false}) {
@@ -6016,8 +6017,8 @@ class _CollapsedMyAdminPlanTable extends StatelessWidget {
               ),
             ),
           ],
-          // Total row
-          if (allRows.length + (directCount > 0 ? 1 : 0) + (fuelCount > 0 ? 1 : 0) + (summary.roscoBillableCount > 0 ? 1 : 0) > 1)
+          // Total row — MyAdmin + Direct + Fuel only (Rosco PDF row is informational)
+          if (allRows.length + (directCount > 0 ? 1 : 0) + (fuelCount > 0 ? 1 : 0) > 1)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: const BoxDecoration(
@@ -6187,15 +6188,17 @@ class _CollapsedQbPlanTable extends StatelessWidget {
               ),
             ),
           ],
-          // Total row — GPS/Camera plans only (Rosco reconciled separately)
-          if (plans.length + (summary.qbRoscoBilled > 0 ? 1 : 0) > 1)
+          // Total row — GPS/Camera plans only (Rosco is informational, not included)
+          // Show total row when there are 2+ GPS/Camera plan rows, or 1 plan + Rosco row
+          // (so the footer always matches the billedCount header, not GPS+Rosco combined)
+          if (plans.length > 1 || (plans.length == 1 && summary.qbRoscoBilled > 0))
             Builder(builder: (context) {
+              // Sum only the non-Rosco plans — matches billedCount in the header
               final totalQtyAllPlans = byPlan.values
                   .fold(0.0, (s, lines) => s + lines.fold(0.0, (s2, l) => s2 + l.qty));
-              final totalWithRosco = totalQtyAllPlans + summary.qbRoscoBilled;
-              final display = totalWithRosco == totalWithRosco.roundToDouble()
-                  ? totalWithRosco.toInt().toString()
-                  : totalWithRosco.toStringAsFixed(1);
+              final display = totalQtyAllPlans == totalQtyAllPlans.roundToDouble()
+                  ? totalQtyAllPlans.toInt().toString()
+                  : totalQtyAllPlans.toStringAsFixed(1);
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: const BoxDecoration(
