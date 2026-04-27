@@ -27,6 +27,15 @@
 
     // Global helper: extract all text from a PDF given its bytes (Uint8Array).
     // Returns a Promise<string> — all pages concatenated with newlines.
+    //
+    // Rosco invoice layout notes:
+    //   The header table has two columns at the same Y coordinate:
+    //     col-left:  "Blue Arrow Telematics(Was Gps Mobil Sol)"
+    //     col-right: "GUILFORD EMS"  (the ship-to name we need)
+    //   pdf.js returns items left-to-right sorted by X within each Y band.
+    //   We annotate each text item with "~~X:NNN~~" so the Dart parser can
+    //   reconstruct column positions and reliably extract the ship-to name
+    //   even when it lands on a separate Y band from the sold-to cell.
     window.extractPdfText = function(uint8array) {
       return pdfjsLib.getDocument({ data: uint8array }).promise.then(function(pdf) {
         var pagePromises = [];
@@ -34,20 +43,23 @@
           pagePromises.push(
             pdf.getPage(i).then(function(page) {
               return page.getTextContent().then(function(content) {
-                // Join all text items with spaces; add a newline after each item
-                // that ends with a period or has a large vertical gap (new line).
+                // Build lines grouped by Y coordinate (threshold 2 pts).
+                // Each item is stored as "text~~X:NNN~~" so we can detect
+                // column layout in the Dart parser.
                 var lines = [];
                 var currentLine = [];
                 var lastY = null;
                 content.items.forEach(function(item) {
                   var y = item.transform[5]; // vertical position
+                  var x = item.transform[4]; // horizontal position
                   if (lastY !== null && Math.abs(y - lastY) > 2) {
                     if (currentLine.length > 0) {
                       lines.push(currentLine.join(''));
                       currentLine = [];
                     }
                   }
-                  currentLine.push(item.str);
+                  // Append X annotation after each item so Dart can detect columns
+                  currentLine.push(item.str + '~~X:' + Math.round(x) + '~~');
                   lastY = y;
                 });
                 if (currentLine.length > 0) {

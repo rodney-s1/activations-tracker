@@ -226,7 +226,15 @@ class RoscoPdfService {
 ///     the QB matching handles splitting across Washington/Tyrell EMS and Transport
 ///     because the QB parser uses normKey matching.
 RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
-  final lines = pdfText.split(RegExp(r'\r?\n'));
+  // ── Strip X-position annotations added by pdf.js extractor ────────────────
+  // Each text item is annotated as "text~~X:NNN~~" so we can detect columns.
+  // We need TWO versions of each line:
+  //   • clean:  annotations removed  → used for regex matching
+  //   • raw:    annotations kept     → used for column detection
+  final rawLines   = pdfText.split(RegExp(r'\r?\n'));
+  final cleanLines = rawLines
+      .map((l) => l.replaceAll(RegExp(r'~~X:\d+~~'), '').trim())
+      .toList();
 
   // Map: shipToName → total qty (accumulate across multi-page invoices)
   final Map<String, int> qtyByShipTo = {};
@@ -235,41 +243,128 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
   String? currentShipTo;
   String? currentInvoiceNum;
   final Set<String> seenInvoices = {}; // deduplicate multi-page invoices
+  bool _expectShipToNextLine = false;  // fallback: name on line after "Blue Arrow"
 
   // Customers to ignore entirely
   const ignoreNames = {'spartan fire', 'baker roofing'};
 
-  for (final rawLine in lines) {
-    final line = rawLine.trim();
+  /// Strip X-annotations from a single raw line and split into (text, x) pairs.
+  List<({String text, int x})> _parseAnnotations(String raw) {
+    final result = <({String text, int x})>[];
+    final pattern = RegExp(r'(.*?)~~X:(\d+)~~');
+    for (final m in pattern.allMatches(raw)) {
+      final txt = m.group(1)!;
+      final x   = int.tryParse(m.group(2)!) ?? 0;
+      if (txt.isNotEmpty) result.add((text: txt, x: x));
+    }
+    return result;
+  }
+
+  /// Extract the right-column (ship-to) name from a line that contains X annotations.
+  /// Rosco invoices: left column ends ~x=300; right column (ship-to) starts ~x=320+.
+  /// We look for a text chunk whose X > midpoint of the page (~300 pts for letter).
+  String? _extractRightColumn(String raw) {
+    final items = _parseAnnotations(raw);
+    if (items.isEmpty) return null;
+    // Find items clearly in the right half (x > 280 on a ~595pt wide page)
+    final rightItems = items.where((e) => e.x > 280).toList();
+    if (rightItems.isEmpty) return null;
+    final name = rightItems.map((e) => e.text).join(' ').trim();
+    // Reject if it looks like an address / label / email
+    if (name.isEmpty) return null;
+    final nl = name.toLowerCase();
+    if (nl.contains('@') ||
+        nl.contains('http') ||
+        nl == 'shipping to:' ||
+        nl == 'ship to:' ||
+        RegExp(r'^\d').hasMatch(name) || // starts with a digit (address line)
+        name.length < 2) return null;
+    return name;
+  }
+
+  for (int i = 0; i < cleanLines.length; i++) {
+    final line    = cleanLines[i];
+    final rawLine = rawLines[i];
     if (line.isEmpty) continue;
 
     // ── New invoice header ─────────────────────────────────────────────────
-    // "90-21 144th Place, Jamaica, New York 11435 Invoice #: 895699"
+    // "90-21 144th Place, Jamaica, New York 11435~~X:72~~ Invoice #: 895699~~X:430~~"
     final invMatch = RegExp(r'Invoice #:\s*(\d+)').firstMatch(line);
     if (invMatch != null) {
       final invNum = invMatch.group(1)!;
       if (!seenInvoices.contains(invNum)) {
-        // First page of a new invoice
         seenInvoices.add(invNum);
         currentInvoiceNum = invNum;
-        currentShipTo = null; // reset; will be set by the Blue Arrow line
+        currentShipTo = null;
+        _expectShipToNextLine = false;
       }
-      // Continuation pages have same invoice # — don't reset ship-to
       continue;
     }
 
-    // ── Ship-To line ───────────────────────────────────────────────────────
-    // "Blue Arrow Telematics(Was Gps Mobil Sol) GUILFORD EMS"
+    // ── "SHIPPING TO:" label line ──────────────────────────────────────────
+    // When pdf.js splits header columns onto separate Y bands we may see a
+    // standalone "SHIPPING TO:" line.  The ship-to name is the right-column
+    // text on the SAME line, or on the very next non-empty line.
+    if (line.toUpperCase().contains('SHIPPING TO:') ||
+        line.toUpperCase().contains('SHIP TO:')) {
+      // Try to get name from right column of THIS line
+      final rightName = _extractRightColumn(rawLine);
+      if (rightName != null && rightName.toUpperCase() != 'SHIPPING TO:' &&
+          rightName.toUpperCase() != 'SHIP TO:') {
+        final nl = rightName.toLowerCase();
+        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
+        if (!shouldIgnore) currentShipTo = rightName;
+      }
+      // Either way: if we didn't get a name, look at the next line
+      if (currentShipTo == null) _expectShipToNextLine = true;
+      continue;
+    }
+
+    // ── Fallback: line immediately after "SHIPPING TO:" ────────────────────
+    if (_expectShipToNextLine) {
+      _expectShipToNextLine = false;
+      final nl = line.toLowerCase();
+      // Skip address-looking lines, emails, or known labels
+      if (!nl.contains('@') &&
+          !nl.contains('http') &&
+          !RegExp(r'^\d').hasMatch(line) &&
+          line.length >= 2) {
+        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
+        if (!shouldIgnore) currentShipTo = line;
+      }
+      continue;
+    }
+
+    // ── Ship-To: same line as "Blue Arrow Telematics" ─────────────────────
+    // Case A: single line  → "Blue Arrow Telematics(Was Gps Mobil Sol) GUILFORD EMS"
+    // Case B: right column → Blue Arrow text left, ship-to right (X > 280)
     if (line.contains('Blue Arrow Telematics')) {
+      // Case A: name follows the closing paren on the same clean line
       final shipMatch =
           RegExp(r'Blue Arrow Telematics\([^)]*\)\s+(.+)').firstMatch(line);
       if (shipMatch != null) {
         final name = shipMatch.group(1)!.trim();
-        final nameLower = name.toLowerCase();
-        // Check if this is an ignored customer
-        final shouldIgnore =
-            ignoreNames.any((ign) => nameLower.contains(ign));
-        currentShipTo = shouldIgnore ? null : name;
+        // Strip any trailing X-annotations that leaked into clean text
+        final cleanName = name.replaceAll(RegExp(r'~~X:\d+~~'), '').trim();
+        if (cleanName.isNotEmpty) {
+          final nl = cleanName.toLowerCase();
+          final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
+          currentShipTo = shouldIgnore ? null : cleanName;
+          _expectShipToNextLine = false;
+          continue;
+        }
+      }
+
+      // Case B: ship-to is in the right column of the annotated raw line
+      final rightName = _extractRightColumn(rawLine);
+      if (rightName != null) {
+        final nl = rightName.toLowerCase();
+        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
+        currentShipTo = shouldIgnore ? null : rightName;
+        _expectShipToNextLine = false;
+      } else {
+        // Case C: ship-to may be on the very next line (different Y band)
+        _expectShipToNextLine = true;
       }
       continue;
     }
@@ -277,15 +372,13 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
     // ── Contract / billing line ────────────────────────────────────────────
     // "1  Contract: 3079  Billing Period: For the Month Ending - 03/31/2026  2  $15.00  $30.00"
     if (currentShipTo != null && line.contains('Contract:')) {
-      // Extract qty — it's the number immediately before the first "$"
-      // Pattern: ...Ending - MM/DD/YYYY  QTY  $UNIT  $EXT
       final contractMatch = RegExp(
               r'Contract:\s*\d+\s+Billing Period:.*?(\d+)\s+\$[\d.]+\s+\$[\d.]+')
           .firstMatch(line);
       if (contractMatch != null) {
         final qty = int.tryParse(contractMatch.group(1) ?? '0') ?? 0;
         if (qty > 0) {
-          final shipTo = currentShipTo; // non-null: guarded by outer `if (currentShipTo != null)`
+          final shipTo = currentShipTo;
           qtyByShipTo[shipTo] = (qtyByShipTo[shipTo] ?? 0) + qty;
           if (currentInvoiceNum != null) {
             final invNum = currentInvoiceNum;
