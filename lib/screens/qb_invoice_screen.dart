@@ -21,6 +21,7 @@ import '../services/billing_schedule_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/surfsight_direct_service.dart';
 import '../services/bluearrow_fuel_service.dart';
+import '../services/rosco_pdf_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -119,7 +120,8 @@ class QbInvoiceLine {
 }
 
 /// Per-customer combined summary used for display.
-/// [billedCount]   = sum of Qty across all QB invoice lines (not row count).
+/// [billedCount]   = sum of Qty across all QB invoice lines EXCEPT Rosco lines
+///                   (Rosco is reconciled separately via roscoBillableCount vs qbRoscoBilled).
 /// [activeCount]   = billable devices based on customer type:
 ///                   • Standard Geotab:  Active + Suspended + Never Activated (excl. Hanover-only)
 ///                   • CUA Geotab:       Active + Suspended (Never Activated excluded)
@@ -138,7 +140,7 @@ class QbCustomerSummary {
   final String customerName;
 
   // QB (Billed) side
-  final int billedCount;        // sum of Qty from QB — total devices invoiced
+  final int billedCount;        // sum of Qty from QB — excludes Rosco lines (reconciled separately)
   final double totalBilled;
   final List<QbInvoiceLine> qbLines;
 
@@ -171,6 +173,14 @@ class QbCustomerSummary {
   /// Sub-account breakdown from the Fuel CSV (column A) for this reseller.
   /// Each entry is {accountName, currentCount}.  Empty for direct customers.
   final List<FuelSubAccount> fuelSubAccounts;
+
+  /// Rosco camera billable unit count from the monthly Rosco PDF invoice.
+  /// Sourced from PDF "Ship To" quantities; injected after the audit runs.
+  final int roscoBillableCount;
+
+  /// Rosco QB billed count: QB lines where Item contains "Service Fee Rosco" or "Wifi Service".
+  /// Derived from dedupedLines during summary building.
+  final int qbRoscoBilled;
 
   /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
   /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
@@ -211,6 +221,8 @@ class QbCustomerSummary {
     this.surfsightDirectCount = 0,
     this.blueArrowFuelCount = 0,
     this.fuelSubAccounts = const [],
+    this.roscoBillableCount = 0,
+    this.qbRoscoBilled = 0,
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -219,6 +231,8 @@ class QbCustomerSummary {
   /// or a manual per-session override on the card.
   ///
   /// [totalBillable] = MyAdmin active devices + Surfsight Direct cameras + BlueArrow Fuel cards
+  /// Rosco cameras are NOT included in totalBillable — they have their own separate
+  /// QB SKU lines and are reconciled independently in the Rosco section of the card.
   int get totalBillable => activeCount + surfsightDirectCount + blueArrowFuelCount;
 
   VerifyStatus get status {
@@ -488,10 +502,17 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         itemLower.contains('blue arrow') ||
         (itemLower.contains('fuel') &&
             (itemLower.contains('service') || itemLower.contains('fee')));
+    // Rosco SKUs: "Service Fee Rosco …" and Wifi-as-Rosco lines (Q5: wifi units
+    // count toward the Rosco billed total; "Wifi Service Fee" contains 'service fee'
+    // so it already passes, but guard explicitly for bare "Wifi Service" variants).
+    final isRoscoSkuItem = itemLower.contains('rosco') ||
+        itemLower.contains('wifi service') ||
+        itemLower.contains('wifi fee');
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
         !isCameraSkuItem &&
-        !isFuelSkuItem) { continue; }
+        !isFuelSkuItem &&
+        !isRoscoSkuItem) { continue; }
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
@@ -593,6 +614,20 @@ String _extractPlanLabel(String item) {
       lower.contains('telematics'))) { return 'Komatsu'; }
   if (lower.contains('hitachi') && (lower.contains('service') || lower.contains('fee') ||
       lower.contains('telematics'))) { return 'Hitachi'; }
+
+  // ── Rosco cameras ──────────────────────────────────────────────────────────
+  // QB SKUs:
+  //   "Service Fee Rosco Pro - Data Limit 1GB Track & Trace + Storage + Live Streaming for DV6"
+  //   "Service Fee Rosco (Basic)"
+  //   "Service Fee Rosco (Pro)"
+  // Wifi-as-Rosco: Blue Arrow bills certain Rosco wifi units as "Wifi Service Fee"
+  // or similar (e.g. Guilford County).  Per Q5 confirmation, ALL wifi units count
+  // toward the Rosco billed total and are reconciled in the Rosco section of the card.
+  if (lower.contains('rosco') ||
+      lower.contains('wifi service') ||
+      lower.contains('wifi fee')) {
+    return 'Rosco';
+  }
 
   // ── BlueArrow Fuel ─────────────────────────────────────────────────────────
   // QB SKU: "BlueArrow Fuel:BlueArrow Fuel Service"
@@ -908,6 +943,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   bool _fuelLoaded = false;
   String? _fuelFileName;
 
+  /// Rosco PDF invoice data (parsed from monthly PDF import on this screen).
+  final RoscoPdfService _roscoPdfService = RoscoPdfService();
+  bool _roscoLoaded = false;
+  String? _roscoFileName;
+  bool _roscoImporting = false; // true while pdf.js is extracting text
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -1144,6 +1185,60 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     );
   }
 
+  // ── Import Rosco PDF (file picker) ─────────────────────────────────────
+
+  Future<void> _importRoscoPdf() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      if (file.bytes == null) return;
+      await _processRoscoPdfBytes(file.bytes!.toList(), file.name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import error: $e'), backgroundColor: AppTheme.red),
+      );
+    }
+  }
+
+  Future<void> _processRoscoPdfBytes(List<int> bytes, String fileName) async {
+    setState(() => _roscoImporting = true);
+    try {
+      final pdfText = await extractPdfTextFromBytes(bytes);
+      if (!mounted) return;
+      final parsed = _roscoPdfService.importFromText(pdfText);
+      if (!mounted) return;
+      setState(() {
+        _roscoLoaded    = true;
+        _roscoFileName  = fileName;
+        _roscoImporting = false;
+        _auditRan       = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'Rosco PDF: ${parsed.totalQty} units across '
+              '${parsed.lines.length} customers (${parsed.invoiceCount} invoices)'),
+          backgroundColor: const Color(0xFF6A1B9A),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _roscoImporting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to parse Rosco PDF: $e'),
+          backgroundColor: AppTheme.red,
+        ),
+      );
+    }
+  }
+
   // ── Drag-and-drop entry point ─────────────────────────────────────────────
   // Called by _ImportBar when files are dropped onto either slot.
   // Auto-detects which file is MyAdmin vs QB by sniffing the CSV header, so
@@ -1152,8 +1247,20 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     for (final file in files) {
       try {
         final bytes = await file.readAsBytes();
-        final content = decodeBytesToString(bytes);
         final fileName = file.name.isNotEmpty ? file.name : 'dropped_file';
+
+        // ── PDF detection (Rosco invoice) ────────────────────────────────
+        // PDF files start with the magic bytes %PDF
+        final isPdf = bytes.length >= 4 &&
+            bytes[0] == 0x25 && bytes[1] == 0x50 &&
+            bytes[2] == 0x44 && bytes[3] == 0x46; // %PDF
+
+        if (isPdf) {
+          await _processRoscoPdfBytes(bytes.toList(), fileName);
+          continue;
+        }
+
+        final content = decodeBytesToString(bytes);
 
         // ── Auto-detect file type ────────────────────────────────────────
         // MyAdmin full report always contains "Device Status" and "Billing Plan"
@@ -1186,7 +1293,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                 content: Text(
                     'Could not detect file type for "$fileName". '
                     'Please use the MyAdmin Full Report, QuickBooks Sales by '
-                    'Customer Detail CSV, or BlueArrow Fuel Card Count CSV.'),
+                    'Customer Detail CSV, BlueArrow Fuel CSV, or Rosco Invoice PDF.'),
                 backgroundColor: AppTheme.red,
               ),
             );
@@ -1524,11 +1631,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       int qbCamBilled = 0;
       int qbSuspendedBilled = 0;
       int qbFuelBilled = 0;
+      int qbRoscoBilled = 0;
       for (final line in dedupedLines) {
         final lbl = line.planLabel;
         final lblLower = lbl.toLowerCase();
         if (lbl == 'BlueArrow Fuel') {
           qbFuelBilled += line.qty.round();
+        } else if (lbl == 'Rosco') {
+          // Rosco lines: counted separately from GPS/Camera/Fuel
+          qbRoscoBilled += line.qty.round();
         } else if (cameraLabels.contains(lbl)) {
           qbCamBilled += line.qty.round();
         } else if (lblLower.contains('suspend')) {
@@ -1538,11 +1649,17 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         }
       }
 
+      // Rosco lines are reconciled separately (roscoBillableCount vs qbRoscoBilled)
+      // and must NOT be included in billedCount/totalBilled — otherwise customers
+      // with Rosco QB lines show a false overbilled status on the main GPS/Camera diff.
+      final nonRoscoLines = dedupedLines.where((l) => l.planLabel != 'Rosco').toList();
+
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
-        // billedCount = sum of Qty across deduped lines only (excludes prorated invoices)
-        billedCount: dedupedLines.fold(0, (s, l) => s + l.qty.round()),
-        totalBilled: dedupedLines.fold(0.0, (s, l) => s + l.amount),
+        // billedCount = sum of Qty across deduped NON-Rosco lines only
+        // (Rosco lines are in qbRoscoBilled and reconciled in the Rosco section)
+        billedCount: nonRoscoLines.fold(0, (s, l) => s + l.qty.round()),
+        totalBilled: nonRoscoLines.fold(0.0, (s, l) => s + l.amount),
         qbLines: dedupedLines,
         activeCount: totalBillable,
         unknownCount: unknownDeviceCount,
@@ -1558,6 +1675,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbCamBilled:  qbCamBilled,
         qbSuspendedBilled: qbSuspendedBilled,
         qbFuelBilled: qbFuelBilled,
+        qbRoscoBilled: qbRoscoBilled,
         activeDevices: devices,
         activePlanCounts: activePlanCounts,
         isCua: isCua,
@@ -1615,6 +1733,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbCamBilled:  existing.qbCamBilled,
             qbSuspendedBilled: existing.qbSuspendedBilled,
             qbFuelBilled: existing.qbFuelBilled,
+            qbRoscoBilled: existing.qbRoscoBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:            existing.isCua,
             jobType:          existing.jobType,
@@ -1642,6 +1761,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbCamBilled:  0,
           qbSuspendedBilled: 0,
           qbFuelBilled: 0,
+          qbRoscoBilled: 0,
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
@@ -1715,6 +1835,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbCamBilled:      parent.qbCamBilled,
             qbSuspendedBilled: parent.qbSuspendedBilled,
             qbFuelBilled:     parent.qbFuelBilled,
+            qbRoscoBilled:    parent.qbRoscoBilled,
             goFocusCount:     parent.goFocusCount     + child.goFocusCount,
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -1786,6 +1907,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbCamBilled:      parent.qbCamBilled,
           qbSuspendedBilled: parent.qbSuspendedBilled,
           qbFuelBilled:     parent.qbFuelBilled,
+          qbRoscoBilled:    parent.qbRoscoBilled,
           goFocusCount:     parent.goFocusCount     + child.goFocusCount,
           goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -1831,6 +1953,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbCamBilled: s.qbCamBilled,
           qbSuspendedBilled: s.qbSuspendedBilled,
           qbFuelBilled: s.qbFuelBilled,
+          qbRoscoBilled: s.qbRoscoBilled,
           activeDevices: s.activeDevices,
           activePlanCounts: s.activePlanCounts,
           isCua: s.isCua,
@@ -1869,6 +1992,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbCamBilled: s.qbCamBilled,
             qbSuspendedBilled: s.qbSuspendedBilled,
             qbFuelBilled: s.qbFuelBilled,
+            qbRoscoBilled: s.qbRoscoBilled,
             activeDevices: s.activeDevices,
             activePlanCounts: s.activePlanCounts,
             isCua: s.isCua,
@@ -1876,6 +2000,49 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             surfsightDirectCount: s.surfsightDirectCount,
             blueArrowFuelCount: fuelCount,
             fuelSubAccounts: _blueArrowFuelService.subAccountsFor(s.customerName),
+          );
+        }
+      }
+    }
+
+    // ── Inject Rosco PDF billable counts ─────────────────────────────────
+    // If a Rosco PDF was imported this session, attach the billable unit count
+    // to each matching customer.  Rosco counts are tracked SEPARATELY from the
+    // main totalBillable — they appear in their own card section so the user
+    // can reconcile PDF qty vs QB "Service Fee Rosco" billed qty independently.
+    if (_roscoPdfService.hasData) {
+      for (int i = 0; i < summaries.length; i++) {
+        final roscoCount = _roscoPdfService.countFor(summaries[i].customerName);
+        if (roscoCount > 0 || summaries[i].qbRoscoBilled > 0) {
+          final s = summaries[i];
+          summaries[i] = QbCustomerSummary(
+            customerName: s.customerName,
+            billedCount: s.billedCount,
+            totalBilled: s.totalBilled,
+            qbLines: s.qbLines,
+            activeCount: s.activeCount,
+            unknownCount: s.unknownCount,
+            hanoverCount: s.hanoverCount,
+            hanoverCsQty: s.hanoverCsQty,
+            cameraCount: s.cameraCount,
+            goFocusCount: s.goFocusCount,
+            goFocusPlusCount: s.goFocusPlusCount,
+            geotabCount: s.geotabCount,
+            suspendedGeotabCount: s.suspendedGeotabCount,
+            neverActivatedGeotabCount: s.neverActivatedGeotabCount,
+            qbGpsBilled: s.qbGpsBilled,
+            qbCamBilled: s.qbCamBilled,
+            qbSuspendedBilled: s.qbSuspendedBilled,
+            qbFuelBilled: s.qbFuelBilled,
+            qbRoscoBilled: s.qbRoscoBilled,
+            activeDevices: s.activeDevices,
+            activePlanCounts: s.activePlanCounts,
+            isCua: s.isCua,
+            jobType: s.jobType,
+            surfsightDirectCount: s.surfsightDirectCount,
+            blueArrowFuelCount: s.blueArrowFuelCount,
+            fuelSubAccounts: s.fuelSubAccounts,
+            roscoBillableCount: roscoCount,
           );
         }
       }
@@ -2050,9 +2217,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbFileName:      _qbFileName,
             fuelLoaded:      _fuelLoaded,
             fuelFileName:    _fuelFileName,
+            roscoLoaded:     _roscoLoaded,
+            roscoFileName:   _roscoFileName,
+            roscoImporting:  _roscoImporting,
             onImportMyAdmin: _importMyAdmin,
             onImportQb:      _importQb,
             onImportFuel:    _importFuelCsv,
+            onImportRosco:   _importRoscoPdf,
             onDropFiles:     _processDroppedFiles,
           ),
 
@@ -2568,9 +2739,13 @@ class _ImportBar extends StatefulWidget {
   final String? qbFileName;
   final bool fuelLoaded;
   final String? fuelFileName;
+  final bool roscoLoaded;
+  final String? roscoFileName;
+  final bool roscoImporting;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
+  final VoidCallback onImportRosco;
   final Future<void> Function(List<DropItem>) onDropFiles;
 
   const _ImportBar({
@@ -2581,9 +2756,13 @@ class _ImportBar extends StatefulWidget {
     required this.qbFileName,
     required this.fuelLoaded,
     required this.fuelFileName,
+    required this.roscoLoaded,
+    required this.roscoFileName,
+    required this.roscoImporting,
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
+    required this.onImportRosco,
     required this.onDropFiles,
   });
 
@@ -2595,6 +2774,7 @@ class _ImportBarState extends State<_ImportBar> {
   bool _myAdminHover = false;
   bool _qbHover      = false;
   bool _fuelHover    = false;
+  bool _roscoHover   = false;
   bool _allHover     = false;
 
   @override
@@ -2688,6 +2868,39 @@ class _ImportBarState extends State<_ImportBar> {
                 hovering: _fuelHover,
                 onTap: widget.onImportFuel,
               ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // ── Rosco PDF drop slot (optional) ─────────────────────────────
+          Expanded(
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _roscoHover = true),
+              onDragExited:  (_) => setState(() => _roscoHover = false),
+              onDragDone: (details) {
+                setState(() => _roscoHover = false);
+                widget.onDropFiles(details.files);
+              },
+              child: widget.roscoImporting
+                  ? _ImportSlot(
+                      icon: Icons.hourglass_top_outlined,
+                      label: 'Rosco PDF',
+                      sublabel: 'Extracting text…',
+                      loaded: false,
+                      color: const Color(0xFF7B1FA2),
+                      hovering: false,
+                      onTap: () {},
+                    )
+                  : _ImportSlot(
+                      icon: Icons.picture_as_pdf_outlined,
+                      label: 'Rosco PDF',
+                      sublabel: widget.roscoLoaded
+                          ? (widget.roscoFileName ?? 'Loaded')
+                          : 'Optional — drop or click',
+                      loaded: widget.roscoLoaded,
+                      color: const Color(0xFF7B1FA2),
+                      hovering: _roscoHover,
+                      onTap: widget.onImportRosco,
+                    ),
             ),
           ),
           const SizedBox(width: 8),
@@ -2905,7 +3118,7 @@ class _FullScreenDropOverlay extends StatelessWidget {
                         ),
                         const SizedBox(height: 10),
                         const Text(
-                          'MyAdmin Report, QB Sales CSV, and/or Fuel CSV\n'
+                          'MyAdmin Report, QB Sales CSV, Fuel CSV, and/or Rosco PDF\n'
                           'will be auto-detected and loaded automatically.',
                           textAlign: TextAlign.center,
                           style: TextStyle(
@@ -2935,6 +3148,11 @@ class _FullScreenDropOverlay extends StatelessWidget {
                               icon: Icons.local_gas_station,
                               label: 'Fuel CSV',
                               color: Colors.orange,
+                            ),
+                            _DropChip(
+                              icon: Icons.picture_as_pdf_outlined,
+                              label: 'Rosco PDF',
+                              color: Color(0xFF7B1FA2),
                             ),
                           ],
                         ),
@@ -3661,9 +3879,11 @@ class _CustomerVerifyCard extends StatelessWidget {
                   const SizedBox(height: 12),
 
                   // ── QB billed section (grouped by plan) ───────────
+                  // billedCount excludes Rosco lines (reconciled separately below).
                   _SideHeader(
                     icon: Icons.receipt_long,
-                    label: 'QB Billed (${summary.billedCount} devices)',
+                    label: 'QB Billed (${summary.billedCount}'  // Rosco excluded
+                        '${summary.qbRoscoBilled > 0 ? " + ${summary.qbRoscoBilled} Rosco" : ""} devices)',
                     color: AppTheme.navyAccent,
                   ),
                   const SizedBox(height: 6),
@@ -3683,6 +3903,14 @@ class _CustomerVerifyCard extends StatelessWidget {
                   // ── BlueArrow Fuel billed sub-account breakdown ────
                   if (summary.qbFuelBilled > 0)
                     _FuelBilledTable(summary: summary),
+
+                  // ── Rosco camera reconciliation section ─────────────
+                  // Shown whenever there is a Rosco PDF count OR QB Rosco
+                  // billed lines for this customer (including wifi-as-Rosco).
+                  if (summary.roscoBillableCount > 0 || summary.qbRoscoBilled > 0) ...[
+                    const SizedBox(height: 10),
+                    _RoscoCompareRow(summary: summary),
+                  ],
 
                   // Diff callout
                   if (summary.status != VerifyStatus.match) ...[
@@ -3709,6 +3937,176 @@ class _CustomerVerifyCard extends StatelessWidget {
         customerName: summary.customerName,
         devices: devices,
         serials: serials,
+      ),
+    );
+  }
+}
+
+// ── Rosco Compare Row ─────────────────────────────────────────────────────────
+
+/// Compact reconciliation widget shown in the expanded card when a customer
+/// has Rosco camera data (from the PDF invoice) or QB Rosco billed lines.
+///
+/// Displays:
+///   • PDF billable qty  (from monthly Rosco AR invoice)
+///   • QB billed qty     (sum of "Service Fee Rosco" + wifi-as-Rosco QB lines)
+///   • A mismatch flag   (amber warning) when the two numbers differ
+///
+/// Rosco counts are intentionally kept SEPARATE from the main GPS/camera
+/// totalBillable so the overall match/mismatch status is not polluted by Rosco
+/// discrepancies (Rosco is reconciled independently from the core Geotab audit).
+class _RoscoCompareRow extends StatelessWidget {
+  final QbCustomerSummary summary;
+  const _RoscoCompareRow({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final pdfQty  = summary.roscoBillableCount;
+    final qbQty   = summary.qbRoscoBilled;
+    final hasPdf  = pdfQty > 0;
+    final matched = pdfQty == qbQty;
+    // Mismatch is flagged whenever both sides are known (PDF loaded) and differ,
+    // OR when QB has Rosco lines but no PDF was imported (unknown PDF side).
+    final mismatch = hasPdf ? !matched : false;
+    final unknown  = !hasPdf && qbQty > 0; // PDF not imported yet
+
+    final borderColor = mismatch
+        ? AppTheme.amber.withValues(alpha: 0.7)
+        : unknown
+            ? AppTheme.textSecondary.withValues(alpha: 0.35)
+            : AppTheme.green.withValues(alpha: 0.55);
+    final bgColor = mismatch
+        ? AppTheme.amber.withValues(alpha: 0.07)
+        : unknown
+            ? AppTheme.textSecondary.withValues(alpha: 0.04)
+            : AppTheme.green.withValues(alpha: 0.06);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1.2),
+      ),
+      child: Row(
+        children: [
+          // Camera icon
+          Icon(
+            Icons.videocam_outlined,
+            size: 15,
+            color: mismatch ? AppTheme.amber : AppTheme.textSecondary,
+          ),
+          const SizedBox(width: 8),
+          // Label
+          const Text(
+            'Rosco',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          // PDF side
+          _roscoQtyChip(
+            label: 'PDF',
+            qty: pdfQty,
+            dimmed: !hasPdf,
+          ),
+          const SizedBox(width: 6),
+          const Text('→',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          const SizedBox(width: 6),
+          // QB side
+          _roscoQtyChip(
+            label: 'QB',
+            qty: qbQty,
+            dimmed: qbQty == 0,
+          ),
+          const Spacer(),
+          // Status badge
+          if (unknown)
+            _roscoStatusBadge(
+              label: 'No PDF',
+              color: AppTheme.textSecondary,
+              icon: Icons.help_outline,
+            )
+          else if (mismatch)
+            _roscoStatusBadge(
+              label: 'Mismatch ${pdfQty > qbQty ? '−${pdfQty - qbQty}' : '+${qbQty - pdfQty}'}',
+              color: AppTheme.amber,
+              icon: Icons.warning_amber_rounded,
+            )
+          else
+            _roscoStatusBadge(
+              label: 'Match',
+              color: AppTheme.green,
+              icon: Icons.check_circle_outline,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _roscoQtyChip({
+    required String label,
+    required int qty,
+    required bool dimmed,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: dimmed
+                ? AppTheme.textSecondary.withValues(alpha: 0.5)
+                : AppTheme.textSecondary,
+          ),
+        ),
+        const SizedBox(width: 3),
+        Text(
+          dimmed ? '—' : '$qty',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+            color: dimmed
+                ? AppTheme.textSecondary.withValues(alpha: 0.45)
+                : AppTheme.textPrimary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _roscoStatusBadge({
+    required String label,
+    required Color color,
+    required IconData icon,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.45), width: 1.2),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11, color: color),
+          const SizedBox(width: 3),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -4745,52 +5143,63 @@ class _PlanGroupTable extends StatelessWidget {
           }),
           // Total row if multiple plans
           if (plans.length > 1)
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: const BoxDecoration(
-                color: AppTheme.navyDark,
-                borderRadius:
-                    BorderRadius.vertical(bottom: Radius.circular(7)),
-                border:
-                    Border(top: BorderSide(color: AppTheme.divider)),
-              ),
-              child: Row(
-                children: [
-                  const Expanded(
-                    flex: 3,
-                    child: Text('TOTAL',
-                        style: TextStyle(
-                            fontSize: 10,
+            Builder(builder: (context) {
+              // Compute totals directly from visible rows so Rosco is included
+              // when present, and the footer always matches the sum of plan rows.
+              final totalQtyAllPlans = byPlan.values
+                  .fold(0.0, (s, lines) => s + lines.fold(0.0, (s2, l) => s2 + l.qty));
+              final totalAmtAllPlans = byPlan.values
+                  .fold(0.0, (s, lines) => s + lines.fold(0.0, (s2, l) => s2 + l.amount));
+              final totalQtyDisplay = totalQtyAllPlans == totalQtyAllPlans.roundToDouble()
+                  ? totalQtyAllPlans.toInt().toString()
+                  : totalQtyAllPlans.toStringAsFixed(1);
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: const BoxDecoration(
+                  color: AppTheme.navyDark,
+                  borderRadius:
+                      BorderRadius.vertical(bottom: Radius.circular(7)),
+                  border:
+                      Border(top: BorderSide(color: AppTheme.divider)),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      flex: 3,
+                      child: Text('TOTAL',
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white54)),
+                    ),
+                    SizedBox(
+                      width: 44,
+                      child: Text(
+                        totalQtyDisplay,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 11,
                             fontWeight: FontWeight.w700,
-                            color: Colors.white54)),
-                  ),
-                  SizedBox(
-                    width: 44,
-                    child: Text(
-                      summary.billedCount.toString(),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.navyAccent),
+                            color: AppTheme.navyAccent),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 56),
-                  SizedBox(
-                    width: 64,
-                    child: Text(
-                      Formatters.currency(summary.totalBilled),
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary),
+                    const SizedBox(width: 56),
+                    SizedBox(
+                      width: 64,
+                      child: Text(
+                        Formatters.currency(totalAmtAllPlans),
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary),
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -5697,34 +6106,42 @@ class _CollapsedQbPlanTable extends StatelessWidget {
           ),
           // Plan rows
           ...plans.asMap().entries.map((e) => planRow(e.value, e.key)),
-          // Total row
+          // Total row — sum from visible plan rows so Rosco is included when
+          // present and the footer always matches the sum of the rows above it.
           if (plans.length > 1)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-              decoration: const BoxDecoration(
-                color: AppTheme.navyDark,
-                borderRadius: BorderRadius.vertical(bottom: Radius.circular(6)),
-                border: Border(top: BorderSide(color: AppTheme.divider)),
-              ),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text('TOTAL',
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white54)),
-                  ),
-                  Text(
-                    '${summary.billedCount}',
-                    style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.navyAccent),
-                  ),
-                ],
-              ),
-            ),
+            Builder(builder: (context) {
+              final totalQtyAllPlans = byPlan.values
+                  .fold(0.0, (s, lines) => s + lines.fold(0.0, (s2, l) => s2 + l.qty));
+              final display = totalQtyAllPlans == totalQtyAllPlans.roundToDouble()
+                  ? totalQtyAllPlans.toInt().toString()
+                  : totalQtyAllPlans.toStringAsFixed(1);
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: const BoxDecoration(
+                  color: AppTheme.navyDark,
+                  borderRadius: BorderRadius.vertical(bottom: Radius.circular(6)),
+                  border: Border(top: BorderSide(color: AppTheme.divider)),
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text('TOTAL',
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white54)),
+                    ),
+                    Text(
+                      display,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.navyAccent),
+                    ),
+                  ],
+                ),
+              );
+            }),
         ],
       ),
     );

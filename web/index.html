@@ -15,6 +15,55 @@
 
   <!-- Google Identity Services — required for Sign in with Google -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- PDF.js — used to extract text from Rosco invoice PDFs in the browser -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    // Configure pdf.js worker
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // Global helper: extract all text from a PDF given its bytes (Uint8Array).
+    // Returns a Promise<string> — all pages concatenated with newlines.
+    window.extractPdfText = function(uint8array) {
+      return pdfjsLib.getDocument({ data: uint8array }).promise.then(function(pdf) {
+        var pagePromises = [];
+        for (var i = 1; i <= pdf.numPages; i++) {
+          pagePromises.push(
+            pdf.getPage(i).then(function(page) {
+              return page.getTextContent().then(function(content) {
+                // Join all text items with spaces; add a newline after each item
+                // that ends with a period or has a large vertical gap (new line).
+                var lines = [];
+                var currentLine = [];
+                var lastY = null;
+                content.items.forEach(function(item) {
+                  var y = item.transform[5]; // vertical position
+                  if (lastY !== null && Math.abs(y - lastY) > 2) {
+                    if (currentLine.length > 0) {
+                      lines.push(currentLine.join(''));
+                      currentLine = [];
+                    }
+                  }
+                  currentLine.push(item.str);
+                  lastY = y;
+                });
+                if (currentLine.length > 0) {
+                  lines.push(currentLine.join(''));
+                }
+                return lines.join('\n');
+              });
+            })
+          );
+        }
+        return Promise.all(pagePromises).then(function(pages) {
+          return pages.join('\n');
+        });
+      });
+    };
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
