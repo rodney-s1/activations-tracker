@@ -839,7 +839,7 @@ String _normKey(String name) {
       child = child.replaceFirst(
           RegExp(
               r'\s+\b(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
-              r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|dba|'
+              r'ltd\.?|limited|co\.?|company|companies|lp|l\.?p\.?|llp|pllc|pc|dba|'
               r'group|enterprises|wholesale|holdings|international|national|'
               r'systems|technologies|tech|industries|partners|partnership|'
               r'solutions|associates|consulting|services|plc|lllp)\b$',
@@ -855,7 +855,7 @@ String _normKey(String name) {
       s = s.replaceFirst(
           RegExp(
               r'\s+\b(llc|l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|'
-              r'ltd\.?|limited|co\.?|company|lp|l\.?p\.?|llp|pllc|pc|dba|'
+              r'ltd\.?|limited|co\.?|company|companies|lp|l\.?p\.?|llp|pllc|pc|dba|'
               r'group|enterprises|wholesale|holdings|international|national|'
               r'systems|technologies|tech|industries|partners|partnership|'
               r'solutions|associates|consulting|services|plc|lllp)\b\.?$',

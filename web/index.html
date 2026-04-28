@@ -43,14 +43,26 @@
           pagePromises.push(
             pdf.getPage(i).then(function(page) {
               return page.getTextContent().then(function(content) {
+                // Sort items top-to-bottom (descending Y in PDF space) then
+                // left-to-right (ascending X) within each row.  Without this
+                // sort, pdf.js returns items in content-stream order which is
+                // effectively random — causing items from different rows to be
+                // merged and invoice numbers to appear before their labels.
+                var sorted = content.items.slice().sort(function(a, b) {
+                  var dy = b.transform[5] - a.transform[5]; // desc Y = top first
+                  if (Math.abs(dy) > 2) return dy;
+                  return a.transform[4] - b.transform[4]; // asc X within row
+                });
+
                 // Build lines grouped by Y coordinate (threshold 2 pts).
-                // Each item is stored as "text~~X:NNN~~" so we can detect
-                // column layout in the Dart parser.
+                // Each item is stored as "text~~X:NNN~~" so the Dart parser
+                // can reconstruct column positions and reliably extract the
+                // ship-to name even when it is in a right column.
                 var lines = [];
                 var currentLine = [];
                 var lastY = null;
-                content.items.forEach(function(item) {
-                  var y = item.transform[5]; // vertical position
+                sorted.forEach(function(item) {
+                  var y = item.transform[5]; // vertical position (PDF space)
                   var x = item.transform[4]; // horizontal position
                   if (lastY !== null && Math.abs(y - lastY) > 2) {
                     if (currentLine.length > 0) {

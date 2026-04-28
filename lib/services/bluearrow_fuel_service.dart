@@ -330,7 +330,7 @@ String _normKey(String name) {
 
   // Multi-pass suffix stripping
   const suffixes = {
-    'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'group', 'enterprises',
+    'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'companies', 'group', 'enterprises',
     'enterprise', 'holdings', 'international', 'national', 'systems',
     'technologies', 'technology', 'tech', 'industries', 'industry',
     'partners', 'partnership', 'solutions', 'associates', 'consulting',

@@ -68,7 +68,8 @@ class RoscoPdfParseResult {
   /// One entry per end-customer (Ship To) in the PDF.
   final List<RoscoInvoiceLine> lines;
 
-  /// Total unit count across all invoices (should be 429 for the March 2026 PDF).
+  /// Total BILLABLE unit count (excludes ignored customers: Spartan Fire, Baker Roofing).
+  /// March 2026 PDF: 429 gross units − 2 ignored = 427 billable units.
   final int totalQty;
 
   /// Human-readable summary for the import snackbar.
@@ -256,39 +257,174 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
   // pdf.js may split these onto separate Y-band lines.
   // Strategy: when we see "SHIPPING TO:" we capture the name that follows
   // on the same line or the very next non-empty, non-junk line.
-  bool _expectShipToNextLine = false;
+  bool expectShipToNextLine = false;
 
   // Customers to ignore entirely
   const ignoreNames = {'spartan fire', 'baker roofing'};
 
   /// Returns true if a line looks like junk to skip when reading the ship-to name.
-  /// Junk = empty, email address, starts with digit (street address), known labels.
-  bool _isJunkLine(String line) {
+  /// Junk = empty, email, street address, header labels, or a salesperson name.
+  bool isJunkLine(String line) {
     if (line.isEmpty) return true;
     final ll = line.toLowerCase();
     if (ll.contains('@')) return true;
     if (ll.contains('http')) return true;
-    if (RegExp(r'^\d').hasMatch(line)) return true; // street address
-    if (ll == 'shipping to:' || ll == 'ship to:') return true;
-    if (ll == 'sold to:' || ll == 'sell to:') return true;
-    if (ll.startsWith('sales person') || ll.startsWith('ship date') ||
-        ll.startsWith('ship via') || ll.startsWith('pack slip')) return true;
+    if (RegExp(r'^\d').hasMatch(line)) return true; // street address / line number
+
+    // Label-only lines (with or without spaces — pdf.js may strip spaces)
+    if (RegExp(r'^(SHIPPING\s*TO:|SHIP\s*TO:|SOLD\s*TO:|SELL\s*TO:)$',
+            caseSensitive: false)
+        .hasMatch(line.trim())) {
+      return true;
+    }
+    // Header keyword prefixes (also handle no-space variants)
+    if (RegExp(
+            r'^(sales\s*person|ship\s*date|ship\s*via|pack\s*slip)',
+            caseSensitive: false)
+        .hasMatch(ll)) {
+      return true;
+    }
+    if (ll.startsWith('line') &&
+        (ll.contains('part number') || ll.contains('partnumber'))) {
+      return true;
+    }
+
+    const customerKeywords = {
+      'EMS', 'VFD', 'FIRE', 'COUNTY', 'CITY', 'TOWN', 'POLICE', 'RESCUE',
+      'TRANSPORT', 'TRANSIT', 'FLIGHT', 'AIR', 'CARE', 'HEALTH', 'MEDICAL',
+      'SHERIFF', 'EMERGENCY', 'SERVICES', 'DEPT', 'DEPARTMENT', 'INC', 'LLC',
+    };
+
+    // Reject salesperson names in two forms:
+    //
+    // Form A — spaced:  "Ross Braddock"
+    //   Exactly two space-separated words, both title-case, no customer keyword.
+    final words = line.trim().split(RegExp(r'\s+'));
+    if (words.length == 2 &&
+        words.every((w) => RegExp(r'^[A-Z][a-z]').hasMatch(w)) &&
+        !words.any((w) => customerKeywords.contains(w.toUpperCase()))) {
+      return true;
+    }
+
+    // Form B — concatenated (pdfplumber strips spaces): "RossBraddock"
+    //   One word that looks like two title-case words run together,
+    //   e.g. matches /^[A-Z][a-z]+[A-Z][a-z]+$/ and contains no customer keyword.
+    if (words.length == 1) {
+      final w = words[0];
+      // Must be entirely letters and match CamelCase two-word pattern
+      if (RegExp(r'^[A-Z][a-z]+[A-Z][a-z]+$').hasMatch(w)) {
+        // Check neither "half" is a customer keyword
+        final splitMatch = RegExp(r'^([A-Z][a-z]+)([A-Z][a-z]+)$').firstMatch(w);
+        if (splitMatch != null) {
+          final first = splitMatch.group(1)!;
+          final last  = splitMatch.group(2)!;
+          if (!customerKeywords.contains(first.toUpperCase()) &&
+              !customerKeywords.contains(last.toUpperCase())) {
+            return true;
+          }
+        }
+      }
+    }
+
     return false;
+  }
+
+  /// Extract the ship-to customer name from a line that contains "Blue Arrow Telematics".
+  ///
+  /// pdfplumber/pdf.js collapses adjacent words without spaces, so visually
+  /// two-column content becomes one run-together string:
+  ///   "GUILFORDEMSBlueArrowTelematics(WasGpsMobilSol)"
+  ///   "DanvilleLifeSavingCrewBlueArrowTelematics(WasGpsMobilSol)"
+  ///   "Blue Arrow Telematics(...) GUILFORD EMS"  (older stream-order format)
+  ///
+  /// Returns the customer name, or the original line if Blue Arrow is absent.
+  String extractShipToName(String line) {
+    // Case 1 (Y-sorted / no-space): CUSTOMER before Blue Arrow
+    // e.g. "GUILFORDEMSBlueArrowTelematics(...)"
+    final mBefore = RegExp(r'^(.+?)Blue\s*Arrow\s*Telematics',
+            caseSensitive: false)
+        .firstMatch(line);
+    if (mBefore != null) {
+      var candidate = mBefore.group(1)!.trim();
+      // Strip any header labels merged in ("SHIPPINGTO:", "SOLDTO:", etc.)
+      candidate = candidate
+          .replaceAll(RegExp(r'SHIPPING\s*TO:\s*', caseSensitive: false), '')
+          .replaceAll(RegExp(r'SOLD\s*TO:[^A-Z]*', caseSensitive: false), '')
+          .trim();
+      if (candidate.isNotEmpty) return candidate;
+    }
+    // Case 2 (stream-order / spaced): CUSTOMER after Blue Arrow paren
+    // e.g. "Blue Arrow Telematics(...) GUILFORD EMS"
+    final mAfter = RegExp(r'Blue\s*Arrow\s*Telematics\([^)]*\)\s*(.+)',
+            caseSensitive: false)
+        .firstMatch(line);
+    return mAfter != null ? mAfter.group(1)!.trim() : line;
   }
 
   for (int i = 0; i < cleanLines.length; i++) {
     final line = cleanLines[i];
 
     // ── New invoice header ─────────────────────────────────────────────────
-    // "90-21 144th Place, Jamaica, New York 11435  Invoice #: 895699"
-    final invMatch = RegExp(r'Invoice #:\s*(\d+)').firstMatch(line);
-    if (invMatch != null) {
-      final invNum = invMatch.group(1)!;
-      if (!seenInvoices.contains(invNum)) {
-        seenInvoices.add(invNum);
-        currentInvoiceNum = invNum;
-        currentShipTo = null;
-        _expectShipToNextLine = false;
+    // pdf.js may emit the invoice number in several formats:
+    //   (a) Number before label (Y-sorted):  "895699Invoice #: ..."
+    //   (b) Number after label (stream-order): "... Invoice #: 895699"
+    //   (c) Number on next line:  "Invoice #:" / "895699"
+    // Match (a) and (b) with a regex that finds a 5-7 digit number on any
+    // line that also contains "Invoice #:".
+    // NOTE: pdfplumber/pdf.js may strip spaces: "Invoice #:" → "Invoice#:"
+    //       Use regex with \s* to match both spaced and unspaced variants.
+    if (RegExp(r'Invoice\s*#:', caseSensitive: false).hasMatch(line)) {
+      // Extract the invoice number — always exactly 6 digits in this PDF.
+      //
+      // The raw line (after pdf.js strips spaces) looks like:
+      //   "Invoice#:89569990-21144thPlace,Jamaica,NewYork11435"
+      // where "895699" is the invoice number and "90-211..." is the street address.
+      // Using \d{5,7} (old) grabs "8956999" (7 digits) because "90" from the street
+      // address follows immediately. Fixed-width \d{6} takes ONLY the first 6 digits
+      // and stops, correctly returning "895699".
+      //
+      // Pattern A (Y-sorted / no-space): digits appear after "Invoice#:"
+      //   e.g. "Invoice#:895699<street>"
+      // Pattern B (stream-order):        digits appear before "Invoice#:"
+      //   e.g. "895699Invoice#:<street>"
+      String? invNum;
+      final mAfter  = RegExp(r'Invoice\s*#:\s*(\d{6})').firstMatch(line);
+      final mBefore = RegExp(r'(\d{6})\s*Invoice\s*#:').firstMatch(line);
+      if (mAfter != null) {
+        invNum = mAfter.group(1)!;
+      } else if (mBefore != null) {
+        invNum = mBefore.group(1)!;
+      }
+      if (invNum != null) {
+        if (!seenInvoices.contains(invNum)) {
+          // Truly new invoice: reset ship-to so we re-read the header
+          seenInvoices.add(invNum);
+          currentInvoiceNum = invNum;
+          currentShipTo = null;
+          expectShipToNextLine = false;
+        }
+        // If already seen (continuation page of same invoice) keep currentShipTo
+        // so contracts on page 2+ still accumulate to the same customer.
+        else {
+          currentInvoiceNum = invNum; // update tracking invoice# but keep shipTo
+        }
+        continue;
+      }
+      // No 6-digit number on the label line — peek at next line
+      if (i + 1 < cleanLines.length) {
+        final nextLine = cleanLines[i + 1];
+        final numMatch = RegExp(r'^(\d{4,7})$').firstMatch(nextLine.trim());
+        if (numMatch != null) {
+          final inv = numMatch.group(1)!;
+          if (!seenInvoices.contains(inv)) {
+            seenInvoices.add(inv);
+            currentInvoiceNum = inv;
+            currentShipTo = null;
+            expectShipToNextLine = false;
+          } else {
+            currentInvoiceNum = inv;
+          }
+        }
       }
       continue;
     }
@@ -299,55 +435,81 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
     // Or the name may be on the very next non-junk line:
     //   "SHIPPING TO:"
     //   "GUILFORD EMS"
-    final lineUpper = line.toUpperCase();
-    if (lineUpper.contains('SHIPPING TO:') || lineUpper.contains('SHIP TO:')) {
-      _expectShipToNextLine = false;
-
-      // Extract everything after "SHIPPING TO:" on the same line
-      final afterLabel = line
-          .replaceFirst(RegExp(r'.*?SHIPPING TO:\s*', caseSensitive: false), '')
-          .replaceFirst(RegExp(r'.*?SHIP TO:\s*', caseSensitive: false), '')
-          .trim();
-
-      if (afterLabel.isNotEmpty && !_isJunkLine(afterLabel)) {
-        final nl = afterLabel.toLowerCase();
-        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-        currentShipTo = shouldIgnore ? null : afterLabel;
-      } else {
-        // Name is on the next non-junk line
-        _expectShipToNextLine = true;
-      }
+    // NOTE: pdfplumber/pdf.js strips spaces: "SHIPPING TO:" → "SHIPPINGTO:"
+    //       Use regex with \s* to match both variants.
+    //       In this Rosco PDF layout the customer name is ALWAYS on the next
+    //       line (merged with "Blue Arrow Telematics(...)"), never on the
+    //       same line as the label — so always set expectShipToNextLine.
+    if (RegExp(r'SHIPPING\s*TO:|SHIP\s*TO:', caseSensitive: false).hasMatch(line)) {
+      expectShipToNextLine = true;
       continue;
     }
 
     // ── Line immediately after "SHIPPING TO:" (if name wasn't on label line) ─
-    if (_expectShipToNextLine) {
-      if (!_isJunkLine(line)) {
-        _expectShipToNextLine = false;
-        final nl = line.toLowerCase();
-        final shouldIgnore = ignoreNames.any((ign) => nl.contains(ign));
-        currentShipTo = shouldIgnore ? null : line;
+    if (expectShipToNextLine) {
+      if (!isJunkLine(line)) {
+        expectShipToNextLine = false;
+        // If this line is "Blue Arrow Telematics(...) CUSTOMER NAME",
+        // extract only the customer name after the closing paren.
+        final name = extractShipToName(line);
+        // Ignore check: compare normalised (no-space, lowercase) so that
+        // space-stripped names like "SPARTANFIRE" still match "spartan fire".
+        final nlNoSpace = name.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+        final shouldIgnore = ignoreNames.any(
+          (ign) => nlNoSpace.contains(ign.replaceAll(' ', ''))
+        );
+        currentShipTo = shouldIgnore ? null : name;
       }
       // if it IS junk, stay in _expectShipToNextLine=true and try the next line
       continue;
     }
 
     // ── Contract / billing line ────────────────────────────────────────────
-    // "1  Contract: 3079  Billing Period: For the Month Ending - 03/31/2026  2  $15.00  $30.00"
-    if (currentShipTo != null && line.contains('Contract:')) {
-      final contractMatch = RegExp(
-              r'Contract:\s*\d+\s+Billing Period:.*?(\d+)\s+\$[\d.]+\s+\$[\d.]+')
-          .firstMatch(line);
-      if (contractMatch != null) {
-        final qty = int.tryParse(contractMatch.group(1) ?? '0') ?? 0;
-        if (qty > 0) {
-          final shipTo = currentShipTo;
-          qtyByShipTo[shipTo] = (qtyByShipTo[shipTo] ?? 0) + qty;
-          if (currentInvoiceNum != null) {
-            final invNum = currentInvoiceNum;
-            invoicesByShipTo.putIfAbsent(shipTo, () => []);
-            if (!invoicesByShipTo[shipTo]!.contains(invNum)) {
-              invoicesByShipTo[shipTo]!.add(invNum);
+    // pdf.js (browser) preserves word spaces, so lines arrive as readable text:
+    //   "1 Contract: 3079 Billing Period: For the Month Ending - 03/31/2026 2 $15.00 $30.00"
+    //
+    // The ONLY reliable quantity method is back-calculation:
+    //   qty = ceil(ext_price / unit_price)
+    // Directly reading the qty digit fails because the year "2026" runs into
+    // the qty digit before regex can anchor (e.g. "2026 2" → greedy reads "20262").
+    // Back-calculation is immune to this and handles pro-rated partial-month
+    // lines (e.g. $62.90 / $15.00 → ceil = 5).
+    //
+    // Price format:
+    //   pdf.js  (browser app): "$15.00 $30.00"  — space between unit and ext prices
+    //   pdfplumber (Python validation): "$15.00$30.00" — no space (space-stripped)
+    // The regex tries the spaced variant first, then no-space as fallback, so
+    // both extraction paths continue to work.
+    //
+    // Verified against all 82 contract lines in the March 2026 PDF: grand total
+    // = 429 units, of which 2 are ignored (Spartan Fire, Baker Roofing),
+    // leaving 427 billable units.
+    if (currentShipTo != null &&
+        RegExp(r'Contract\s*:', caseSensitive: false).hasMatch(line) &&
+        // Exclude "Previous Contract #..." cross-reference lines
+        !RegExp(r'Previous\s*Contract', caseSensitive: false).hasMatch(line)) {
+
+      // Find the first $unit $ext pair on the line.
+      // pdf.js (browser) preserves spaces → "$15.00 $30.00"  (space between prices)
+      // pdfplumber (Python validation) strips spaces → "$15.00$30.00" (no space)
+      // Try spaced variant first, then no-space variant as fallback.
+      final matchPrices =
+          RegExp(r'\$(\d+\.?\d*)\s+\$(\d[\d,]*\.?\d*)').firstMatch(line) ??
+          RegExp(r'\$(\d+\.?\d*)\$(\d[\d,]*\.?\d*)').firstMatch(line);
+      if (matchPrices != null) {
+        final unit = double.tryParse(matchPrices.group(1)!.replaceAll(',', ''));
+        final ext  = double.tryParse(matchPrices.group(2)!.replaceAll(',', ''));
+        if (unit != null && ext != null && unit > 0) {
+          final qty = (ext / unit).ceil(); // ceil handles pro-rated lines
+          if (qty > 0) {
+            final shipTo = currentShipTo;
+            qtyByShipTo[shipTo] = (qtyByShipTo[shipTo] ?? 0) + qty;
+            if (currentInvoiceNum != null) {
+              final invNum = currentInvoiceNum;
+              invoicesByShipTo.putIfAbsent(shipTo, () => []);
+              if (!invoicesByShipTo[shipTo]!.contains(invNum)) {
+                invoicesByShipTo[shipTo]!.add(invNum);
+              }
             }
           }
         }
@@ -359,22 +521,33 @@ RoscoPdfParseResult parseRoscoPdfText(String pdfText) {
   // Braun Industries has 2 units:
   //   1 → Occoquan-Woodbridge-Lorton Volunteer Fire
   //   1 → Duke Life Flight (add to Duke Life Flight's total)
-  if (qtyByShipTo.containsKey('Braun Industries')) {
-    final braunQty = qtyByShipTo['Braun Industries']!;
-    // Remove Braun entirely
-    qtyByShipTo.remove('Braun Industries');
-    invoicesByShipTo.remove('Braun Industries');
+  //
+  // NOTE: pdfplumber strips spaces so the key in the map may be
+  //   "BraunIndustries" (no space) rather than "Braun Industries".
+  //   Find the Braun key by normalised lookup.
+  final braunKey = qtyByShipTo.keys.firstWhere(
+    (k) => k.toLowerCase().replaceAll(RegExp(r'\s+'), '') == 'braunindustries',
+    orElse: () => '',
+  );
+  if (braunKey.isNotEmpty) {
+    final braunQty = qtyByShipTo[braunKey]!;
+    qtyByShipTo.remove(braunKey);
+    invoicesByShipTo.remove(braunKey);
 
     // Add 1 to Occoquan
     const occoquan = 'Occoquan-Woodbridge-Lorton Volunteer Fire';
     qtyByShipTo[occoquan] = (qtyByShipTo[occoquan] ?? 0) + 1;
     invoicesByShipTo.putIfAbsent(occoquan, () => []);
 
-    // Add the remainder to Duke Life Flight
-    const duke = 'DUKE LIFE FLIGHT';
+    // Add the remainder to the Duke Life Flight entry already in the map.
+    // The key may be "DUKELIFEFLIGHT" (space-stripped) — find it by norm.
     final dukeSplit = braunQty - 1;
     if (dukeSplit > 0) {
-      qtyByShipTo[duke] = (qtyByShipTo[duke] ?? 0) + dukeSplit;
+      final dukeKey = qtyByShipTo.keys.firstWhere(
+        (k) => k.toLowerCase().replaceAll(RegExp(r'\s+'), '') == 'dukelifeflight',
+        orElse: () => 'DUKE LIFE FLIGHT',
+      );
+      qtyByShipTo[dukeKey] = (qtyByShipTo[dukeKey] ?? 0) + dukeSplit;
     }
   }
 
@@ -449,7 +622,7 @@ String _normKey(String name) {
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
 
   const suffixes = {
-    'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'group', 'enterprises',
+    'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'companies', 'group', 'enterprises',
     'enterprise', 'holdings', 'international', 'national', 'systems',
     'technologies', 'technology', 'tech', 'industries', 'industry',
     'partners', 'partnership', 'solutions', 'associates', 'consulting',
