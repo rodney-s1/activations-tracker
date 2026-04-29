@@ -2556,45 +2556,48 @@ class _FuelAliasesTabState extends State<_FuelAliasesTab> {
 
         // ── List ──────────────────────────────────────────────────────────
         Expanded(
-          child: filtered.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.swap_horiz,
-                          size: 48,
-                          color: Colors.white.withValues(alpha: 0.15)),
-                      const SizedBox(height: 12),
-                      Text(
-                        _search.isEmpty
-                            ? 'No aliases defined.\nTap + Add Alias to create one.'
-                            : 'No aliases match "$_search".',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 13),
-                      ),
-                    ],
+          child: ColoredBox(
+            color: AppTheme.navyDark,
+            child: filtered.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.swap_horiz,
+                            size: 48,
+                            color: Colors.white.withValues(alpha: 0.15)),
+                        const SizedBox(height: 12),
+                        Text(
+                          _search.isEmpty
+                              ? 'No aliases defined.\nTap + Add Alias to create one.'
+                              : 'No aliases match "$_search".',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.only(bottom: 32),
+                    itemCount: filtered.length,
+                    separatorBuilder: (_, __) => Divider(
+                      height: 1,
+                      color: Colors.white.withValues(alpha: 0.08),
+                    ),
+                    itemBuilder: (context, i) {
+                      final alias = filtered[i];
+                      // find real index in full list for edit/delete
+                      final realIndex = _aliases.indexOf(alias);
+                      return _AliasRow(
+                        alias: alias,
+                        onEdit: () =>
+                            _showDialog(existing: alias, index: realIndex),
+                        onDelete: () => _delete(realIndex, alias),
+                      );
+                    },
                   ),
-                )
-              : ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 32),
-                  itemCount: filtered.length,
-                  separatorBuilder: (_, __) => Divider(
-                    height: 1,
-                    color: Colors.white.withValues(alpha: 0.06),
-                  ),
-                  itemBuilder: (context, i) {
-                    final alias = filtered[i];
-                    // find real index in full list for edit/delete
-                    final realIndex = _aliases.indexOf(alias);
-                    return _AliasRow(
-                      alias: alias,
-                      onEdit: () =>
-                          _showDialog(existing: alias, index: realIndex),
-                      onDelete: () => _delete(realIndex, alias),
-                    );
-                  },
-                ),
+          ),
         ),
 
         // ── Footer count ──────────────────────────────────────────────────
@@ -2643,8 +2646,19 @@ class _AliasRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onEdit,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      hoverColor: Colors.white.withValues(alpha: 0.04),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              color: alias.isDefault
+                  ? Colors.orange.withValues(alpha: 0.5)
+                  : AppTheme.teal.withValues(alpha: 0.6),
+              width: 3,
+            ),
+          ),
+        ),
         child: Row(
           children: [
             // Fuel name
@@ -2654,19 +2668,21 @@ class _AliasRow extends StatelessWidget {
                   if (alias.isDefault)
                     Tooltip(
                       message: 'Built-in default',
-                      child: Icon(Icons.star,
-                          size: 11,
-                          color: Colors.orange[300]!
-                              .withValues(alpha: 0.6)),
+                      child: Icon(Icons.star_rounded,
+                          size: 12,
+                          color: Colors.orange[300]),
                     )
                   else
-                    const SizedBox(width: 11),
-                  const SizedBox(width: 6),
+                    Icon(Icons.person_pin_outlined,
+                        size: 12, color: AppTheme.tealLight),
+                  const SizedBox(width: 7),
                   Expanded(
                     child: Text(
                       alias.fuelName,
                       style: const TextStyle(
-                          color: Colors.white, fontSize: 13),
+                          color: Color(0xFFF0F4FF),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -2674,15 +2690,18 @@ class _AliasRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Icon(Icons.arrow_forward,
-                size: 13, color: Colors.white24),
+            Icon(Icons.arrow_forward_rounded,
+                size: 13,
+                color: Colors.white.withValues(alpha: 0.30)),
             const SizedBox(width: 8),
             // QB name
             Expanded(
               child: Text(
                 alias.qbName,
                 style: const TextStyle(
-                    color: AppTheme.tealLight, fontSize: 13),
+                    color: AppTheme.tealLight,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -2691,15 +2710,17 @@ class _AliasRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
-                  icon: const Icon(Icons.edit_outlined,
-                      size: 16, color: Colors.white38),
+                  icon: Icon(Icons.edit_outlined,
+                      size: 15,
+                      color: Colors.white.withValues(alpha: 0.45)),
                   tooltip: 'Edit',
                   onPressed: onEdit,
                   splashRadius: 16,
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline,
-                      size: 16, color: Colors.white38),
+                  icon: Icon(Icons.delete_outline,
+                      size: 15,
+                      color: Colors.red.withValues(alpha: 0.45)),
                   tooltip: 'Delete',
                   onPressed: onDelete,
                   splashRadius: 16,

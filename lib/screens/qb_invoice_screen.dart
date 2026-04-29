@@ -2177,9 +2177,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         bottom: showTabs
             ? TabBar(
                 controller: _tabCtrl,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white60,
+                indicatorColor: AppTheme.tealLight,
+                indicatorWeight: 2.5,
                 labelStyle:
-                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                unselectedLabelStyle: const TextStyle(fontSize: 11),
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                unselectedLabelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
                 tabs: [
                   const Tab(text: 'All'),
                   Tab(
@@ -3547,30 +3551,53 @@ class _CustomerVerifyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Pick a left-accent color based on status for easy visual separation
+    final Color accentColor = isAudited
+        ? const Color(0xFF2ECC71)
+        : _isDormant
+            ? AppTheme.textSecondary
+            : switch (summary.status) {
+                VerifyStatus.match       => const Color(0xFF2ECC71),
+                VerifyStatus.underbilled => AppTheme.red,
+                VerifyStatus.overbilled  => AppTheme.amber,
+                VerifyStatus.qbOnly      => AppTheme.textSecondary,
+                VerifyStatus.activeOnly  => AppTheme.red,
+              };
+
     return Card(
-      margin: const EdgeInsets.only(bottom: 6),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      elevation: 3,
+      shadowColor: Colors.black.withValues(alpha: 0.18),
       // Green tint when audited; slight grey tint when dormant
       color: isAudited
-          ? Color.lerp(AppTheme.cardBg, const Color(0xFF2ECC71), 0.08)
+          ? Color.lerp(AppTheme.cardBg, const Color(0xFF2ECC71), 0.06)
           : _isDormant
-              ? Color.lerp(AppTheme.cardBg, AppTheme.textSecondary, 0.04)
-              : null,
+              ? Color.lerp(AppTheme.cardBg, AppTheme.textSecondary, 0.05)
+              : AppTheme.cardBg,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: isAudited
-            ? const BorderSide(color: Color(0xFF2ECC71), width: 1.5)
-            : _isDormant
-                ? BorderSide(
-                    color: AppTheme.textSecondary.withValues(alpha: 0.2),
-                    width: 1.0)
-                : BorderSide.none,
+        side: BorderSide(
+          color: accentColor.withValues(alpha: isAudited ? 0.6 : 0.35),
+          width: 1.5,
+        ),
       ),
-      child: Column(
+      clipBehavior: Clip.antiAlias,
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Coloured left accent stripe ─────────────────────────
+            Container(
+              width: 5,
+              color: accentColor.withValues(alpha: isAudited ? 0.85 : 0.55),
+            ),
+            // ── Card body ───────────────────────────────────────────
+            Expanded(
+              child: Column(
         children: [
           // ── Header ──────────────────────────────────────────────────
           InkWell(
             onTap: onToggle,
-            borderRadius: BorderRadius.circular(12),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(14, 11, 12, 12),
               child: Column(
@@ -3959,6 +3986,10 @@ class _CustomerVerifyCard extends StatelessWidget {
             ),
           ],
         ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
