@@ -121,8 +121,15 @@ class BlueArrowFuelService {
     'wake med ems':               'wake med ems nc',
     'town of apex':               'town of apex pw nc',
     'town of apex pw':            'town of apex pw nc',
-    'town of fuquay varina':      'town of fuquayvarina nc',
-    'fuquay varina':              'town of fuquayvarina nc',
+    // Fuquay-Varina: fuel CSV uses "Town of Fuquay-Varina", QB uses "Town of Fuquay Varina - PW"
+    // After fuel _normKey strips all non-alphanum, hyphen disappears → 'town of fuquayvarina'
+    // After QB _normKey (screen), hyphen kept as punctuation → 'town of fuquay varina - pw'
+    'town of fuquay varina':      'town of fuquay varina - pw',
+    'fuquay varina':              'town of fuquay varina - pw',
+    'town of fuquayvarina':       'town of fuquay varina - pw',
+    'fuquayvarina':               'town of fuquay varina - pw',
+    // Also cover the QB normKey itself (fuel normKey of QB name, hyphen stripped by fuel regex)
+    'town of fuquay varina pw':   'town of fuquay varina - pw',
     'washington county':          'washington county nc',
     'gemma':                      'gemma pa',
     'gemma services':             'gemma pa',

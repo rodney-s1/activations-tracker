@@ -172,6 +172,8 @@ class RoscoPdfService {
     'gemma':                             'gemma',
     'fuquay varina':                     'town of fuquayvarina',
     'fuquay-varina':                     'town of fuquayvarina',
+    'town of fuquay varina':             'town of fuquayvarina',
+    'town of fuquayvarina':              'town of fuquayvarina',
     'fabricators supply':                'fabricators supply',
     'wake med campus police':            'wake med campus police',
     'cmj':                               'cmj',
