@@ -820,6 +820,9 @@ String _normKey(String name) {
   s = s.replaceAll(RegExp(r'\s*&\s*'), ' and ');
   // 6. Strip punctuation characters that differ between sources
   //    e.g. "Cape Fear Regional Transport, Inc." vs "Cape Fear Regional Transport Inc"
+  //    Replace hyphens/dashes with a space so "C-Phase" → "c phase" and matches
+  //    the fuel-service normaliser which also converts hyphens to spaces.
+  s = s.replaceAll(RegExp(r'[-\u2013\u2014]'), ' ');
   //    Remove commas, periods, apostrophes, and backticks.
   s = s.replaceAll(RegExp(r"[,.'`]"), '').replaceAll(RegExp(r'\s+'), ' ').trim();
   // 7. Strip trailing legal-entity suffixes that vary between QB and MyAdmin.
