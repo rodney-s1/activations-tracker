@@ -929,8 +929,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   String _search = '';
   final Set<String> _expanded = {};
 
-  /// Customers the user has manually marked as audited (persisted).
+  /// Customers the user has manually marked as fully audited in the All tab (persisted).
   final Set<String> _auditedCustomers = {};
+
+  /// Customers marked as Rosco-reviewed in the Rosco tab (persisted).
+  final Set<String> _auditedRosco = {};
+
+  /// Customers marked as Fuel-reviewed in the Fuel tab (persisted).
+  final Set<String> _auditedFuel = {};
 
   /// Billing schedules: lowercased customerName → BillingSchedule (persisted).
   final Map<String, BillingSchedule> _billingSchedules = {};
@@ -1001,25 +1007,93 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   // ── Audited customers (persisted via shared_preferences) ──────────────────
 
-  static const _kAuditedKey = 'audited_customers_v1';
+  static const _kAuditedKey      = 'audited_customers_v1';
+  static const _kAuditedRoscoKey = 'audited_rosco_v1';
+  static const _kAuditedFuelKey  = 'audited_fuel_v1';
 
   Future<void> _loadAuditedCustomers() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getStringList(_kAuditedKey) ?? [];
-    if (mounted) setState(() => _auditedCustomers.addAll(saved));
+    final saved      = prefs.getStringList(_kAuditedKey)      ?? [];
+    final savedRosco = prefs.getStringList(_kAuditedRoscoKey) ?? [];
+    final savedFuel  = prefs.getStringList(_kAuditedFuelKey)  ?? [];
+    if (mounted) setState(() {
+      _auditedCustomers.addAll(saved);
+      _auditedRosco.addAll(savedRosco);
+      _auditedFuel.addAll(savedFuel);
+    });
   }
 
-  Future<void> _toggleAudit(String customerName) async {
+  /// Toggle the audit checkmark.  [tabIndex] controls WHICH set is toggled:
+  ///   4 = Rosco tab  →  _auditedRosco
+  ///   5 = Fuel tab   →  _auditedFuel
+  ///   * = All / other tabs  →  _auditedCustomers (full audit)
+  ///
+  /// After toggling a vendor set, automatically promote to fully-audited if
+  /// every dimension (core status + Rosco + Fuel) is now clean or signed off.
+  Future<void> _toggleAudit(String customerName, {int tabIndex = 0}) async {
     final key = customerName.toLowerCase();
+    final prefs = await SharedPreferences.getInstance();
+
     setState(() {
-      if (_auditedCustomers.contains(key)) {
-        _auditedCustomers.remove(key);
+      if (tabIndex == 4) {
+        // Rosco tab
+        if (_auditedRosco.contains(key)) {
+          _auditedRosco.remove(key);
+          // Also uncheck full-audit since Rosco is no longer signed off
+          _auditedCustomers.remove(key);
+        } else {
+          _auditedRosco.add(key);
+        }
+      } else if (tabIndex == 5) {
+        // Fuel tab
+        if (_auditedFuel.contains(key)) {
+          _auditedFuel.remove(key);
+          _auditedCustomers.remove(key);
+        } else {
+          _auditedFuel.add(key);
+        }
       } else {
-        _auditedCustomers.add(key);
+        // All tab (or any other tab) — direct full-audit toggle
+        if (_auditedCustomers.contains(key)) {
+          _auditedCustomers.remove(key);
+        } else {
+          _auditedCustomers.add(key);
+        }
       }
     });
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_kAuditedKey, _auditedCustomers.toList());
+
+    await prefs.setStringList(_kAuditedKey,      _auditedCustomers.toList());
+    await prefs.setStringList(_kAuditedRoscoKey, _auditedRosco.toList());
+    await prefs.setStringList(_kAuditedFuelKey,  _auditedFuel.toList());
+  }
+
+  /// Returns true only if the customer is fully clean across ALL dimensions:
+  ///   • Core billing status is Match (or manually checked off)
+  ///   • Rosco: matched OR no Rosco data OR user signed off the Rosco tab
+  ///   • Fuel:  matched OR no Fuel data  OR user signed off the Fuel tab
+  bool _isFullyAudited(QbCustomerSummary s) {
+    final key = s.customerName.toLowerCase();
+    // If explicitly checked in the All tab, always show as audited
+    if (_auditedCustomers.contains(key)) return true;
+
+    // Core billing must be a match (not underbilled / overbilled / etc.)
+    final schedule = _scheduleFor(s.customerName);
+    final coreOk = schedule.isDormant || s.status == VerifyStatus.match;
+    if (!coreOk) return false;
+
+    // Rosco: ok if no data loaded, counts match, or user checked it off
+    final roscoOk = !_roscoLoaded
+        || (s.roscoBillableCount == s.qbRoscoBilled)
+        || _auditedRosco.contains(key);
+    if (!roscoOk) return false;
+
+    // Fuel: ok if no data loaded, counts match, or user checked it off
+    final fuelOk = !_fuelLoaded
+        || (s.blueArrowFuelCount == s.qbFuelBilled)
+        || _auditedFuel.contains(key);
+    if (!fuelOk) return false;
+
+    return true;
   }
 
   // ── Billing schedules (persisted) ─────────────────────────────────────────
@@ -2413,10 +2487,19 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                     itemBuilder: (ctx, i) {
                       final s = filtered[i];
                       final key = s.customerName.toLowerCase();
+                      // Per-tab audit state:
+                      //   Rosco tab (4) → _auditedRosco
+                      //   Fuel tab  (5) → _auditedFuel
+                      //   All/other     → fully-audited logic
+                      final bool cardAudited = tabIdx == 4
+                          ? _auditedRosco.contains(key)
+                          : tabIdx == 5
+                              ? _auditedFuel.contains(key)
+                              : _isFullyAudited(s);
                       return _CustomerVerifyCard(
                         summary: s,
                         expanded: _expanded.contains(key),
-                        isAudited: _auditedCustomers.contains(key),
+                        isAudited: cardAudited,
                         schedule: _scheduleFor(s.customerName),
                         onToggle: () => setState(() {
                           if (_expanded.contains(key)) {
@@ -2425,7 +2508,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                             _expanded.add(key);
                           }
                         }),
-                        onAuditToggle: () => _toggleAudit(s.customerName),
+                        onAuditToggle: () => _toggleAudit(
+                          s.customerName,
+                          tabIndex: tabIdx,
+                        ),
                         onScheduleChange: (sched) =>
                             _setBillingSchedule(s.customerName, sched),
                         onCuaOverride: (isCua) => setState(() {
