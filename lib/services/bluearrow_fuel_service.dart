@@ -328,6 +328,24 @@ String _normKey(String name) {
   s = s.replaceAll(RegExp(r"[^a-z0-9\s]"), '');
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
 
+  // Strip trailing bare 2-letter US state abbreviation
+  // e.g. "Charleston County SC" → "charleston county"
+  const stateAbbrevs = {
+    'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia',
+    'ks','ky','la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj',
+    'nm','ny','nc','nd','oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt',
+    'va','wa','wv','wi','wy','dc',
+  };
+  if (s.length > 3) {
+    final spaceIdx = s.lastIndexOf(' ');
+    if (spaceIdx >= 0) {
+      final lastWord = s.substring(spaceIdx + 1);
+      if (lastWord.length == 2 && stateAbbrevs.contains(lastWord)) {
+        s = s.substring(0, spaceIdx).trim();
+      }
+    }
+  }
+
   // Multi-pass suffix stripping
   const suffixes = {
     'inc', 'llc', 'ltd', 'corp', 'co', 'company', 'companies', 'group', 'enterprises',

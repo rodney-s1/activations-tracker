@@ -816,6 +816,25 @@ String _normKey(String name) {
   }
   // 4. Lowercase and collapse whitespace
   s = s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  // 4b. Strip trailing bare 2-letter US state abbreviation so
+  //     "Charleston County SC" and "Charleston County" both → "charleston county".
+  {
+    const stateAbbrevs = {
+      'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia',
+      'ks','ky','la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj',
+      'nm','ny','nc','nd','oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt',
+      'va','wa','wv','wi','wy','dc',
+    };
+    if (s.length > 3) {
+      final spaceIdx = s.lastIndexOf(' ');
+      if (spaceIdx >= 0) {
+        final lastWord = s.substring(spaceIdx + 1);
+        if (lastWord.length == 2 && stateAbbrevs.contains(lastWord)) {
+          s = s.substring(0, spaceIdx).trim();
+        }
+      }
+    }
+  }
   // 5. Normalise "&" ↔ "and" so "A & B" matches "A and B"
   s = s.replaceAll(RegExp(r'\s*&\s*'), ' and ');
   // 6. Strip punctuation characters that differ between sources
