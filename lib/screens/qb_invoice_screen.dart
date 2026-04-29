@@ -3582,24 +3582,26 @@ class _CustomerVerifyCard extends StatelessWidget {
         ),
       ),
       clipBehavior: Clip.antiAlias,
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── Coloured left accent stripe ─────────────────────────
-            Container(
-              width: 5,
-              color: accentColor.withValues(alpha: isAudited ? 0.85 : 0.55),
+      child: Stack(
+        children: [
+          // ── Coloured left accent stripe (behind, IgnorePointer so drag-drop is unaffected) ──
+          Positioned(
+            top: 0, bottom: 0, left: 0,
+            width: 5,
+            child: IgnorePointer(
+              child: ColoredBox(
+                color: accentColor.withValues(alpha: isAudited ? 0.85 : 0.55),
+              ),
             ),
-            // ── Card body ───────────────────────────────────────────
-            Expanded(
-              child: Column(
+          ),
+          // ── Card body ──────────────────────────────────────────────
+          Column(
         children: [
           // ── Header ──────────────────────────────────────────────────
           InkWell(
             onTap: onToggle,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 11, 12, 12),
+              padding: const EdgeInsets.fromLTRB(19, 11, 12, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -3986,10 +3988,8 @@ class _CustomerVerifyCard extends StatelessWidget {
             ),
           ],
         ],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
