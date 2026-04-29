@@ -206,14 +206,19 @@ class FuelAliasService {
 
   /// Restore from cloud pull — replaces in-memory list AND persists locally.
   /// Only applied when the cloud list is non-empty (same safety rule as other nodes).
+  /// Draft entries (fuelName set, qbName empty) are intentionally preserved —
+  /// they represent customers seen in the Fuel CSV that still need QB name mapping.
   Future<void> restoreFromCloud(List<Map<String, dynamic>> items) async {
     if (items.isEmpty) return;
     _aliases = items
         .map((e) => FuelAlias.fromJson(e))
-        .where((a) => a.fuelName.isNotEmpty && a.qbName.isNotEmpty)
+        .where((a) => a.fuelName.isNotEmpty) // keep drafts (qbName may be empty)
         .toList();
     _sort();
-    await _save();
+    // Use _persist directly to avoid triggering another cloud push (which would
+    // cause a push→pull loop).
+    final prefs = await SharedPreferences.getInstance();
+    await _persist(prefs);
   }
 
   // ── Persistence ───────────────────────────────────────────────────────────
@@ -222,6 +227,7 @@ class FuelAliasService {
     final prefs = await SharedPreferences.getInstance();
     await _persist(prefs);
     // Mirror every write to the cloud immediately so all users stay in sync.
+    // (restoreFromCloud uses _persist directly to avoid a push→pull loop.)
     CloudSyncService.pushSilent();
   }
 

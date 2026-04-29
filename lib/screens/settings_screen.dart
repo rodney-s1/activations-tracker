@@ -2339,7 +2339,11 @@ class _FuelAliasesTabState extends State<_FuelAliasesTab> {
             onPressed: () async {
               final fuel = fuelCtrl.text.trim();
               final qb = qbCtrl.text.trim();
-              if (fuel.isEmpty || qb.isEmpty) return;
+              // Fuel name is always required; QB name can be blank for drafts
+              // (user may fill it in later).
+              if (fuel.isEmpty) return;
+              // For new manual adds, require both fields.
+              if (existing == null && qb.isEmpty) return;
               Navigator.pop(ctx);
               if (existing == null) {
                 await FuelAliasService.instance.add(fuel, qb);
@@ -2352,7 +2356,9 @@ class _FuelAliasesTabState extends State<_FuelAliasesTab> {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 content: Text(existing == null
                     ? 'Alias added — re-import the Fuel CSV to apply.'
-                    : 'Alias updated — re-import the Fuel CSV to apply.'),
+                    : qb.isEmpty
+                        ? 'Draft saved — fill in the QB name when ready.'
+                        : 'Alias updated — re-import the Fuel CSV to apply.'),
                 backgroundColor: AppTheme.teal,
               ));
             },
@@ -2656,9 +2662,11 @@ class _AliasRow extends StatelessWidget {
         decoration: BoxDecoration(
           border: Border(
             left: BorderSide(
-              color: alias.isDefault
-                  ? Colors.orange.withValues(alpha: 0.5)
-                  : AppTheme.teal.withValues(alpha: 0.6),
+              color: alias.qbName.isEmpty
+                  ? Colors.amber.withValues(alpha: 0.7)
+                  : alias.isDefault
+                      ? Colors.orange.withValues(alpha: 0.5)
+                      : AppTheme.teal.withValues(alpha: 0.6),
               width: 3,
             ),
           ),
@@ -2698,16 +2706,38 @@ class _AliasRow extends StatelessWidget {
                 size: 13,
                 color: Colors.white.withValues(alpha: 0.30)),
             const SizedBox(width: 8),
-            // QB name
+            // QB name (or draft badge if not yet mapped)
             Expanded(
-              child: Text(
-                alias.qbName,
-                style: const TextStyle(
-                    color: AppTheme.tealLight,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500),
-                overflow: TextOverflow.ellipsis,
-              ),
+              child: alias.qbName.isEmpty
+                  ? Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                                color: Colors.amber.withValues(alpha: 0.5)),
+                          ),
+                          child: const Text(
+                            'Tap to map QB name',
+                            style: TextStyle(
+                                color: Colors.amber,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    )
+                  : Text(
+                      alias.qbName,
+                      style: const TextStyle(
+                          color: AppTheme.tealLight,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500),
+                      overflow: TextOverflow.ellipsis,
+                    ),
             ),
             // Actions
             Row(
