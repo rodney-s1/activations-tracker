@@ -136,6 +136,8 @@ class BlueArrowFuelService {
     'stockbridge area emergency': 'stockbridge area emergency mi',
     'cmj':                        'cmj va',
     'cmj technologies':           'cmj va',
+    // Advance Industrial Group: fuel CSV spells it without the trailing 'd'
+    'advance industrial':         'advanced industrial',
   };
 
   /// Apply the fuel alias table: if [normKey] appears in [_fuelAliases],
