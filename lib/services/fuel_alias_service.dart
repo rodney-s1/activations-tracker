@@ -134,6 +134,39 @@ class FuelAliasService {
     return map;
   }
 
+  // ── Auto-seed from Fuel CSV import ───────────────────────────────────────
+
+  /// Called after every Fuel CSV import.
+  /// For each raw customer name from the CSV, if no alias entry already covers
+  /// that fuel name (by norm key), a draft entry is added with an empty QB name
+  /// so the user can fill it in via Settings → Fuel Aliases.
+  /// Returns the number of new draft entries added.
+  Future<int> syncFromFuelCsv(List<String> rawFuelNames) async {
+    // Build a set of norm keys already covered by existing aliases
+    final existingNormKeys = <String>{};
+    for (final a in _aliases) {
+      existingNormKeys.add(_norm(a.fuelName));
+    }
+
+    int added = 0;
+    for (final name in rawFuelNames) {
+      final trimmed = name.trim();
+      if (trimmed.isEmpty) continue;
+      final key = _norm(trimmed);
+      if (existingNormKeys.contains(key)) continue;
+      // New customer — add draft with empty QB name
+      _aliases.add(FuelAlias(fuelName: trimmed, qbName: ''));
+      existingNormKeys.add(key); // prevent duplicates within this batch
+      added++;
+    }
+
+    if (added > 0) {
+      _sort();
+      await _save();
+    }
+    return added;
+  }
+
   // ── Write ─────────────────────────────────────────────────────────────────
 
   Future<void> add(String fuelName, String qbName) async {

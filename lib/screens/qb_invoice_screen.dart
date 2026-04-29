@@ -21,6 +21,7 @@ import '../services/billing_schedule_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/surfsight_direct_service.dart';
 import '../services/bluearrow_fuel_service.dart';
+import '../services/fuel_alias_service.dart';
 import '../services/rosco_pdf_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
@@ -1248,6 +1249,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   Future<void> _processFuelContent(String content, String fileName) async {
     final result = _blueArrowFuelService.import(content);
+
+    // Auto-populate Fuel Aliases with any new customer names from this CSV
+    // so the user can review and map them to their exact QB names.
+    final rawNames = result.entries.map((e) => e.qbCustomerName).toList();
+    final newAliasCount =
+        await FuelAliasService.instance.syncFromFuelCsv(rawNames);
+
     if (!mounted) return;
     setState(() {
       _fuelLoaded   = true;
@@ -1255,12 +1263,16 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       _auditRan     = false;
     });
     await CsvPersistService.saveFuelCsv(fileName: fileName);
+    final newMsg = newAliasCount > 0
+        ? ' ($newAliasCount new alias entr${newAliasCount == 1 ? 'y' : 'ies'} added — check Settings → Fuel Aliases)'
+        : '';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
             'BlueArrow Fuel: ${result.totalCards} fuel cards across '
-            '${result.totalCustomers} customers'),
+            '${result.totalCustomers} customers$newMsg'),
         backgroundColor: Colors.teal.shade700,
+        duration: Duration(seconds: newAliasCount > 0 ? 6 : 4),
       ),
     );
   }
