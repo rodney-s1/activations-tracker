@@ -846,7 +846,8 @@ String _normKey(String name) {
               r'ltd\.?|limited|co\.?|company|companies|lp|l\.?p\.?|llp|pllc|pc|dba|'
               r'group|enterprises|wholesale|holdings|international|national|'
               r'systems|technologies|tech|industries|partners|partnership|'
-              r'solutions|associates|consulting|services|plc|lllp)\b$',
+              r'solutions|associates|consulting|services|plc|lllp|'
+              r'logistics|transport|transportation|distribution)\b$',
               caseSensitive: false),
           '').trim();
     } while (child != prevChild);
@@ -862,7 +863,8 @@ String _normKey(String name) {
               r'ltd\.?|limited|co\.?|company|companies|lp|l\.?p\.?|llp|pllc|pc|dba|'
               r'group|enterprises|wholesale|holdings|international|national|'
               r'systems|technologies|tech|industries|partners|partnership|'
-              r'solutions|associates|consulting|services|plc|lllp)\b\.?$',
+              r'solutions|associates|consulting|services|plc|lllp|'
+              r'logistics|transport|transportation|distribution)\b\.?$',
               caseSensitive: false),
           '').trim();
     } while (s != prev);
@@ -1252,9 +1254,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
     // Auto-populate Fuel Aliases with any new customer names from this CSV
     // so the user can review and map them to their exact QB names.
+    // Pass the known QB norm keys so names that already match QB customers
+    // directly are not added as unnecessary drafts.
     final rawNames = result.entries.map((e) => e.qbCustomerName).toList();
-    final newAliasCount =
-        await FuelAliasService.instance.syncFromFuelCsv(rawNames);
+    final knownQbKeys = _qbData.keys.toSet();
+    final newAliasCount = await FuelAliasService.instance.syncFromFuelCsv(
+      rawNames,
+      knownQbNormKeys: knownQbKeys,
+    );
 
     if (!mounted) return;
     setState(() {

@@ -140,8 +140,16 @@ class FuelAliasService {
   /// For each raw customer name from the CSV, if no alias entry already covers
   /// that fuel name (by norm key), a draft entry is added with an empty QB name
   /// so the user can fill it in via Settings → Fuel Aliases.
+  ///
+  /// [knownQbNormKeys] — the set of normalised keys already present in QB data.
+  /// If the fuel name's norm key is already in that set, no alias is needed
+  /// (the names already merge on their own) and no draft is created.
+  ///
   /// Returns the number of new draft entries added.
-  Future<int> syncFromFuelCsv(List<String> rawFuelNames) async {
+  Future<int> syncFromFuelCsv(
+    List<String> rawFuelNames, {
+    Set<String> knownQbNormKeys = const {},
+  }) async {
     // Build a set of norm keys already covered by existing aliases
     final existingNormKeys = <String>{};
     for (final a in _aliases) {
@@ -153,8 +161,12 @@ class FuelAliasService {
       final trimmed = name.trim();
       if (trimmed.isEmpty) continue;
       final key = _norm(trimmed);
+      // Skip if already covered by an alias entry
       if (existingNormKeys.contains(key)) continue;
-      // New customer — add draft with empty QB name
+      // Skip if the fuel name already normalises to a known QB customer key —
+      // these names merge automatically and don't need an alias.
+      if (knownQbNormKeys.contains(key)) continue;
+      // New customer not in QB — add draft with empty QB name
       _aliases.add(FuelAlias(fuelName: trimmed, qbName: ''));
       existingNormKeys.add(key); // prevent duplicates within this batch
       added++;

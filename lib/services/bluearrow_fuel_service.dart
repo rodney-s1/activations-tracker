@@ -118,6 +118,7 @@ class BlueArrowFuelService {
   /// Returns a summary of what was loaded.
   BlueArrowParseResult import(String csvContent) {
     _counts.clear();
+    _displayNames.clear();   // clear stale names from previous import
     _subAccounts.clear();
     // Snapshot alias lookup at import time
     _aliasCache = FuelAliasService.instance.buildLookup();
