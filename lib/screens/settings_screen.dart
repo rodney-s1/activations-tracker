@@ -16,6 +16,7 @@ import '../services/qb_ignore_keyword_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/settings_export_service.dart';
 import '../services/surfsight_direct_service.dart';
+import '../services/fuel_alias_service.dart';
 import '../utils/app_theme.dart';
 import 'surfsight_direct_screen.dart';
 
@@ -33,7 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 5, vsync: this);
+    _tabs = TabController(length: 6, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -70,6 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             Tab(icon: Icon(Icons.map, size: 18), text: 'Plan Mapping'),
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
             Tab(icon: Icon(Icons.store, size: 18), text: 'Vendor Data'),
+            Tab(icon: Icon(Icons.local_gas_station, size: 18), text: 'Fuel Aliases'),
           ],
         ),
       ),
@@ -81,6 +83,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           const _PlanMappingTab(),
           const _BackupRestoreTab(),
           _VendorDataTab(),
+          const _FuelAliasesTab(),
         ],
       ),
     );
@@ -2203,6 +2206,555 @@ class _VendorTile extends StatelessWidget {
                     color: Colors.white38),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 6 — Fuel Aliases
+// ════════════════════════════════════════════════════════════════════════════
+
+class _FuelAliasesTab extends StatefulWidget {
+  const _FuelAliasesTab();
+  @override
+  State<_FuelAliasesTab> createState() => _FuelAliasesTabState();
+}
+
+class _FuelAliasesTabState extends State<_FuelAliasesTab> {
+  List<FuelAlias> _aliases = [];
+  String _search = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    setState(() {
+      _aliases = FuelAliasService.instance.getAll();
+    });
+  }
+
+  List<FuelAlias> get _filtered {
+    if (_search.isEmpty) return _aliases;
+    final q = _search.toLowerCase();
+    return _aliases
+        .where((a) =>
+            a.fuelName.toLowerCase().contains(q) ||
+            a.qbName.toLowerCase().contains(q))
+        .toList();
+  }
+
+  // ── Add / Edit dialog ────────────────────────────────────────────────────
+
+  Future<void> _showDialog({FuelAlias? existing, int? index}) async {
+    final fuelCtrl =
+        TextEditingController(text: existing?.fuelName ?? '');
+    final qbCtrl =
+        TextEditingController(text: existing?.qbName ?? '');
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.navyDark,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Row(
+          children: [
+            Icon(Icons.local_gas_station,
+                size: 20, color: AppTheme.tealLight),
+            const SizedBox(width: 8),
+            Text(
+              existing == null ? 'Add Fuel Alias' : 'Edit Fuel Alias',
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Enter the name exactly as it appears in the BlueArrow '
+                  'Fuel CSV, and the matching QuickBooks customer name.',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                const SizedBox(height: 16),
+                _AliasField(
+                  controller: fuelCtrl,
+                  label: 'BlueArrow Fuel CSV Name',
+                  hint: 'e.g.  Advance Industrial Group, LLC',
+                  icon: Icons.local_gas_station,
+                  color: Colors.orange,
+                ),
+                const SizedBox(height: 12),
+                const Row(
+                  children: [
+                    SizedBox(width: 8),
+                    Icon(Icons.arrow_downward,
+                        size: 16, color: Colors.white38),
+                    SizedBox(width: 6),
+                    Text('maps to',
+                        style:
+                            TextStyle(color: Colors.white38, fontSize: 11)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _AliasField(
+                  controller: qbCtrl,
+                  label: 'QuickBooks Customer Name',
+                  hint: 'e.g.  Advanced Industrial Group, LLC',
+                  icon: Icons.business,
+                  color: AppTheme.tealLight,
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel',
+                style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.check, size: 16),
+            label: Text(existing == null ? 'Add' : 'Save'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.teal,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              final fuel = fuelCtrl.text.trim();
+              final qb = qbCtrl.text.trim();
+              if (fuel.isEmpty || qb.isEmpty) return;
+              Navigator.pop(ctx);
+              if (existing == null) {
+                await FuelAliasService.instance.add(fuel, qb);
+              } else {
+                await FuelAliasService.instance
+                    .update(index!, fuel, qb);
+              }
+              _reload();
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(existing == null
+                    ? 'Alias added — re-import the Fuel CSV to apply.'
+                    : 'Alias updated — re-import the Fuel CSV to apply.'),
+                backgroundColor: AppTheme.teal,
+              ));
+            },
+          ),
+        ],
+      ),
+    );
+    fuelCtrl.dispose();
+    qbCtrl.dispose();
+  }
+
+  Future<void> _delete(int index, FuelAlias alias) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppTheme.navyDark,
+        title: const Text('Delete Alias?',
+            style: TextStyle(color: Colors.white)),
+        content: Text(
+          '"${alias.fuelName}"  →  "${alias.qbName}"',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await FuelAliasService.instance.remove(index);
+    _reload();
+  }
+
+  Future<void> _resetToDefaults() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppTheme.navyDark,
+        title: const Text('Reset to Defaults?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will replace all current aliases with the built-in defaults. '
+          'Any custom aliases you have added will be lost.',
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.amber),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await FuelAliasService.instance.resetToDefaults();
+    _reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Aliases reset to defaults.'),
+      backgroundColor: AppTheme.navyMid,
+    ));
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+
+    return Column(
+      children: [
+        // ── Header / toolbar ──────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyDark,
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.local_gas_station,
+                      size: 18, color: AppTheme.tealLight),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'BlueArrow Fuel → QuickBooks Name Mapping',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  // Reset button
+                  TextButton.icon(
+                    onPressed: _resetToDefaults,
+                    icon: const Icon(Icons.restore, size: 14),
+                    label: const Text('Reset',
+                        style: TextStyle(fontSize: 11)),
+                    style: TextButton.styleFrom(
+                        foregroundColor: Colors.white38),
+                  ),
+                  const SizedBox(width: 4),
+                  // Add button
+                  ElevatedButton.icon(
+                    onPressed: () => _showDialog(),
+                    icon: const Icon(Icons.add, size: 15),
+                    label: const Text('Add Alias',
+                        style: TextStyle(fontSize: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.teal,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'When the Fuel CSV uses a different name than QuickBooks, '
+                'add an alias here so both rows merge into one in the audit. '
+                'Re-import the Fuel CSV after making changes.',
+                style: TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+              const SizedBox(height: 10),
+              // Search
+              TextField(
+                onChanged: (v) => setState(() => _search = v),
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: 'Search aliases…',
+                  hintStyle: const TextStyle(
+                      color: Colors.white38, fontSize: 13),
+                  prefixIcon: const Icon(Icons.search,
+                      size: 18, color: Colors.white38),
+                  filled: true,
+                  fillColor:
+                      AppTheme.navyMid.withValues(alpha: 0.6),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // ── Column headers ────────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyMid,
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: Row(children: [
+                  Icon(Icons.local_gas_station,
+                      size: 13, color: Colors.orange[300]),
+                  const SizedBox(width: 6),
+                  Text('Fuel CSV Name',
+                      style: TextStyle(
+                          color: Colors.orange[300],
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700)),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.arrow_forward,
+                  size: 13, color: Colors.white38),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(children: [
+                  const Icon(Icons.business,
+                      size: 13, color: AppTheme.tealLight),
+                  const SizedBox(width: 6),
+                  const Text('QuickBooks Name',
+                      style: TextStyle(
+                          color: AppTheme.tealLight,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700)),
+                ]),
+              ),
+              const SizedBox(width: 64), // space for actions
+            ],
+          ),
+        ),
+
+        // ── List ──────────────────────────────────────────────────────────
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.swap_horiz,
+                          size: 48,
+                          color: Colors.white.withValues(alpha: 0.15)),
+                      const SizedBox(height: 12),
+                      Text(
+                        _search.isEmpty
+                            ? 'No aliases defined.\nTap + Add Alias to create one.'
+                            : 'No aliases match "$_search".',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 32),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    color: Colors.white.withValues(alpha: 0.06),
+                  ),
+                  itemBuilder: (context, i) {
+                    final alias = filtered[i];
+                    // find real index in full list for edit/delete
+                    final realIndex = _aliases.indexOf(alias);
+                    return _AliasRow(
+                      alias: alias,
+                      onEdit: () =>
+                          _showDialog(existing: alias, index: realIndex),
+                      onDelete: () => _delete(realIndex, alias),
+                    );
+                  },
+                ),
+        ),
+
+        // ── Footer count ──────────────────────────────────────────────────
+        Container(
+          color: AppTheme.navyDark,
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Row(
+            children: [
+              Text(
+                '${_aliases.length} alias${_aliases.length == 1 ? '' : 'es'}',
+                style: const TextStyle(
+                    color: Colors.white38, fontSize: 11),
+              ),
+              if (_search.isNotEmpty) ...[
+                const Text('  ·  ',
+                    style: TextStyle(color: Colors.white38)),
+                Text(
+                  '${filtered.length} shown',
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Single alias row ──────────────────────────────────────────────────────────
+
+class _AliasRow extends StatelessWidget {
+  final FuelAlias alias;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const _AliasRow({
+    required this.alias,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onEdit,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            // Fuel name
+            Expanded(
+              child: Row(
+                children: [
+                  if (alias.isDefault)
+                    Tooltip(
+                      message: 'Built-in default',
+                      child: Icon(Icons.star,
+                          size: 11,
+                          color: Colors.orange[300]!
+                              .withValues(alpha: 0.6)),
+                    )
+                  else
+                    const SizedBox(width: 11),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      alias.fuelName,
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.arrow_forward,
+                size: 13, color: Colors.white24),
+            const SizedBox(width: 8),
+            // QB name
+            Expanded(
+              child: Text(
+                alias.qbName,
+                style: const TextStyle(
+                    color: AppTheme.tealLight, fontSize: 13),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            // Actions
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined,
+                      size: 16, color: Colors.white38),
+                  tooltip: 'Edit',
+                  onPressed: onEdit,
+                  splashRadius: 16,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline,
+                      size: 16, color: Colors.white38),
+                  tooltip: 'Delete',
+                  onPressed: onDelete,
+                  splashRadius: 16,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Text field widget used in the Add/Edit dialog ─────────────────────────────
+
+class _AliasField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final IconData icon;
+  final Color color;
+
+  const _AliasField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: controller,
+      style: const TextStyle(color: Colors.white, fontSize: 13),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(color: color, fontSize: 12),
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.white24, fontSize: 12),
+        prefixIcon: Icon(icon, size: 16, color: color),
+        filled: true,
+        fillColor: AppTheme.navyMid,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: color.withValues(alpha: 0.3)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(
+              color: color.withValues(alpha: 0.3)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: color, width: 1.5),
         ),
       ),
     );

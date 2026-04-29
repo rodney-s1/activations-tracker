@@ -2,6 +2,8 @@
 //
 // Parses the monthly "Fuel Card Count Changes" CSV exported from BlueArrow and
 // builds a per-QB-customer fuel card count map for use in the QB Verify audit.
+
+import 'fuel_alias_service.dart';
 //
 // CSV structure (3 sections, each with its own header row):
 //
@@ -100,50 +102,15 @@ class BlueArrowFuelService {
 
   bool get hasData => _counts.isNotEmpty;
 
-  // ── Fuel-CSV → QB name alias map ─────────────────────────────────────────
-  //
-  // The BlueArrow Fuel CSV often uses a shortened reseller name that omits the
-  // state abbreviation (e.g. "Charleston County") while MyAdmin / QB use the
-  // full state-qualified name ("Charleston County SC").  Without an alias, the
-  // two normKeys differ and two audit rows appear.
-  //
-  // Map: fuel-CSV normKey  →  canonical MyAdmin/QB normKey
-  //
-  // NOTE: "City of Greenville SC" and "City of Greenville NC" are TWO SEPARATE
-  // accounts, so we must NOT strip state abbreviations globally.  Instead we
-  // only remap unambiguous short names here.
-  static const Map<String, String> _fuelAliases = {
-    'charleston county':          'charleston county sc',
-    'city of lenoir':             'city of lenoir nc',
-    'dare county':                'dare county ems nc',
-    'dare county ems':            'dare county ems nc',
-    'randolph county ems':        'randolph county ems nc',
-    'wake med ems':               'wake med ems nc',
-    'town of apex':               'town of apex pw nc',
-    'town of apex pw':            'town of apex pw nc',
-    // Fuquay-Varina: fuel CSV uses "Town of Fuquay-Varina", QB uses "Town of Fuquay Varina - PW"
-    // After fuel _normKey strips all non-alphanum, hyphen disappears → 'town of fuquayvarina'
-    // After QB _normKey (screen), hyphen kept as punctuation → 'town of fuquay varina - pw'
-    'town of fuquay varina':      'town of fuquay varina - pw',
-    'fuquay varina':              'town of fuquay varina - pw',
-    'town of fuquayvarina':       'town of fuquay varina - pw',
-    'fuquayvarina':               'town of fuquay varina - pw',
-    // Also cover the QB normKey itself (fuel normKey of QB name, hyphen stripped by fuel regex)
-    'town of fuquay varina pw':   'town of fuquay varina - pw',
-    'washington county':          'washington county nc',
-    'gemma':                      'gemma pa',
-    'gemma services':             'gemma pa',
-    'stockbridge area emergency': 'stockbridge area emergency mi',
-    'cmj':                        'cmj va',
-    'cmj technologies':           'cmj va',
-    // Advance Industrial Group: fuel CSV spells it without the trailing 'd'
-    'advance industrial':         'advanced industrial',
-  };
+  // ── Alias lookup (delegates to FuelAliasService) ──────────────────────────
+  // Aliases are now user-managed via Settings → Fuel Aliases.
+  // FuelAliasService.instance.buildLookup() returns the current normKey map.
+  Map<String, String>? _aliasCache;
 
-  /// Apply the fuel alias table: if [normKey] appears in [_fuelAliases],
-  /// return the canonical QB normKey; otherwise return [normKey] unchanged.
+  /// Apply the user-managed fuel alias table.
+  /// Cache is rebuilt each import so changes take effect on next re-import.
   String _applyFuelAlias(String normKey) =>
-      _fuelAliases[normKey] ?? normKey;
+      (_aliasCache ?? const {})[normKey] ?? normKey;
 
   // ── Import ────────────────────────────────────────────────────────────────
 
@@ -152,6 +119,8 @@ class BlueArrowFuelService {
   BlueArrowParseResult import(String csvContent) {
     _counts.clear();
     _subAccounts.clear();
+    // Snapshot alias lookup at import time
+    _aliasCache = FuelAliasService.instance.buildLookup();
 
     final result = parseBlueArrowFuelCsv(csvContent);
 
