@@ -968,7 +968,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 4, vsync: this);
+    _tabCtrl = TabController(length: 6, vsync: this);
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
@@ -2121,6 +2121,16 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             .where((s) => s.status == VerifyStatus.qbOnly)
             .toList();
         break;
+      case 4: // Rosco — customers with Rosco PDF count or QB Rosco billed lines
+        list = base
+            .where((s) => s.roscoBillableCount > 0 || s.qbRoscoBilled > 0)
+            .toList();
+        break;
+      case 5: // Fuel — customers with BlueArrow Fuel cards
+        list = base
+            .where((s) => s.blueArrowFuelCount > 0 || s.qbFuelBilled > 0)
+            .toList();
+        break;
       default:
         list = base;
     }
@@ -2149,6 +2159,10 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .where((s) => s.status == VerifyStatus.activeOnly).length;
     final qbOnlyCount = summaries
         .where((s) => s.status == VerifyStatus.qbOnly).length;
+    final roscoCount = summaries
+        .where((s) => s.roscoBillableCount > 0 || s.qbRoscoBilled > 0).length;
+    final fuelCount = summaries
+        .where((s) => s.blueArrowFuelCount > 0 || s.qbFuelBilled > 0).length;
     final showTabs = _auditRan && summaries.isNotEmpty;
 
     return Scaffold(
@@ -2195,7 +2209,24 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       ],
                     ]),
                   ),
-
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Rosco'),
+                      if (roscoCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(roscoCount, Colors.deepOrange),
+                      ],
+                    ]),
+                  ),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Fuel'),
+                      if (fuelCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(fuelCount, Colors.teal),
+                      ],
+                    ]),
+                  ),
                 ],
               )
             : null,
@@ -2342,7 +2373,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             Expanded(
               child: TabBarView(
                 controller: _tabCtrl,
-                children: List.generate(4, (tabIdx) {
+                children: List.generate(6, (tabIdx) {
                   final filtered = _filterForTab(summaries, tabIdx);
                   if (filtered.isEmpty) {
                     return Center(
@@ -2360,7 +2391,11 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                           Text(
                             tabIdx == 0
                                 ? 'No customers to display'
-                                : 'No issues in this category ✓',
+                                : tabIdx == 4
+                                    ? 'No Rosco customers found'
+                                    : tabIdx == 5
+                                        ? 'No Fuel customers found'
+                                        : 'No issues in this category ✓',
                             style: const TextStyle(
                                 color: AppTheme.textSecondary),
                           ),
