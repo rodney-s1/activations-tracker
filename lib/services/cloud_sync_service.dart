@@ -39,6 +39,7 @@ import '../services/csv_persist_service.dart';
 import '../services/qb_customer_service.dart';
 import '../services/qb_ignore_keyword_service.dart';
 import '../services/item_price_list_service.dart';
+import '../services/fuel_alias_service.dart';
 import '../models/qb_customer.dart';
 
 // ── Status enum ──────────────────────────────────────────────────────────────
@@ -360,6 +361,17 @@ class CloudSyncService {
         }
       }
 
+      // ── 9. Fuel Aliases ───────────────────────────────────────────
+      final fuelAliases = FuelAliasService.instance.toCloudList();
+      final r9 = await _putNode('fuel_aliases', {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'count': fuelAliases.length,
+        'data': fuelAliases,
+      });
+      if (r9 != null && kDebugMode) {
+        debugPrint('[CloudSync] Fuel aliases warning (non-fatal): $r9');
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return null;
@@ -417,6 +429,7 @@ class CloudSyncService {
         http.get(Uri.parse(_nodeUrl('qb_customers')),        headers: _headers),  // 5
         http.get(Uri.parse(_nodeUrl('qb_ignore_keywords')),  headers: _headers),  // 6
         http.get(Uri.parse(_nodeUrl('item_price_list')),     headers: _headers),  // 7
+        http.get(Uri.parse(_nodeUrl('fuel_aliases')),        headers: _headers),  // 8
       ]).timeout(const Duration(seconds: 20));
 
       final counts = <String, int>{};
@@ -563,6 +576,21 @@ class CloudSyncService {
         }
       }
 
+      // ── 8. Fuel Aliases ───────────────────────────────────────────
+      if (responses[8].statusCode == 200 && responses[8].body != 'null') {
+        try {
+          final node = jsonDecode(responses[8].body) as Map<String, dynamic>;
+          final list = (node['data'] as List? ?? []).cast<Map<String, dynamic>>();
+          if (list.isNotEmpty) {
+            await FuelAliasService.instance.restoreFromCloud(list);
+            counts['fuelAliases'] = list.length;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('[CloudSync] Fuel aliases restore warning: $e');
+          // Non-fatal
+        }
+      }
+
       await _recordLastSync();
       _setStatus(SyncStatus.success);
       return {'counts': counts};
@@ -684,6 +712,11 @@ class CloudSyncService {
             'keyword':   k.keyword,
             'isDefault': k.isDefault,
           }).toList(),
+        }),
+        _putNode('fuel_aliases', {
+          'updatedAt': DateTime.now().toIso8601String(),
+          'count': FuelAliasService.instance.toCloudList().length,
+          'data': FuelAliasService.instance.toCloudList(),
         }),
       ]);
 

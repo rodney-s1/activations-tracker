@@ -17,6 +17,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'cloud_sync_service.dart';
 
 /// A single fuel alias entry (displayed in the UI).
 class FuelAlias {
@@ -164,11 +165,31 @@ class FuelAliasService {
     await _save();
   }
 
+  // ── Cloud sync ────────────────────────────────────────────────────────────
+
+  /// Serialize for cloud push — returns a list of plain JSON maps.
+  List<Map<String, dynamic>> toCloudList() =>
+      _aliases.map((a) => a.toJson()).toList();
+
+  /// Restore from cloud pull — replaces in-memory list AND persists locally.
+  /// Only applied when the cloud list is non-empty (same safety rule as other nodes).
+  Future<void> restoreFromCloud(List<Map<String, dynamic>> items) async {
+    if (items.isEmpty) return;
+    _aliases = items
+        .map((e) => FuelAlias.fromJson(e))
+        .where((a) => a.fuelName.isNotEmpty && a.qbName.isNotEmpty)
+        .toList();
+    _sort();
+    await _save();
+  }
+
   // ── Persistence ───────────────────────────────────────────────────────────
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
     await _persist(prefs);
+    // Mirror every write to the cloud immediately so all users stay in sync.
+    CloudSyncService.pushSilent();
   }
 
   Future<void> _persist(SharedPreferences prefs) async {
