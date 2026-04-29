@@ -2354,10 +2354,13 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               qbFileName:      _qbFileName,
               fuelLoaded:      _fuelLoaded,
               fuelFileName:    _fuelFileName,
+              roscoLoaded:     _roscoLoaded,
+              roscoFileName:   _roscoFileName,
               bothReady:       bothLoaded,
               onImportMyAdmin: _importMyAdmin,
               onImportQb:      _importQb,
               onImportFuel:    _importFuelCsv,
+              onImportRosco:   _importRoscoPdf,
               onRun: () async {
                 // Reload Surfsight Direct data (Settings → Vendor Data changes)
                 await _surfsightDirectService.load();
@@ -2551,10 +2554,13 @@ class _ReadyToRunScreen extends StatelessWidget {
   final String? qbFileName;
   final bool fuelLoaded;
   final String? fuelFileName;
+  final bool roscoLoaded;
+  final String? roscoFileName;
   final bool bothReady;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
+  final VoidCallback onImportRosco;
   final VoidCallback onRun;
 
   const _ReadyToRunScreen({
@@ -2565,10 +2571,13 @@ class _ReadyToRunScreen extends StatelessWidget {
     required this.qbFileName,
     required this.fuelLoaded,
     required this.fuelFileName,
+    required this.roscoLoaded,
+    required this.roscoFileName,
     required this.bothReady,
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
+    required this.onImportRosco,
     required this.onRun,
   });
 
@@ -2662,6 +2671,21 @@ class _ReadyToRunScreen extends StatelessWidget {
               loadedColor: Colors.orange.shade700,
               optional: true,
               onReplace: onImportFuel,
+            ),
+
+            const SizedBox(height: 12),
+
+            _FileConfirmCard(
+              step: 4,
+              icon: Icons.picture_as_pdf_outlined,
+              title: 'Rosco PDF',
+              subtitle: 'AR Invoice Form (optional)',
+              loaded: roscoLoaded,
+              fileName: roscoFileName,
+              detail: roscoLoaded ? 'Rosco counts loaded — included in audit' : null,
+              loadedColor: const Color(0xFF7B1FA2),
+              optional: true,
+              onReplace: onImportRosco,
             ),
 
             const SizedBox(height: 32),
