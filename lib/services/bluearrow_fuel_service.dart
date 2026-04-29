@@ -100,6 +100,42 @@ class BlueArrowFuelService {
 
   bool get hasData => _counts.isNotEmpty;
 
+  // ── Fuel-CSV → QB name alias map ─────────────────────────────────────────
+  //
+  // The BlueArrow Fuel CSV often uses a shortened reseller name that omits the
+  // state abbreviation (e.g. "Charleston County") while MyAdmin / QB use the
+  // full state-qualified name ("Charleston County SC").  Without an alias, the
+  // two normKeys differ and two audit rows appear.
+  //
+  // Map: fuel-CSV normKey  →  canonical MyAdmin/QB normKey
+  //
+  // NOTE: "City of Greenville SC" and "City of Greenville NC" are TWO SEPARATE
+  // accounts, so we must NOT strip state abbreviations globally.  Instead we
+  // only remap unambiguous short names here.
+  static const Map<String, String> _fuelAliases = {
+    'charleston county':          'charleston county sc',
+    'city of lenoir':             'city of lenoir nc',
+    'dare county':                'dare county ems nc',
+    'dare county ems':            'dare county ems nc',
+    'randolph county ems':        'randolph county ems nc',
+    'wake med ems':               'wake med ems nc',
+    'town of apex':               'town of apex pw nc',
+    'town of apex pw':            'town of apex pw nc',
+    'town of fuquay varina':      'town of fuquayvarina nc',
+    'fuquay varina':              'town of fuquayvarina nc',
+    'washington county':          'washington county nc',
+    'gemma':                      'gemma pa',
+    'gemma services':             'gemma pa',
+    'stockbridge area emergency': 'stockbridge area emergency mi',
+    'cmj':                        'cmj va',
+    'cmj technologies':           'cmj va',
+  };
+
+  /// Apply the fuel alias table: if [normKey] appears in [_fuelAliases],
+  /// return the canonical QB normKey; otherwise return [normKey] unchanged.
+  String _applyFuelAlias(String normKey) =>
+      _fuelAliases[normKey] ?? normKey;
+
   // ── Import ────────────────────────────────────────────────────────────────
 
   /// Parse [csvContent] and replace the current in-memory data.
@@ -113,15 +149,18 @@ class BlueArrowFuelService {
     // Accumulate into the internal map (multiple rows may share the same
     // QB customer name, e.g. a reseller appears several times).
     for (final e in result.entries) {
-      final key = _normKey(e.qbCustomerName);
+      // Apply alias AFTER normKey so short fuel-CSV names map to the same
+      // key as the full state-qualified MyAdmin/QB name.
+      final key = _applyFuelAlias(_normKey(e.qbCustomerName));
       _counts[key] = (_counts[key] ?? 0) + e.currentCount;
       // Keep the first (best-cased) name seen for each key
       _displayNames.putIfAbsent(key, () => e.qbCustomerName);
     }
 
-    // Store sub-account breakdowns
+    // Store sub-account breakdowns (also apply alias to the normKey)
     result.subAccounts.forEach((normKey, accounts) {
-      _subAccounts[normKey] = accounts;
+      final aliasedKey = _applyFuelAlias(normKey);
+      _subAccounts[aliasedKey] = accounts;
     });
 
     return result;
@@ -140,14 +179,14 @@ class BlueArrowFuelService {
   /// Uses the same multi-pass suffix-stripping normalization as the rest of
   /// the audit so "Combs Produce Wholesale Co." matches "Combs Produce".
   int countFor(String qbCustomerName) {
-    final key = _normKey(qbCustomerName);
+    final key = _applyFuelAlias(_normKey(qbCustomerName));
     return _counts[key] ?? 0;
   }
 
   /// Returns the sub-account breakdown list for a given QB customer (reseller) name.
   /// Returns an empty list for direct customers or unknown customers.
   List<FuelSubAccount> subAccountsFor(String qbCustomerName) {
-    final key = _normKey(qbCustomerName);
+    final key = _applyFuelAlias(_normKey(qbCustomerName));
     return _subAccounts[key] ?? const [];
   }
 
@@ -327,24 +366,6 @@ String _normKey(String name) {
   // Remove punctuation except spaces
   s = s.replaceAll(RegExp(r"[^a-z0-9\s]"), '');
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-  // Strip trailing bare 2-letter US state abbreviation
-  // e.g. "Charleston County SC" → "charleston county"
-  const stateAbbrevs = {
-    'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia',
-    'ks','ky','la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj',
-    'nm','ny','nc','nd','oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt',
-    'va','wa','wv','wi','wy','dc',
-  };
-  if (s.length > 3) {
-    final spaceIdx = s.lastIndexOf(' ');
-    if (spaceIdx >= 0) {
-      final lastWord = s.substring(spaceIdx + 1);
-      if (lastWord.length == 2 && stateAbbrevs.contains(lastWord)) {
-        s = s.substring(0, spaceIdx).trim();
-      }
-    }
-  }
 
   // Multi-pass suffix stripping
   const suffixes = {
