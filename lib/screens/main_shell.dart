@@ -6,12 +6,8 @@ import 'package:provider/provider.dart';
 import '../services/app_provider.dart';
 import '../services/auth_service.dart';
 import '../utils/app_theme.dart';
-import 'dashboard_screen.dart';
-import 'history_screen.dart';
-import 'serial_filter_screen.dart';
-import 'customer_pricing_screen.dart';
+import 'activations_shell.dart';
 import 'qb_invoice_screen.dart';
-import 'cloud_sync_screen.dart';
 import 'settings_screen.dart';
 
 class MainShell extends StatefulWidget {
@@ -26,12 +22,8 @@ class _MainShellState extends State<MainShell> {
 
   // Keep pages alive between tab switches
   static const _pages = [
-    _KeepAlive(child: DashboardScreen()),
-    _KeepAlive(child: HistoryScreen()),
-    _KeepAlive(child: SerialFilterScreen()),
-    _KeepAlive(child: CustomerPricingScreen()),
+    _KeepAlive(child: ActivationsShell()),
     _KeepAlive(child: QbInvoiceScreen()),
-    _KeepAlive(child: CloudSyncScreen()),
     _KeepAlive(child: SettingsScreen()),
   ];
 
@@ -42,29 +34,9 @@ class _MainShellState extends State<MainShell> {
       label: 'Activations',
     ),
     BottomNavigationBarItem(
-      icon: Icon(Icons.history_outlined),
-      activeIcon: Icon(Icons.history),
-      label: 'History',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.filter_list_outlined),
-      activeIcon: Icon(Icons.filter_list),
-      label: 'Filters',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.price_change_outlined),
-      activeIcon: Icon(Icons.price_change),
-      label: 'Pricing',
-    ),
-    BottomNavigationBarItem(
       icon: Icon(Icons.verified_outlined),
       activeIcon: Icon(Icons.verified),
       label: 'QB Verify',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.cloud_upload_outlined),
-      activeIcon: Icon(Icons.cloud_upload),
-      label: 'Cloud Sync',
     ),
     BottomNavigationBarItem(
       icon: Icon(Icons.settings_outlined),
@@ -75,7 +47,7 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    // Show a badge on the Dashboard tab if there are warnings
+    // Show a badge on the Activations tab if there are warnings
     final provider = context.watch<AppProvider>();
     final hasWarnings = provider.blankCustomerWarnings.isNotEmpty ||
         provider.missingCodeFlags.isNotEmpty;
@@ -106,7 +78,7 @@ class _MainShellState extends State<MainShell> {
               children: List.generate(_navItems.length, (i) {
                 final item = _navItems[i];
                 final isActive = _currentIndex == i;
-                // Badge on dashboard tab when warnings exist
+                // Badge on Activations tab when warnings exist
                 final showBadge = i == 0 && hasWarnings;
 
                 return Expanded(

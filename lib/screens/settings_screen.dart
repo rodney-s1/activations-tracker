@@ -16,8 +16,10 @@ import '../services/qb_ignore_keyword_service.dart';
 import '../services/plan_mapping_service.dart';
 import '../services/settings_export_service.dart';
 import '../services/surfsight_direct_service.dart';
+import '../services/cloud_sync_service.dart';
 import '../services/fuel_alias_service.dart';
 import '../utils/app_theme.dart';
+import '../utils/formatters.dart';
 import 'surfsight_direct_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -34,7 +36,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 6, vsync: this);
+    _tabs = TabController(length: 7, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().loadPricingData();
     });
@@ -72,6 +74,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             Tab(icon: Icon(Icons.import_export, size: 18), text: 'Backup'),
             Tab(icon: Icon(Icons.store, size: 18), text: 'Vendor Data'),
             Tab(icon: Icon(Icons.local_gas_station, size: 18), text: 'Fuel Aliases'),
+            Tab(icon: Icon(Icons.cloud_upload_outlined, size: 18), text: 'Cloud Sync'),
           ],
         ),
       ),
@@ -84,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           const _BackupRestoreTab(),
           _VendorDataTab(),
           const _FuelAliasesTab(),
+          const _CloudSyncTab(),
         ],
       ),
     );
@@ -2776,6 +2780,535 @@ class _AliasField extends StatelessWidget {
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
           borderSide: BorderSide(color: color, width: 1.5),
+        ),
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB 7 — Cloud Sync
+// ════════════════════════════════════════════════════════════════════════════
+
+class _CloudSyncTab extends StatefulWidget {
+  const _CloudSyncTab();
+
+  @override
+  State<_CloudSyncTab> createState() => _CloudSyncTabState();
+}
+
+class _CloudSyncTabState extends State<_CloudSyncTab> {
+  final _dbUrlCtrl  = TextEditingController();
+  final _apiKeyCtrl = TextEditingController();
+
+  bool    _enabled      = false;
+  bool    _autoSync     = true;
+  bool    _loading      = false;
+  bool    _saved        = false;
+  bool    _showAdvanced = false;
+  String? _statusMsg;
+  bool    _statusOk     = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSaved();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<AppProvider>().startSyncCountdown();
+    });
+    CloudSyncService.statusNotifier.addListener(_onStatusChanged);
+  }
+
+  @override
+  void dispose() {
+    CloudSyncService.statusNotifier.removeListener(_onStatusChanged);
+    _dbUrlCtrl.dispose();
+    _apiKeyCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onStatusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadSaved() async {
+    final cfg = await CloudSyncService.readConfig();
+    if (!mounted) return;
+    setState(() {
+      _dbUrlCtrl.text  = cfg['dbUrl']   ?? '';
+      _apiKeyCtrl.text = cfg['apiKey']  ?? '';
+      _enabled         = cfg['enabled'] == 'true';
+      _autoSync        = cfg['autoSync'] != 'false';
+      _saved           = _dbUrlCtrl.text.isNotEmpty;
+    });
+  }
+
+  Future<void> _saveAndConnect() async {
+    if (_dbUrlCtrl.text.trim().isEmpty) {
+      setState(() { _statusMsg = 'Database URL is required.'; _statusOk = false; });
+      return;
+    }
+    setState(() { _loading = true; _statusMsg = null; });
+
+    final err = await CloudSyncService.configure(
+      dbUrl:    _dbUrlCtrl.text.trim(),
+      apiKey:   _apiKeyCtrl.text.trim(),
+      enabled:  _enabled,
+      autoSync: _autoSync,
+    );
+
+    if (err != null) {
+      setState(() { _loading = false; _statusMsg = 'Connection failed: $err'; _statusOk = false; });
+      return;
+    }
+
+    if (_enabled) {
+      final ok = await CloudSyncService.testConnection();
+      setState(() {
+        _loading = false; _saved = true; _showAdvanced = false;
+        _statusMsg = ok
+            ? 'Connected! Settings will sync automatically.'
+            : 'Saved, but could not reach the database. Check your URL and Rules.';
+        _statusOk = ok;
+      });
+    } else {
+      setState(() {
+        _loading = false; _saved = true; _showAdvanced = false;
+        _statusMsg = 'Cloud sync is disabled. Settings saved.';
+        _statusOk  = true;
+      });
+    }
+  }
+
+  Future<void> _toggleEnabled(bool value) async {
+    setState(() => _enabled = value);
+    if (_saved && _dbUrlCtrl.text.isNotEmpty) {
+      await CloudSyncService.configure(
+        dbUrl: _dbUrlCtrl.text.trim(), apiKey: _apiKeyCtrl.text.trim(),
+        enabled: value, autoSync: _autoSync,
+      );
+    }
+  }
+
+  Future<void> _toggleAutoSync(bool value) async {
+    setState(() => _autoSync = value);
+    await CloudSyncService.setAutoSync(value);
+  }
+
+  Future<void> _push() async {
+    setState(() { _loading = true; _statusMsg = null; });
+    final err = await CloudSyncService.pushAll();
+    if (!mounted) return;
+    setState(() {
+      _loading   = false;
+      _statusMsg = err == null ? 'All settings pushed to cloud successfully.' : 'Push failed: $err';
+      _statusOk  = err == null;
+    });
+  }
+
+  Future<void> _pull() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Pull from Cloud?'),
+        content: const Text(
+          'This will replace your local settings and CSV files with the cloud version.\n\nThis cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.amber),
+            child: const Text('Pull & Replace'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+
+    setState(() { _loading = true; _statusMsg = null; });
+    final result = await CloudSyncService.pullAll();
+    if (!mounted) return;
+
+    final provider = context.read<AppProvider>();
+    provider.loadPricingData();
+    provider.repriceCurrent();
+    provider.notifyQbCustomersChanged();
+
+    if (result.containsKey('error')) {
+      setState(() {
+        _loading = false;
+        _statusMsg = 'Pull failed: ${result['error']}';
+        _statusOk  = false;
+      });
+    } else {
+      final counts = result['counts'] as Map<String, int>? ?? {};
+      setState(() {
+        _loading   = false;
+        _statusMsg = 'Pulled: ${counts['standardPlanRates'] ?? 0} plan rates, '
+            '${counts['customerPlanCodes'] ?? 0} customer codes, '
+            '${counts['serialFilterRules'] ?? 0} filter rules.';
+        _statusOk  = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    context.watch<AppProvider>();
+
+    final configured = CloudSyncService.isConfigured;
+    final status     = CloudSyncService.status;
+    final last       = CloudSyncService.lastSyncAt;
+    final next       = CloudSyncService.nextSyncIn;
+    final autoOn     = CloudSyncService.autoSync && configured;
+
+    Color dotColor;
+    String statusLabel;
+    if (!configured || !_enabled) {
+      dotColor    = Colors.white24;
+      statusLabel = _saved ? 'Sync disabled' : 'Not configured';
+    } else {
+      switch (status) {
+        case SyncStatus.syncing:
+          dotColor = AppTheme.amber; statusLabel = 'Syncing…'; break;
+        case SyncStatus.success:
+          dotColor = AppTheme.green; statusLabel = 'Connected · up to date'; break;
+        case SyncStatus.error:
+          dotColor = AppTheme.red; statusLabel = 'Sync error'; break;
+        default:
+          dotColor = AppTheme.green; statusLabel = 'Connected · idle';
+      }
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // Hero status card
+        Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [AppTheme.navyDark, AppTheme.navyMid],
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 10, height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle, color: dotColor,
+                      boxShadow: configured && _enabled
+                          ? [BoxShadow(color: dotColor.withValues(alpha: 0.5), blurRadius: 6)]
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(statusLabel,
+                        style: TextStyle(
+                          color: dotColor == Colors.white24 ? Colors.white38 : Colors.white,
+                          fontSize: 15, fontWeight: FontWeight.w700,
+                        )),
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_enabled ? 'ON' : 'OFF',
+                          style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w700,
+                              color: _enabled ? AppTheme.tealLight : Colors.white30)),
+                      const SizedBox(width: 6),
+                      Switch(
+                        value: _enabled,
+                        activeColor: AppTheme.teal,
+                        onChanged: _saved ? _toggleEnabled : null,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  _SyncInfoPill(
+                    icon: Icons.history, label: 'Last sync',
+                    value: last == null ? 'Never' : Formatters.dateTime(last),
+                    color: AppTheme.tealLight,
+                  ),
+                  const SizedBox(width: 10),
+                  _SyncInfoPill(
+                    icon: Icons.schedule, label: 'Next auto',
+                    value: autoOn
+                        ? (next == Duration.zero ? 'pending'
+                            : next.inMinutes > 0
+                                ? '${next.inMinutes}m ${next.inSeconds % 60}s'
+                                : '${next.inSeconds}s')
+                        : 'off',
+                    color: autoOn ? AppTheme.amber : Colors.white30,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        if (_saved && _enabled) ...[
+          Card(
+            margin: EdgeInsets.zero,
+            child: SwitchListTile(
+              secondary: Icon(Icons.alarm, color: _autoSync ? AppTheme.amber : Colors.grey),
+              title: const Text('Auto-sync every 3 minutes',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+              subtitle: Text(
+                _autoSync
+                    ? 'Pulls latest data from cloud every 3 min.'
+                    : 'Disabled — use Push below to sync manually.',
+                style: const TextStyle(fontSize: 12),
+              ),
+              value: _autoSync, activeColor: AppTheme.amber,
+              onChanged: _toggleAutoSync,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _SyncActionButton(
+                  icon: Icons.upload_rounded, label: 'Push to Cloud',
+                  sublabel: 'Save settings + CSVs now', color: AppTheme.teal,
+                  loading: _loading, onTap: _loading ? null : _push,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _SyncActionButton(
+                  icon: Icons.download_rounded, label: 'Pull from Cloud',
+                  sublabel: 'Restore settings + CSVs', color: AppTheme.navyAccent,
+                  loading: false, onTap: _loading ? null : _pull,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppTheme.divider),
+          const SizedBox(height: 8),
+        ],
+
+        if (_statusMsg != null) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: (_statusOk ? AppTheme.green : AppTheme.red).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: (_statusOk ? AppTheme.green : AppTheme.red).withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(_statusOk ? Icons.check_circle_outline : Icons.error_outline,
+                    size: 15, color: _statusOk ? AppTheme.green : AppTheme.red),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(_statusMsg!,
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: _statusOk ? AppTheme.green : AppTheme.red)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+
+        // Advanced credentials panel
+        GestureDetector(
+          onTap: () => setState(() => _showAdvanced = !_showAdvanced),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.navyMid,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.settings, size: 16, color: Colors.white38),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Connection Settings',
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white54)),
+                ),
+                Icon(_showAdvanced ? Icons.expand_less : Icons.expand_more,
+                    size: 18, color: Colors.white38),
+              ],
+            ),
+          ),
+        ),
+
+        if (_showAdvanced) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 4, offset: const Offset(0, 2))
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Firebase Realtime Database',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Firebase Console → Build → Realtime Database → Data tab → copy the URL',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 14),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Enable Cloud Sync',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                  value: _enabled, activeColor: AppTheme.teal,
+                  onChanged: (v) => setState(() => _enabled = v),
+                ),
+                const Divider(height: 16),
+                TextField(
+                  controller: _dbUrlCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Database URL *',
+                    hintText: 'https://my-app-default-rtdb.firebaseio.com',
+                    prefixIcon: Icon(Icons.link, size: 18),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _apiKeyCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Web API Key (optional)',
+                    hintText: 'AIzaSy…',
+                    prefixIcon: Icon(Icons.vpn_key, size: 18),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _loading ? null : _saveAndConnect,
+                    icon: _loading
+                        ? const SizedBox(width: 16, height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.save, size: 18),
+                    label: Text(_loading ? 'Saving…' : 'Save & Connect'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.navyAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 32),
+      ],
+    );
+  }
+}
+
+class _SyncInfoPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+  const _SyncInfoPill({required this.icon, required this.label,
+      required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 5),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: TextStyle(fontSize: 9, color: color.withValues(alpha: 0.7))),
+              Text(value,
+                  style: const TextStyle(fontSize: 11,
+                      fontWeight: FontWeight.w600, color: Colors.white70)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SyncActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String sublabel;
+  final Color color;
+  final bool loading;
+  final VoidCallback? onTap;
+  const _SyncActionButton({required this.icon, required this.label,
+      required this.sublabel, required this.color,
+      required this.loading, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          children: [
+            loading
+                ? SizedBox(width: 24, height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: color))
+                : Icon(icon, color: color, size: 26),
+            const SizedBox(height: 6),
+            Text(label,
+                style: TextStyle(fontSize: 13,
+                    fontWeight: FontWeight.w700, color: color)),
+            Text(sublabel,
+                style: const TextStyle(fontSize: 10,
+                    color: AppTheme.textSecondary),
+                textAlign: TextAlign.center),
+          ],
         ),
       ),
     );
