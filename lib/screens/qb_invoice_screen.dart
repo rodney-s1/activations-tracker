@@ -2344,7 +2344,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             _EmptyState(
                 onImportMyAdmin: _importMyAdmin,
                 onImportQb: _importQb,
-                onImportFuel: _importFuelCsv)
+                onImportFuel: _importFuelCsv,
+                onImportRosco: _importRoscoPdf)
           else if (!_auditRan)
             _ReadyToRunScreen(
               myAdminLoaded:   _myAdminLoaded,
@@ -3361,11 +3362,13 @@ class _EmptyState extends StatelessWidget {
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
+  final VoidCallback onImportRosco;
 
   const _EmptyState({
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
+    required this.onImportRosco,
   });
 
   @override
@@ -3398,7 +3401,7 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 28),
 
-            // Three-card import instructions
+            // Four-card import instructions
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -3438,6 +3441,19 @@ class _EmptyState extends StatelessWidget {
                         'BlueArrow → Monthly Fuel Card Count Changes CSV (optional — import each month)',
                     buttonLabel: 'Import Fuel CSV',
                     onTap: onImportFuel,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StepCard(
+                    step: '4',
+                    color: Colors.purple.shade400,
+                    icon: Icons.picture_as_pdf_outlined,
+                    title: 'Rosco PDF',
+                    body:
+                        'Rosco → Monthly statement PDF (optional — import each month)',
+                    buttonLabel: 'Import Rosco PDF',
+                    onTap: onImportRosco,
                   ),
                 ),
               ],
