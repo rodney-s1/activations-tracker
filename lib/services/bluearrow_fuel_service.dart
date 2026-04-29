@@ -341,7 +341,10 @@ String _normKey(String name) {
 
   s = s.toLowerCase();
   s = s.replaceAll('&', 'and');
-  // Remove punctuation except spaces
+  // Replace hyphens/en-dashes with a space so "C-Phase" → "c phase"
+  // (mirrors qb_invoice_screen.dart which keeps hyphens as word separators)
+  s = s.replaceAll(RegExp(r'[-–—]'), ' ');
+  // Remove remaining punctuation except spaces
   s = s.replaceAll(RegExp(r"[^a-z0-9\s]"), '');
   s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
 

@@ -209,6 +209,9 @@ class FuelAliasService {
   /// strip common suffixes.
   static String _norm(String s) {
     s = s.toLowerCase().replaceAll('&', 'and');
+    // Replace hyphens with a space so "C-Phase" → "c phase"
+    // (mirrors the fix in bluearrow_fuel_service.dart)
+    s = s.replaceAll(RegExp(r'[-\u2013\u2014]'), ' ');
     s = s.replaceAll(RegExp(r'[^a-z0-9\s]'), '');
     s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
     const suffixes = [
