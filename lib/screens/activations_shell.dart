@@ -20,19 +20,10 @@ class _ActivationsShellState extends State<ActivationsShell>
     with SingleTickerProviderStateMixin {
   late TabController _tabs;
 
-  // Keep each child alive between tab switches
-  static const _pages = [
-    _KeepAlive(child: DashboardScreen()),
-    _KeepAlive(child: HistoryScreen()),
-    _KeepAlive(child: SerialFilterScreen()),
-    _KeepAlive(child: CustomerPricingScreen()),
-  ];
-
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 4, vsync: this);
-    _tabs.addListener(() => setState(() {}));
   }
 
   @override
@@ -80,11 +71,19 @@ class _ActivationsShellState extends State<ActivationsShell>
           ),
         ),
 
-        // Each child keeps its own Scaffold + AppBar intact
+        // TabBarView only renders the active tab — inactive tabs are NOT
+        // kept in the widget tree, so they cannot absorb drag/drop events
+        // intended for other top-level screens (e.g. QB Verify DropTargets).
+        // AutomaticKeepAlive inside each screen handles state preservation.
         Expanded(
-          child: IndexedStack(
-            index: _tabs.index,
-            children: _pages,
+          child: TabBarView(
+            controller: _tabs,
+            children: const [
+              _KeepAlive(child: DashboardScreen()),
+              _KeepAlive(child: HistoryScreen()),
+              _KeepAlive(child: SerialFilterScreen()),
+              _KeepAlive(child: CustomerPricingScreen()),
+            ],
           ),
         ),
       ],
@@ -92,7 +91,7 @@ class _ActivationsShellState extends State<ActivationsShell>
   }
 }
 
-/// Keeps a subtree alive in the IndexedStack so state is preserved.
+/// Keeps a subtree alive between tab switches via AutomaticKeepAliveClientMixin.
 class _KeepAlive extends StatefulWidget {
   final Widget child;
   const _KeepAlive({required this.child});
