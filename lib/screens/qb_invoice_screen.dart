@@ -512,11 +512,32 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     final isRoscoSkuItem = itemLower.contains('rosco') ||
         itemLower.contains('wifi service') ||
         itemLower.contains('wifi fee');
+    // OEM vehicle telematics SKUs: e.g. "GM OEM Integration (Premium)",
+    // "Ford OEM Integration", "Mack OEM Integration", "Volvo OEM Integration".
+    // These do NOT contain "geotab" or "service fee" so they need their own gate.
+    final isOemSkuItem = itemLower.contains('oem') ||
+        RegExp(r'\bgm\b').hasMatch(itemLower) ||
+        itemLower.contains('general motors') ||
+        itemLower.contains('john deere') ||
+        itemLower.contains('caterpillar') ||
+        itemLower.contains('freightliner') ||
+        itemLower.contains('navistar') ||
+        itemLower.contains('stellantis') ||
+        itemLower.contains('mercedes') ||
+        itemLower.contains('komatsu') ||
+        itemLower.contains('hitachi') ||
+        itemLower.contains('calamp') ||
+        itemLower.contains('phillips connect') ||
+        itemLower.contains('digital matter') ||
+        itemLower.contains('goanywhere') ||
+        itemLower.contains('go-anywhere') ||
+        (itemLower.contains('go anywhere') && !itemLower.contains('geotab'));
     if (!itemLower.contains('geotab') &&
         !itemLower.contains('service fee') &&
         !isCameraSkuItem &&
         !isFuelSkuItem &&
-        !isRoscoSkuItem) { continue; }
+        !isRoscoSkuItem &&
+        !isOemSkuItem) { continue; }
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
     if (itemLower.contains('credit card') ||
