@@ -610,9 +610,10 @@ String _extractPlanLabel(String item) {
       (lower.contains('deere') && (lower.contains('service') || lower.contains('fee')))) {
     return 'John Deere';
   }
-  if ((lower.contains(' gm ') || lower.contains('general motors')) &&
+  if ((RegExp(r'\bgm\b').hasMatch(lower) || lower.contains('general motors')) &&
       (lower.contains('service') || lower.contains('fee') ||
-       lower.contains('telematics'))) { return 'GM'; }
+       lower.contains('telematics') || lower.contains('oem') ||
+       lower.contains('geotab'))) { return 'GM'; }
   if (lower.contains('calamp') || lower.contains('cal amp')) { return 'CalAmp'; }
   if (lower.contains('komatsu') && (lower.contains('service') || lower.contains('fee') ||
       lower.contains('telematics'))) { return 'Komatsu'; }
