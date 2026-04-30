@@ -1548,12 +1548,25 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     final totalBilled = qbParsed.lines.values
         .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))
         .round();
+
+    // ── GM diagnostic: find any GM-labelled lines and report their customer key ─
+    final gmEntries = <String>[];
+    qbParsed.lines.forEach((customerKey, lines) {
+      final gmLines = lines.where((l) => l.planLabel == 'GM').toList();
+      if (gmLines.isNotEmpty) {
+        final qty = gmLines.fold(0.0, (s, l) => s + l.qty).round();
+        gmEntries.add('$customerKey → $qty GM');
+      }
+    });
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-              'QB: $totalBilled devices billed across ${qbParsed.lines.length} customers'),
-          backgroundColor: AppTheme.teal,
+          content: Text(gmEntries.isEmpty
+              ? 'QB: $totalBilled devices across ${qbParsed.lines.length} customers  |  ⚠ No GM lines found'
+              : 'QB: $totalBilled devices across ${qbParsed.lines.length} customers  |  GM: ${gmEntries.join(', ')}'),
+          backgroundColor: gmEntries.isEmpty ? AppTheme.amber : AppTheme.teal,
+          duration: const Duration(seconds: 12),
         ),
       );
     }

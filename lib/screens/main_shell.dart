@@ -55,7 +55,12 @@ class _MainShellState extends State<MainShell> {
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
-        children: _pages,
+        children: _pages.asMap().entries.map((e) {
+          // Wrap inactive pages in IgnorePointer so their invisible widgets
+          // cannot absorb drag/drop events intended for the active page.
+          final isActive = e.key == _currentIndex;
+          return IgnorePointer(ignoring: !isActive, child: e.value);
+        }).toList(),
       ),
       // User identity bar at top
       appBar: _UserBar(email: AuthService.instance.currentUser?.email ?? ''),
