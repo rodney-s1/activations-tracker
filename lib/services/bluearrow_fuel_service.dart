@@ -108,9 +108,12 @@ class BlueArrowFuelService {
   Map<String, String>? _aliasCache;
 
   /// Apply the user-managed fuel alias table.
-  /// Cache is rebuilt each import so changes take effect on next re-import.
+  /// Cache is rebuilt each import (or reApplyAliases) so changes take effect.
   String _applyFuelAlias(String normKey) =>
       (_aliasCache ?? const {})[normKey] ?? normKey;
+
+  // ── Cached parse result (allows alias re-application without re-parsing) ──
+  BlueArrowParseResult? _lastParseResult;
 
   // ── Import ────────────────────────────────────────────────────────────────
 
@@ -124,9 +127,30 @@ class BlueArrowFuelService {
     _aliasCache = FuelAliasService.instance.buildLookup();
 
     final result = parseBlueArrowFuelCsv(csvContent);
+    _lastParseResult = result;  // cache for alias re-application
 
-    // Accumulate into the internal map (multiple rows may share the same
-    // QB customer name, e.g. a reseller appears several times).
+    _applyParseResult(result);
+    return result;
+  }
+
+  /// Re-apply the current alias table to the already-parsed data.
+  /// Call this after editing aliases in Settings without re-importing the CSV.
+  /// Returns true if fuel data was present (and therefore re-applied).
+  bool reApplyAliases() {
+    final result = _lastParseResult;
+    if (result == null) return false;
+
+    _counts.clear();
+    _displayNames.clear();
+    _subAccounts.clear();
+    // Re-snapshot aliases so the latest edits are picked up
+    _aliasCache = FuelAliasService.instance.buildLookup();
+    _applyParseResult(result);
+    return true;
+  }
+
+  /// Internal: build _counts / _displayNames / _subAccounts from a parse result.
+  void _applyParseResult(BlueArrowParseResult result) {
     for (final e in result.entries) {
       // Apply alias AFTER normKey so short fuel-CSV names map to the same
       // key as the full state-qualified MyAdmin/QB name.
@@ -141,8 +165,6 @@ class BlueArrowFuelService {
       final aliasedKey = _applyFuelAlias(normKey);
       _subAccounts[aliasedKey] = accounts;
     });
-
-    return result;
   }
 
   /// Clear all loaded data (e.g. when the user removes the file).
@@ -150,6 +172,7 @@ class BlueArrowFuelService {
     _counts.clear();
     _displayNames.clear();
     _subAccounts.clear();
+    _lastParseResult = null;
   }
 
   // ── Lookup ────────────────────────────────────────────────────────────────

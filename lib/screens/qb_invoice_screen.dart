@@ -1284,6 +1284,27 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     );
   }
 
+  // ── Refresh Aliases (re-apply alias table without re-importing CSV) ────────
+
+  void _refreshAliases() {
+    final applied = _blueArrowFuelService.reApplyAliases();
+    if (!applied) return;
+    // Re-inject fuel counts into summaries by forcing a rebuild
+    if (mounted) {
+      setState(() {
+        // _buildSummaries() is called inside build() whenever _auditRan is true,
+        // so a plain setState is enough to pick up the updated _counts map.
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Fuel aliases refreshed — audit updated.'),
+          backgroundColor: AppTheme.teal,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
   // ── Import Rosco PDF (file picker) ─────────────────────────────────────
 
   Future<void> _importRoscoPdf() async {
@@ -2270,6 +2291,23 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             Text('QB Verify'),
           ],
         ),
+        actions: [
+          if (_fuelLoaded && _auditRan)
+            Tooltip(
+              message: 'Re-apply Fuel Aliases to current data\n(no re-import needed)',
+              child: TextButton.icon(
+                icon: const Icon(Icons.sync_alt, size: 16, color: Colors.white70),
+                label: const Text(
+                  'Refresh Aliases',
+                  style: TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                onPressed: _refreshAliases,
+              ),
+            ),
+        ],
         bottom: showTabs
             ? TabBar(
                 controller: _tabCtrl,
