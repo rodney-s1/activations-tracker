@@ -3,6 +3,9 @@
 // Uses the Firebase Realtime Database REST API — plain JSON over HTTPS.
 // Zero CORS issues, no SDK required, works in every browser.
 //
+// Credentials are baked in at compile time — no user configuration needed.
+// Sync starts automatically for every user immediately after sign-in.
+//
 // REST API format:
 //   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
 //   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
@@ -49,22 +52,26 @@ enum SyncStatus { notConfigured, idle, syncing, success, error }
 // ── CloudSyncService ─────────────────────────────────────────────────────────
 
 class CloudSyncService {
-  // SharedPreferences keys
-  static const _kDbUrl         = 'rtdb_url';          // e.g. https://my-app-default-rtdb.firebaseio.com
-  static const _kApiKey        = 'firebase_api_key';  // Web API key (for auth param)
-  // Shared path constant — all users access the same data node
-  static const _kSharedPath    = 'shared';
-  static const _kEnabled       = 'cloud_sync_enabled';
+  // ── Baked-in credentials — no user config required ────────────────────────
+  static const _kBuiltInDbUrl  = 'https://activations-tracker-81a99-default-rtdb.firebaseio.com';
+  static const _kBuiltInApiKey = 'AIzaSyCI-mK4fWARt7_iAF6uRULJBVGn3Ln2hKw';
+
+  // SharedPreferences keys (kept for auto-sync toggle + last-sync timestamp)
   static const _kAutoSync      = 'cloud_sync_auto';
   static const _kLastSyncEpoch = 'cloud_sync_last_epoch';
+  // Legacy keys — read-only so old installs don't break
+  static const _kDbUrl         = 'rtdb_url';
+  static const _kApiKey        = 'firebase_api_key';
+  static const _kEnabled       = 'cloud_sync_enabled';
+  static const _kProjectId     = 'firebase_project_id';
+  static const _kAppId         = 'firebase_app_id';
 
-  // Keep old keys so existing saved credentials are not lost
-  static const _kProjectId = 'firebase_project_id';
-  static const _kAppId     = 'firebase_app_id';
+  // Shared path constant — all users access the same data node
+  static const _kSharedPath    = 'shared';
 
   // Runtime state
-  static String     _dbUrl          = '';
-  static String     _apiKey         = '';
+  static String     _dbUrl          = _kBuiltInDbUrl;
+  static String     _apiKey         = _kBuiltInApiKey;
   static bool       _configured     = false;
   static SyncStatus _status         = SyncStatus.notConfigured;
   static String     _lastError      = '';
@@ -116,61 +123,43 @@ class CloudSyncService {
   // ── Initialisation ────────────────────────────────────────────────────────
 
   static Future<void> init() async {
-    final prefs      = await SharedPreferences.getInstance();
-    final enabled    = prefs.getBool(_kEnabled)   ?? false;
-    _dbUrl           = prefs.getString(_kDbUrl)   ?? '';
-    _apiKey          = prefs.getString(_kApiKey)  ?? '';
-    _autoSyncEnabled = prefs.getBool(_kAutoSync)  ?? true;
+    final prefs = await SharedPreferences.getInstance();
+    // Always use built-in credentials — ignore any legacy saved values.
+    _dbUrl           = _kBuiltInDbUrl;
+    _apiKey          = _kBuiltInApiKey;
+    _autoSyncEnabled = prefs.getBool(_kAutoSync) ?? true;
 
     final lastEpoch = prefs.getInt(_kLastSyncEpoch);
     if (lastEpoch != null) {
       _lastSyncAt = DateTime.fromMillisecondsSinceEpoch(lastEpoch);
     }
 
-    if (!enabled || _dbUrl.isEmpty) {
-      _setStatus(SyncStatus.notConfigured);
-      return;
-    }
-
+    // Always configured — credentials are baked in.
     _configured = true;
     _setStatus(SyncStatus.idle);
     if (_autoSyncEnabled) _startTimer();
   }
 
-  /// Save credentials and start/stop the timer as needed.
+  /// Update auto-sync preference and restart/stop timer accordingly.
+  /// Credentials are baked in and cannot be changed at runtime.
   static Future<String?> configure({
-    required String dbUrl,
-    required String apiKey,
-    required bool   enabled,
-    bool            autoSync = true,
-    // kept for compatibility with old call sites
+    // All credential params ignored — kept so old call sites compile.
+    String dbUrl     = '',
+    String apiKey    = '',
+    bool   enabled   = true,
+    bool   autoSync  = true,
     String projectId = '',
     String appId     = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kEnabled,   enabled);
-    await prefs.setString(_kDbUrl,   dbUrl.trim());
-    await prefs.setString(_kApiKey,  apiKey.trim());
-    await prefs.setBool(_kAutoSync,  autoSync);
-    // preserve old keys so the form can still show them
-    if (projectId.isNotEmpty) await prefs.setString(_kProjectId, projectId);
-    if (appId.isNotEmpty)     await prefs.setString(_kAppId, appId);
-
-    _dbUrl           = dbUrl.trim();
-    _apiKey          = apiKey.trim();
+    await prefs.setBool(_kAutoSync, autoSync);
     _autoSyncEnabled = autoSync;
-
-    if (!enabled || _dbUrl.isEmpty) {
-      _stopTimer();
-      _configured = false;
-      _setStatus(SyncStatus.notConfigured);
-      return null;
-    }
-
-    _configured = true;
+    _configured      = true;
+    _dbUrl           = _kBuiltInDbUrl;
+    _apiKey          = _kBuiltInApiKey;
     _setStatus(SyncStatus.idle);
     if (autoSync) { _startTimer(); } else { _stopTimer(); }
-    return null; // RTDB needs no async initialisation
+    return null;
   }
 
   static Future<void> setAutoSync(bool value) async {
@@ -183,12 +172,10 @@ class CloudSyncService {
   static Future<Map<String, String>> readConfig() async {
     final prefs = await SharedPreferences.getInstance();
     return {
-      'dbUrl':     prefs.getString(_kDbUrl)      ?? '',
-      'apiKey':    prefs.getString(_kApiKey)     ?? '',
-      'projectId': prefs.getString(_kProjectId)  ?? '',
-      'appId':     prefs.getString(_kAppId)      ?? '',
-      'enabled':   (prefs.getBool(_kEnabled)    ?? false) ? 'true' : 'false',
-      'autoSync':  (prefs.getBool(_kAutoSync)   ?? true)  ? 'true' : 'false',
+      'dbUrl':    _kBuiltInDbUrl,
+      'apiKey':   _kBuiltInApiKey,
+      'enabled':  'true',
+      'autoSync': (prefs.getBool(_kAutoSync) ?? true) ? 'true' : 'false',
     };
   }
 
