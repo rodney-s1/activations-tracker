@@ -1,17 +1,37 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  BillingMaster Sync API — DynamoDB + Lambda + HTTP API Gateway.
+  BillingMaster Sync API — IAM Role + DynamoDB + Lambda + HTTP API Gateway.
   Replaces Firebase Realtime Database as the shared settings backend
   for all bluearrowmail.com users of the Billing Tracker app.
-
-Parameters:
-  LambdaRoleArn:
-    Type: String
-    Description: >
-      ARN of the BillingMasterLambdaRole you created manually in IAM.
-      e.g. arn:aws:iam::653895708519:role/BillingMasterLambdaRole
+  Self-contained: creates all resources including the Lambda execution role.
 
 Resources:
+
+  # ── IAM role for Lambda ────────────────────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BillingMasterLambdaRole
+      Description: Allows billing-master-sync Lambda to write CloudWatch logs and access DynamoDB
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBSyncAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt SyncTable.Arn
 
   # ── DynamoDB table ─────────────────────────────────────────────────────────
   # One item per sync node (9 items max). PK = nodeId (e.g. "rate_plan_overrides")
@@ -19,7 +39,7 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: BillingMasterSync
-      BillingMode: PAY_PER_REQUEST   # no provisioned capacity needed — tiny traffic
+      BillingMode: PAY_PER_REQUEST
       TableClass: STANDARD
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -36,25 +56,25 @@ Resources:
   # ── Lambda function ────────────────────────────────────────────────────────
   SyncFunction:
     Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
     Properties:
       FunctionName: billing-master-sync
       Description: GET/PUT handler for BillingMaster shared settings sync
       Runtime: nodejs22.x
       Handler: index.handler
-      Role: !Ref LambdaRoleArn
+      Role: !GetAtt LambdaExecutionRole.Arn
       Timeout: 15
       MemorySize: 128
-      Architectures: [arm64]   # cheaper + faster for lightweight functions
+      Architectures: [arm64]
       Environment:
         Variables:
           TABLE_NAME: !Ref SyncTable
       Code:
         ZipFile: |
-          // Placeholder — real code is deployed by the deploy workflow.
-          // This stub satisfies CloudFormation's requirement for initial code.
+          // Placeholder — replaced on first GitHub Actions deploy
           export const handler = async () => ({
             statusCode: 200,
-            body: JSON.stringify({ status: 'placeholder — deploy workflow will replace this' }),
+            body: JSON.stringify({ status: 'placeholder' }),
           });
       Tags:
         - Key: Project
@@ -84,7 +104,6 @@ Resources:
       PayloadFormatVersion: '2.0'
       TimeoutInMillis: 15000
 
-  # GET /sync/{node}
   RouteGet:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -92,7 +111,6 @@ Resources:
       RouteKey: 'GET /sync/{node}'
       Target: !Sub 'integrations/${SyncIntegration}'
 
-  # PUT /sync/{node}
   RoutePut:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -100,7 +118,6 @@ Resources:
       RouteKey: 'PUT /sync/{node}'
       Target: !Sub 'integrations/${SyncIntegration}'
 
-  # OPTIONS /sync/{node}  (CORS preflight)
   RouteOptions:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -108,7 +125,6 @@ Resources:
       RouteKey: 'OPTIONS /sync/{node}'
       Target: !Sub 'integrations/${SyncIntegration}'
 
-  # Auto-deploy stage
   SyncApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
@@ -116,7 +132,6 @@ Resources:
       StageName: '$default'
       AutoDeploy: true
 
-  # Lambda permission — allow API Gateway to invoke the function
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -127,19 +142,13 @@ Resources:
 
 Outputs:
   ApiEndpoint:
-    Description: >
-      Base URL for the sync API. Paste this into cloud_sync_service.dart
-      as _kBuiltInApiEndpoint.
+    Description: Paste this URL into cloud_sync_service.dart as _kApiEndpoint
     Value: !Sub 'https://${SyncApi}.execute-api.${AWS::Region}.amazonaws.com'
 
   TableName:
     Description: DynamoDB table name
     Value: !Ref SyncTable
 
-  FunctionName:
-    Description: Lambda function name
-    Value: !Ref SyncFunction
-
   FunctionArn:
-    Description: Lambda function ARN (needed for deploy workflow)
+    Description: Lambda function ARN
     Value: !GetAtt SyncFunction.Arn
