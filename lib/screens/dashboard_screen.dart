@@ -801,10 +801,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               final history = provider.history;
               if (history.isEmpty) return const SizedBox(height: 8);
               final last = history.first; // sorted newest-first
-              final hasDates = last.reportDateFrom.isNotEmpty;
-              final dateLabel = hasDates
-                  ? '${last.reportDateFrom} → ${last.reportDateTo}'
-                  : Formatters.dateTime(last.importedAt);
+              final dateLabel = Formatters.dateTime(last.importedAt);
               return Column(
                 children: [
                   Container(
@@ -823,7 +820,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             size: 14, color: AppTheme.teal),
                         const SizedBox(width: 6),
                         Text(
-                          'Last audited: ',
+                          'Last imported: ',
                           style: TextStyle(
                             fontSize: 12,
                             color: AppTheme.teal.withValues(alpha: 0.8),
@@ -1165,10 +1162,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // history[0] is the current import (just saved), so look for index 1
           final prev = history.length > 1 ? history[1] : null;
           if (prev == null) return const SizedBox.shrink();
-          final hasDates = prev.reportDateFrom.isNotEmpty;
-          final dateLabel = hasDates
-              ? '${prev.reportDateFrom} → ${prev.reportDateTo}'
-              : Formatters.dateTime(prev.importedAt);
+          final dateLabel = Formatters.dateTime(prev.importedAt);
           return Container(
             color: AppTheme.teal.withValues(alpha: 0.12),
             padding:

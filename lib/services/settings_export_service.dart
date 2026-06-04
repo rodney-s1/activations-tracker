@@ -5,10 +5,12 @@ import 'dart:convert';
 import '../services/standard_plan_rate_service.dart';
 import '../services/customer_plan_code_service.dart';
 import '../services/customer_rate_service.dart';
+import '../services/customer_rate_plan_override_service.dart';
 import '../services/filter_settings_service.dart';
 import '../models/standard_plan_rate.dart';
 import '../models/customer_plan_code.dart';
 import '../models/customer_rate.dart';
+import '../models/customer_rate_plan_override.dart';
 import '../models/serial_filter_rule.dart';
 
 class SettingsExportService {
@@ -42,13 +44,23 @@ class SettingsExportService {
       'isSystem': r.isSystem,
     }).toList();
 
+    final ratePlanOverrides = CustomerRatePlanOverrideService.getAll().map((o) => {
+      'customerName':  o.customerName,
+      'ratePlan':      o.ratePlan,
+      'customerPrice': o.customerPrice,
+      'yourCost':      o.yourCost,
+      'notes':         o.notes,
+      'lastUpdated':   o.lastUpdated?.toIso8601String() ?? '',
+    }).toList();
+
     final payload = {
-      'version': 2,
+      'version': 3,
       'exportedAt': DateTime.now().toIso8601String(),
       'standardPlanRates': standardRates,
       'customerPlanCodes': customerCodes,
       'customerRates': customerRates,
       'serialFilterRules': filterRules,
+      'ratePlanOverrides': ratePlanOverrides,
     };
 
     return const JsonEncoder.withIndent('  ').convert(payload);
@@ -121,6 +133,25 @@ class SettingsExportService {
         ));
       }
       counts['serialFilterRules'] = list.length;
+    }
+
+    // Rate plan overrides (pricing overrides per customer+plan)
+    if (data['ratePlanOverrides'] != null) {
+      await CustomerRatePlanOverrideService.clearAll();
+      final list = data['ratePlanOverrides'] as List;
+      for (final item in list) {
+        await CustomerRatePlanOverrideService.save(CustomerRatePlanOverride(
+          customerName:  item['customerName']?.toString() ?? '',
+          ratePlan:      item['ratePlan']?.toString()     ?? '',
+          customerPrice: (item['customerPrice'] as num?)?.toDouble() ?? 0,
+          yourCost:      (item['yourCost']      as num?)?.toDouble() ?? 0,
+          notes:         item['notes']?.toString() ?? '',
+          lastUpdated:   item['lastUpdated'] != null && (item['lastUpdated'] as String).isNotEmpty
+              ? DateTime.tryParse(item['lastUpdated'] as String)
+              : null,
+        ));
+      }
+      counts['ratePlanOverrides'] = list.length;
     }
 
     return counts;

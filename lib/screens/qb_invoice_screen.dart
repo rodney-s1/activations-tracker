@@ -23,6 +23,7 @@ import '../services/surfsight_direct_service.dart';
 import '../services/bluearrow_fuel_service.dart';
 import '../services/fuel_alias_service.dart';
 import '../services/rosco_pdf_service.dart';
+import '../services/predictive_coach_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -183,6 +184,14 @@ class QbCustomerSummary {
   /// Derived from dedupedLines during summary building.
   final int qbRoscoBilled;
 
+  /// Predictive Coach billable unit count from the monthly Predictive Coach PDF invoice.
+  /// Sourced from PDF customer table; injected after the audit runs.
+  final int predictiveCoachBillableCount;
+
+  /// Predictive Coach QB billed count: QB lines where Item contains
+  /// "Predictive Coach:Predictive Coach Service Fee".
+  final int qbPredictiveCoachBilled;
+
   /// Active (not suspended, not N/A) billable Geotab devices grouped by short plan label.
   /// e.g. {"GO": 28, "ProPlus": 6, "Pro": 3}
   /// Used to show a plan breakdown in the billing compare card.
@@ -224,6 +233,8 @@ class QbCustomerSummary {
     this.fuelSubAccounts = const [],
     this.roscoBillableCount = 0,
     this.qbRoscoBilled = 0,
+    this.predictiveCoachBillableCount = 0,
+    this.qbPredictiveCoachBilled = 0,
   });
 
   /// Billing comparison uses only billable devices (Active/Suspended/Never Activated).
@@ -512,6 +523,8 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
     final isRoscoSkuItem = itemLower.contains('rosco') ||
         itemLower.contains('wifi service') ||
         itemLower.contains('wifi fee');
+    // Predictive Coach SKU: "Predictive Coach:Predictive Coach Service Fee"
+    final isPredictiveCoachSkuItem = itemLower.contains('predictive');
     // OEM vehicle telematics SKUs: e.g. "GM OEM Integration (Premium)",
     // "Ford OEM Integration", "Mack OEM Integration", "Volvo OEM Integration".
     // These do NOT contain "geotab" or "service fee" so they need their own gate.
@@ -537,6 +550,7 @@ QbParseResult parseQbSalesCsvWithNames(String content, {List<String> ignoreKeywo
         !isCameraSkuItem &&
         !isFuelSkuItem &&
         !isRoscoSkuItem &&
+        !isPredictiveCoachSkuItem &&
         !isOemSkuItem) { continue; }
 
     // Skip credit card fees, shipping, early termination, etc. (hard-coded safety net)
@@ -966,6 +980,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   /// Customers marked as Fuel-reviewed in the Fuel tab (persisted).
   final Set<String> _auditedFuel = {};
 
+  /// Customers marked as Predictive Coach-reviewed in the PC tab (persisted).
+  final Set<String> _auditedPredictiveCoach = {};
+
   /// Billing schedules: lowercased customerName → BillingSchedule (persisted).
   final Map<String, BillingSchedule> _billingSchedules = {};
 
@@ -986,6 +1003,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   String? _roscoFileName;
   bool _roscoImporting = false; // true while pdf.js is extracting text
 
+  /// Predictive Coach PDF invoice data (parsed from monthly PDF import).
+  final PredictiveCoachService _predictiveCoachService = PredictiveCoachService();
+  bool _pcLoaded = false;
+  String? _pcFileName;
+  bool _pcImporting = false; // true while pdf.js is extracting text
+
   /// Manual CUA overrides: customerName → true (CUA) / false (Standard).
   /// Per-session CUA overrides: customerName → true (CUA) / false (Standard).
   /// Applied when the user taps the Standard/CUA toggle on any card.
@@ -1002,7 +1025,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 6, vsync: this);
+    _tabCtrl = TabController(length: 8, vsync: this);
     _searchCtrl.addListener(() {
       setState(() => _search = _searchCtrl.text.toLowerCase());
     });
@@ -1038,26 +1061,33 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   static const _kAuditedKey      = 'audited_customers_v1';
   static const _kAuditedRoscoKey = 'audited_rosco_v1';
   static const _kAuditedFuelKey  = 'audited_fuel_v1';
+  static const _kAuditedIftaPlusKey = 'audited_ifta_plus_v1';
+  static const _kAuditedPredictiveCoachKey = 'audited_predictive_coach_v1';
+  static const _kLastMyAdminFileKey = 'last_myadmin_file_v1';
+  static const _kLastQbFileKey      = 'last_qb_file_v1';
 
   Future<void> _loadAuditedCustomers() async {
     final prefs = await SharedPreferences.getInstance();
     final saved      = prefs.getStringList(_kAuditedKey)      ?? [];
     final savedRosco = prefs.getStringList(_kAuditedRoscoKey) ?? [];
     final savedFuel  = prefs.getStringList(_kAuditedFuelKey)  ?? [];
+    final savedPc    = prefs.getStringList(_kAuditedPredictiveCoachKey) ?? [];
     if (mounted) setState(() {
       _auditedCustomers.addAll(saved);
       _auditedRosco.addAll(savedRosco);
       _auditedFuel.addAll(savedFuel);
+      _auditedPredictiveCoach.addAll(savedPc);
     });
   }
 
   /// Toggle the audit checkmark.  [tabIndex] controls WHICH set is toggled:
   ///   4 = Rosco tab  →  _auditedRosco
   ///   5 = Fuel tab   →  _auditedFuel
+  ///   7 = PC tab     →  _auditedPredictiveCoach
   ///   * = All / other tabs  →  _auditedCustomers (full audit)
   ///
   /// After toggling a vendor set, automatically promote to fully-audited if
-  /// every dimension (core status + Rosco + Fuel) is now clean or signed off.
+  /// every dimension (core status + Rosco + Fuel + PC) is now clean or signed off.
   Future<void> _toggleAudit(String customerName, {int tabIndex = 0}) async {
     final key = customerName.toLowerCase();
     final prefs = await SharedPreferences.getInstance();
@@ -1080,6 +1110,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         } else {
           _auditedFuel.add(key);
         }
+      } else if (tabIndex == 7) {
+        // Predictive Coach tab
+        if (_auditedPredictiveCoach.contains(key)) {
+          _auditedPredictiveCoach.remove(key);
+          _auditedCustomers.remove(key);
+        } else {
+          _auditedPredictiveCoach.add(key);
+        }
       } else {
         // All tab (or any other tab) — direct full-audit toggle
         if (_auditedCustomers.contains(key)) {
@@ -1090,15 +1128,17 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
     });
 
-    await prefs.setStringList(_kAuditedKey,      _auditedCustomers.toList());
-    await prefs.setStringList(_kAuditedRoscoKey, _auditedRosco.toList());
-    await prefs.setStringList(_kAuditedFuelKey,  _auditedFuel.toList());
+    await prefs.setStringList(_kAuditedKey,                  _auditedCustomers.toList());
+    await prefs.setStringList(_kAuditedRoscoKey,             _auditedRosco.toList());
+    await prefs.setStringList(_kAuditedFuelKey,              _auditedFuel.toList());
+    await prefs.setStringList(_kAuditedPredictiveCoachKey,   _auditedPredictiveCoach.toList());
   }
 
   /// Returns true only if the customer is fully clean across ALL dimensions:
   ///   • Core billing status is Match (or manually checked off)
   ///   • Rosco: matched OR no Rosco data OR user signed off the Rosco tab
   ///   • Fuel:  matched OR no Fuel data  OR user signed off the Fuel tab
+  ///   • PC:    matched OR no PC data    OR user signed off the PC tab
   bool _isFullyAudited(QbCustomerSummary s) {
     final key = s.customerName.toLowerCase();
     // If explicitly checked in the All tab, always show as audited
@@ -1121,6 +1161,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         || _auditedFuel.contains(key);
     if (!fuelOk) return false;
 
+    // Predictive Coach: ok if no data loaded, counts match, or user checked it off
+    final pcOk = !_pcLoaded
+        || (s.predictiveCoachBillableCount == s.qbPredictiveCoachBilled)
+        || _auditedPredictiveCoach.contains(key);
+    if (!pcOk) return false;
+
     return true;
   }
 
@@ -1139,6 +1185,35 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
 
   BillingSchedule _scheduleFor(String customerName) =>
       _billingSchedules[customerName.toLowerCase()] ?? const BillingSchedule();
+
+  // ── Audit reset on new file import ────────────────────────────────────────
+  // Clear all audit checkmarks when a DIFFERENT file is imported.
+  // If the same filename is re-imported, checkmarks are preserved.
+
+  Future<void> _resetAuditIfFilesChanged({
+    String? newMyAdminFile,
+    String? newQbFile,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastMa = prefs.getString(_kLastMyAdminFileKey) ?? '';
+    final lastQb = prefs.getString(_kLastQbFileKey)      ?? '';
+    final maChanged = newMyAdminFile != null && newMyAdminFile != lastMa;
+    final qbChanged = newQbFile      != null && newQbFile      != lastQb;
+    if (maChanged || qbChanged) {
+      setState(() {
+        _auditedCustomers.clear();
+        _auditedRosco.clear();
+        _auditedFuel.clear();
+        _auditedPredictiveCoach.clear();
+      });
+      await prefs.setStringList(_kAuditedKey,                  []);
+      await prefs.setStringList(_kAuditedRoscoKey,             []);
+      await prefs.setStringList(_kAuditedFuelKey,              []);
+      await prefs.setStringList(_kAuditedPredictiveCoachKey,   []);
+    }
+    if (newMyAdminFile != null) await prefs.setString(_kLastMyAdminFileKey, newMyAdminFile);
+    if (newQbFile      != null) await prefs.setString(_kLastQbFileKey,      newQbFile);
+  }
 
   // ── Restore persisted CSV data on startup ──────────────────────────────────
 
@@ -1385,6 +1460,59 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
   // Called by _ImportBar when files are dropped onto either slot.
   // Auto-detects which file is MyAdmin vs QB by sniffing the CSV header, so
   // the user can drop both at once or one at a time without caring which slot.
+
+  Future<void> _importPcPdf() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.first;
+      if (file.bytes == null) return;
+      await _processPcPdfBytes(file.bytes!.toList(), file.name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import error: $e'), backgroundColor: AppTheme.red),
+      );
+    }
+  }
+
+  Future<void> _processPcPdfBytes(List<int> bytes, String fileName) async {
+    setState(() => _pcImporting = true);
+    try {
+      final pdfText = await extractPdfTextFromBytes(bytes);
+      if (!mounted) return;
+      final count = _predictiveCoachService.importFromText(pdfText);
+      if (!mounted) return;
+      setState(() {
+        _pcLoaded    = true;
+        _pcFileName  = fileName;
+        _pcImporting = false;
+        _auditRan    = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'Predictive Coach PDF: $count customer${count == 1 ? '' : 's'} loaded'
+              '${_predictiveCoachService.invoiceNumber != null ? ' (${_predictiveCoachService.invoiceNumber})' : ''}'),
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _pcImporting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to parse Predictive Coach PDF: $e'),
+          backgroundColor: AppTheme.red,
+        ),
+      );
+    }
+  }
+
   Future<void> _processDroppedFiles(List<DropItem> files) async {
     for (final file in files) {
       try {
@@ -1505,6 +1633,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       reportDate: reportDate,
     );
 
+    await _resetAuditIfFilesChanged(newMyAdminFile: fileName);
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1544,6 +1674,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
     });
 
     await CsvPersistService.saveQb(content: content, fileName: fileName);
+
+    await _resetAuditIfFilesChanged(newQbFile: fileName);
 
     final totalBilled = qbParsed.lines.values
         .fold(0.0, (s, list) => s + list.fold(0.0, (s2, l) => s2 + l.qty))
@@ -1787,6 +1919,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       int qbSuspendedBilled = 0;
       int qbFuelBilled = 0;
       int qbRoscoBilled = 0;
+      int qbPredictiveCoachBilled = 0;
       for (final line in dedupedLines) {
         final lbl = line.planLabel;
         final lblLower = lbl.toLowerCase();
@@ -1795,6 +1928,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         } else if (lbl == 'Rosco') {
           // Rosco lines: counted separately from GPS/Camera/Fuel
           qbRoscoBilled += line.qty.round();
+        } else if (lbl == 'Predictive Coach') {
+          // Predictive Coach lines: reconciled separately
+          qbPredictiveCoachBilled += line.qty.round();
         } else if (cameraLabels.contains(lbl)) {
           qbCamBilled += line.qty.round();
         } else if (lblLower.contains('suspend')) {
@@ -1805,9 +1941,12 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
       }
 
       // Rosco lines are reconciled separately (roscoBillableCount vs qbRoscoBilled)
+      // Predictive Coach lines are reconciled separately too
       // and must NOT be included in billedCount/totalBilled — otherwise customers
-      // with Rosco QB lines show a false overbilled status on the main GPS/Camera diff.
-      final nonRoscoLines = dedupedLines.where((l) => l.planLabel != 'Rosco').toList();
+      // with Rosco/PC QB lines show a false overbilled status on the main GPS/Camera diff.
+      final nonRoscoLines = dedupedLines
+          .where((l) => l.planLabel != 'Rosco' && l.planLabel != 'Predictive Coach')
+          .toList();
 
       return QbCustomerSummary(
         customerName: displayName.isEmpty ? key : displayName,
@@ -1831,6 +1970,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         qbSuspendedBilled: qbSuspendedBilled,
         qbFuelBilled: qbFuelBilled,
         qbRoscoBilled: qbRoscoBilled,
+        qbPredictiveCoachBilled: qbPredictiveCoachBilled,
         activeDevices: devices,
         activePlanCounts: activePlanCounts,
         isCua: isCua,
@@ -1889,6 +2029,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbSuspendedBilled: existing.qbSuspendedBilled,
             qbFuelBilled: existing.qbFuelBilled,
             qbRoscoBilled: existing.qbRoscoBilled,
+            qbPredictiveCoachBilled: existing.qbPredictiveCoachBilled,
             activeDevices: [...existing.activeDevices, ...newDevices],
             isCua:            existing.isCua,
             jobType:          existing.jobType,
@@ -1917,6 +2058,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbSuspendedBilled: 0,
           qbFuelBilled: 0,
           qbRoscoBilled: 0,
+          qbPredictiveCoachBilled: 0,
           activeDevices: hanoverGoDevices,
           isCua:         false,
           jobType:       '',
@@ -1991,6 +2133,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbSuspendedBilled: parent.qbSuspendedBilled,
             qbFuelBilled:     parent.qbFuelBilled,
             qbRoscoBilled:    parent.qbRoscoBilled,
+            qbPredictiveCoachBilled: parent.qbPredictiveCoachBilled,
             goFocusCount:     parent.goFocusCount     + child.goFocusCount,
             goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
             activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -2063,6 +2206,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbSuspendedBilled: parent.qbSuspendedBilled,
           qbFuelBilled:     parent.qbFuelBilled,
           qbRoscoBilled:    parent.qbRoscoBilled,
+          qbPredictiveCoachBilled: parent.qbPredictiveCoachBilled,
           goFocusCount:     parent.goFocusCount     + child.goFocusCount,
           goFocusPlusCount: parent.goFocusPlusCount + child.goFocusPlusCount,
           activeDevices: [...parent.activeDevices, ...child.activeDevices],
@@ -2109,6 +2253,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
           qbSuspendedBilled: s.qbSuspendedBilled,
           qbFuelBilled: s.qbFuelBilled,
           qbRoscoBilled: s.qbRoscoBilled,
+          qbPredictiveCoachBilled: s.qbPredictiveCoachBilled,
           activeDevices: s.activeDevices,
           activePlanCounts: s.activePlanCounts,
           isCua: s.isCua,
@@ -2148,6 +2293,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbSuspendedBilled: s.qbSuspendedBilled,
             qbFuelBilled: s.qbFuelBilled,
             qbRoscoBilled: s.qbRoscoBilled,
+            qbPredictiveCoachBilled: s.qbPredictiveCoachBilled,
             activeDevices: s.activeDevices,
             activePlanCounts: s.activePlanCounts,
             isCua: s.isCua,
@@ -2190,6 +2336,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             qbSuspendedBilled: s.qbSuspendedBilled,
             qbFuelBilled: s.qbFuelBilled,
             qbRoscoBilled: s.qbRoscoBilled,
+            qbPredictiveCoachBilled: s.qbPredictiveCoachBilled,
             activeDevices: s.activeDevices,
             activePlanCounts: s.activePlanCounts,
             isCua: s.isCua,
@@ -2198,6 +2345,52 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             blueArrowFuelCount: s.blueArrowFuelCount,
             fuelSubAccounts: s.fuelSubAccounts,
             roscoBillableCount: roscoCount,
+          );
+        }
+      }
+    }
+
+    // ── Inject Predictive Coach PDF billable counts ───────────────────────
+    // If a Predictive Coach PDF was imported this session, attach the billable
+    // unit count to each matching customer.  PC counts are tracked SEPARATELY
+    // from the main totalBillable — they appear in their own card section so
+    // the user can reconcile PDF qty vs QB "Predictive Coach Service Fee" billed
+    // qty independently.
+    if (_predictiveCoachService.hasData) {
+      for (int i = 0; i < summaries.length; i++) {
+        final pcCount = _predictiveCoachService.countFor(summaries[i].customerName);
+        if (pcCount > 0 || summaries[i].qbPredictiveCoachBilled > 0) {
+          final s = summaries[i];
+          summaries[i] = QbCustomerSummary(
+            customerName: s.customerName,
+            billedCount: s.billedCount,
+            totalBilled: s.totalBilled,
+            qbLines: s.qbLines,
+            activeCount: s.activeCount,
+            unknownCount: s.unknownCount,
+            hanoverCount: s.hanoverCount,
+            hanoverCsQty: s.hanoverCsQty,
+            cameraCount: s.cameraCount,
+            goFocusCount: s.goFocusCount,
+            goFocusPlusCount: s.goFocusPlusCount,
+            geotabCount: s.geotabCount,
+            suspendedGeotabCount: s.suspendedGeotabCount,
+            neverActivatedGeotabCount: s.neverActivatedGeotabCount,
+            qbGpsBilled: s.qbGpsBilled,
+            qbCamBilled: s.qbCamBilled,
+            qbSuspendedBilled: s.qbSuspendedBilled,
+            qbFuelBilled: s.qbFuelBilled,
+            qbRoscoBilled: s.qbRoscoBilled,
+            qbPredictiveCoachBilled: s.qbPredictiveCoachBilled,
+            activeDevices: s.activeDevices,
+            activePlanCounts: s.activePlanCounts,
+            isCua: s.isCua,
+            jobType: s.jobType,
+            surfsightDirectCount: s.surfsightDirectCount,
+            blueArrowFuelCount: s.blueArrowFuelCount,
+            fuelSubAccounts: s.fuelSubAccounts,
+            roscoBillableCount: s.roscoBillableCount,
+            predictiveCoachBillableCount: pcCount,
           );
         }
       }
@@ -2283,6 +2476,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             .where((s) => s.blueArrowFuelCount > 0 || s.qbFuelBilled > 0)
             .toList();
         break;
+      case 6: // IFTA+ placeholder (reserved for future use — shows all for now)
+        list = base;
+        break;
+      case 7: // Predictive Coach — customers with PC PDF count or QB PC billed lines
+        list = base
+            .where((s) => s.predictiveCoachBillableCount > 0 || s.qbPredictiveCoachBilled > 0)
+            .toList();
+        break;
       default:
         list = base;
     }
@@ -2315,6 +2516,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
         .where((s) => s.roscoBillableCount > 0 || s.qbRoscoBilled > 0).length;
     final fuelCount = summaries
         .where((s) => s.blueArrowFuelCount > 0 || s.qbFuelBilled > 0).length;
+    final pcCount = summaries
+        .where((s) => s.predictiveCoachBillableCount > 0 || s.qbPredictiveCoachBilled > 0).length;
     final showTabs = _auditRan && summaries.isNotEmpty;
 
     return Scaffold(
@@ -2400,6 +2603,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       ],
                     ]),
                   ),
+                  Tab(
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('Pred. Coach'),
+                      if (pcCount > 0) ...[
+                        const SizedBox(width: 4),
+                        _CountBadge(pcCount, Colors.green.shade600),
+                      ],
+                    ]),
+                  ),
                 ],
               )
             : null,
@@ -2427,10 +2639,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             roscoLoaded:     _roscoLoaded,
             roscoFileName:   _roscoFileName,
             roscoImporting:  _roscoImporting,
+            pcLoaded:        _pcLoaded,
+            pcFileName:      _pcFileName,
+            pcImporting:     _pcImporting,
             onImportMyAdmin: _importMyAdmin,
             onImportQb:      _importQb,
             onImportFuel:    _importFuelCsv,
             onImportRosco:   _importRoscoPdf,
+            onImportPc:      _importPcPdf,
             onDropFiles:     _processDroppedFiles,
           ),
 
@@ -2440,7 +2656,8 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                 onImportMyAdmin: _importMyAdmin,
                 onImportQb: _importQb,
                 onImportFuel: _importFuelCsv,
-                onImportRosco: _importRoscoPdf)
+                onImportRosco: _importRoscoPdf,
+                onImportPc: _importPcPdf)
           else if (!_auditRan)
             _ReadyToRunScreen(
               myAdminLoaded:   _myAdminLoaded,
@@ -2452,11 +2669,14 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
               fuelFileName:    _fuelFileName,
               roscoLoaded:     _roscoLoaded,
               roscoFileName:   _roscoFileName,
+              pcLoaded:        _pcLoaded,
+              pcFileName:      _pcFileName,
               bothReady:       bothLoaded,
               onImportMyAdmin: _importMyAdmin,
               onImportQb:      _importQb,
               onImportFuel:    _importFuelCsv,
               onImportRosco:   _importRoscoPdf,
+              onImportPc:      _importPcPdf,
               onRun: () async {
                 // Reload Surfsight Direct data (Settings → Vendor Data changes)
                 await _surfsightDirectService.load();
@@ -2550,7 +2770,7 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
             Expanded(
               child: TabBarView(
                 controller: _tabCtrl,
-                children: List.generate(6, (tabIdx) {
+                children: List.generate(8, (tabIdx) {
                   final filtered = _filterForTab(summaries, tabIdx);
                   if (filtered.isEmpty) {
                     return Center(
@@ -2572,7 +2792,9 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                                     ? 'No Rosco customers found'
                                     : tabIdx == 5
                                         ? 'No Fuel customers found'
-                                        : 'No issues in this category ✓',
+                                        : tabIdx == 7
+                                            ? 'No Predictive Coach customers found'
+                                            : 'No issues in this category ✓',
                             style: const TextStyle(
                                 color: AppTheme.textSecondary),
                           ),
@@ -2589,12 +2811,15 @@ class _QbInvoiceScreenState extends State<QbInvoiceScreen>
                       // Per-tab audit state:
                       //   Rosco tab (4) → _auditedRosco
                       //   Fuel tab  (5) → _auditedFuel
+                      //   PC tab    (7) → _auditedPredictiveCoach
                       //   All/other     → fully-audited logic
                       final bool cardAudited = tabIdx == 4
                           ? _auditedRosco.contains(key)
                           : tabIdx == 5
                               ? _auditedFuel.contains(key)
-                              : _isFullyAudited(s);
+                              : tabIdx == 7
+                                  ? _auditedPredictiveCoach.contains(key)
+                                  : _isFullyAudited(s);
                       return _CustomerVerifyCard(
                         summary: s,
                         expanded: _expanded.contains(key),
@@ -2652,11 +2877,14 @@ class _ReadyToRunScreen extends StatelessWidget {
   final String? fuelFileName;
   final bool roscoLoaded;
   final String? roscoFileName;
+  final bool pcLoaded;
+  final String? pcFileName;
   final bool bothReady;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
   final VoidCallback onImportRosco;
+  final VoidCallback onImportPc;
   final VoidCallback onRun;
 
   const _ReadyToRunScreen({
@@ -2669,11 +2897,14 @@ class _ReadyToRunScreen extends StatelessWidget {
     required this.fuelFileName,
     required this.roscoLoaded,
     required this.roscoFileName,
+    required this.pcLoaded,
+    required this.pcFileName,
     required this.bothReady,
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
     required this.onImportRosco,
+    required this.onImportPc,
     required this.onRun,
   });
 
@@ -2782,6 +3013,21 @@ class _ReadyToRunScreen extends StatelessWidget {
               loadedColor: const Color(0xFF7B1FA2),
               optional: true,
               onReplace: onImportRosco,
+            ),
+
+            const SizedBox(height: 12),
+
+            _FileConfirmCard(
+              step: 5,
+              icon: Icons.picture_as_pdf_outlined,
+              title: 'Predictive Coach PDF',
+              subtitle: 'AR Invoice Form (optional)',
+              loaded: pcLoaded,
+              fileName: pcFileName,
+              detail: pcLoaded ? 'Predictive Coach counts loaded — included in audit' : null,
+              loadedColor: Colors.green.shade700,
+              optional: true,
+              onReplace: onImportPc,
             ),
 
             const SizedBox(height: 32),
@@ -3152,6 +3398,39 @@ class _ImportBarState extends State<_ImportBar> {
             ),
           ),
           const SizedBox(width: 8),
+          // ── Predictive Coach PDF drop slot (optional) ──────────────────────
+          Expanded(
+            child: DropTarget(
+              onDragEntered: (_) => setState(() => _pcHover = true),
+              onDragExited:  (_) => setState(() => _pcHover = false),
+              onDragDone: (details) {
+                setState(() => _pcHover = false);
+                widget.onDropFiles(details.files);
+              },
+              child: widget.pcImporting
+                  ? _ImportSlot(
+                      icon: Icons.hourglass_top_outlined,
+                      label: 'Pred. Coach PDF',
+                      sublabel: 'Extracting text…',
+                      loaded: false,
+                      color: Colors.green.shade700,
+                      hovering: false,
+                      onTap: () {},
+                    )
+                  : _ImportSlot(
+                      icon: Icons.picture_as_pdf_outlined,
+                      label: 'Pred. Coach PDF',
+                      sublabel: widget.pcLoaded
+                          ? (widget.pcFileName ?? 'Loaded')
+                          : 'Optional — drop or click',
+                      loaded: widget.pcLoaded,
+                      color: Colors.green.shade700,
+                      hovering: _pcHover,
+                      onTap: widget.onImportPc,
+                    ),
+            ),
+          ),
+          const SizedBox(width: 8),
           // ── "Drop All Here" unified slot ───────────────────────────────
           DropTarget(
             onDragEntered: (_) => setState(() => _allHover = true),
@@ -3458,12 +3737,14 @@ class _EmptyState extends StatelessWidget {
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
   final VoidCallback onImportRosco;
+  final VoidCallback onImportPc;
 
   const _EmptyState({
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
     required this.onImportRosco,
+    required this.onImportPc,
   });
 
   @override
@@ -3549,6 +3830,19 @@ class _EmptyState extends StatelessWidget {
                         'Rosco → Monthly statement PDF (optional — import each month)',
                     buttonLabel: 'Import Rosco PDF',
                     onTap: onImportRosco,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StepCard(
+                    step: '5',
+                    color: Colors.green.shade600,
+                    icon: Icons.picture_as_pdf_outlined,
+                    title: 'Pred. Coach PDF',
+                    body:
+                        'Predictive Coach → Monthly AR Invoice PDF (optional — import each month)',
+                    buttonLabel: 'Import PC PDF',
+                    onTap: onImportPc,
                   ),
                 ),
               ],

@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../services/app_provider.dart';
 // import '../services/auth_service.dart'; // removed — shared data path, no per-user ID needed
 import '../services/cloud_sync_service.dart';
+import '../services/customer_rate_plan_override_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/formatters.dart';
 
@@ -139,10 +140,14 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
     setState(() { _loading = true; _statusMsg = null; });
     final err = await CloudSyncService.pushAll();
     if (!mounted) return;
+    final overrideCount = err == null
+        ? CustomerRatePlanOverrideService.getAll().length
+        : 0;
     setState(() {
       _loading   = false;
       _statusMsg = err == null
-          ? 'All settings pushed to cloud successfully.'
+          ? 'All settings pushed to cloud successfully'
+            '${overrideCount > 0 ? ' ($overrideCount pricing overrides included)' : ''}.'
           : 'Push failed: $err';
       _statusOk  = err == null;
     });
@@ -159,7 +164,10 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
           'This will replace your local settings and CSV files with the cloud version:\n'
           '• Standard plan rates\n'
           '• Customer plan codes\n'
+          '• Rate plan overrides (pricing)\n'
           '• Serial filter rules\n'
+          '• QB customers & filter keywords\n'
+          '• Item price list\n'
           '• Activations CSV (last imported)\n'
           '• MyAdmin & QB Verify CSVs (last imported)\n\n'
           'This cannot be undone.',
@@ -195,15 +203,18 @@ class _CloudSyncScreenState extends State<CloudSyncScreen> {
       });
     } else {
       final counts = result['counts'] as Map<String, int>? ?? {};
-      final csvRestored  = (counts['importedCsvs']      ?? 0) > 0;
-      final qbRestored   = (counts['qbCustomers']       ?? 0) > 0;
-      final kwRestored   = (counts['qbIgnoreKeywords']  ?? 0) > 0;
+      final csvRestored       = (counts['importedCsvs']      ?? 0) > 0;
+      final qbRestored        = (counts['qbCustomers']       ?? 0) > 0;
+      final kwRestored        = (counts['qbIgnoreKeywords']  ?? 0) > 0;
+      final overrideCount     =  counts['ratePlanOverrides'] ?? 0;
+      final overrideRestored  = overrideCount > 0;
       setState(() {
         _loading   = false;
         _statusMsg =
             'Pulled: ${counts['standardPlanRates'] ?? 0} plan rates, '
             '${counts['customerPlanCodes'] ?? 0} customer codes, '
             '${counts['serialFilterRules'] ?? 0} filter rules'
+            '${overrideRestored ? ', $overrideCount pricing overrides' : ''}'
             '${csvRestored ? ', + CSV files' : ''}'
             '${qbRestored ? ', ${counts['qbCustomers']} QB customers' : ''}'
             '${kwRestored ? ', ${counts['qbIgnoreKeywords']} QB filter keywords' : ''}.';
