@@ -1,29 +1,23 @@
-// Firebase Realtime Database Cloud Sync Service
+// AWS Sync Service
 //
-// Uses the Firebase Realtime Database REST API — plain JSON over HTTPS.
-// Zero CORS issues, no SDK required, works in every browser.
+// Replaces Firebase Realtime Database with an AWS-hosted backend:
+//   API Gateway (HTTP API) → Lambda → DynamoDB
 //
-// Credentials are baked in at compile time — no user configuration needed.
+// The API endpoint is baked in at compile time — no user configuration needed.
 // Sync starts automatically for every user immediately after sign-in.
 //
 // REST API format:
-//   PUT  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
-//   GET  https://{databaseName}.firebaseio.com/{path}.json?auth={apiKey}
+//   GET  https://{apiId}.execute-api.us-east-1.amazonaws.com/sync/{node}
+//   PUT  https://{apiId}.execute-api.us-east-1.amazonaws.com/sync/{node}
 //
-// Data layout (8 nodes synced):
-//   /activation_tracker/shared/standard_plan_rates.json
-//   /activation_tracker/shared/customer_plan_codes.json
-//   /activation_tracker/shared/rate_plan_overrides.json
-//   /activation_tracker/shared/serial_filter_rules.json
-//   /activation_tracker/shared/imported_csvs.json
-//   /activation_tracker/shared/qb_customers.json
-//   /activation_tracker/shared/qb_ignore_keywords.json
-//   /activation_tracker/shared/item_price_list.json
+// Data nodes synced (9 total — one DynamoDB item each):
+//   standard_plan_rates, customer_plan_codes, rate_plan_overrides,
+//   serial_filter_rules, imported_csvs, qb_customers,
+//   qb_ignore_keywords, item_price_list, fuel_aliases
 //
-// All @bluearrowmail.com users read and write the SAME shared path.
-//
-// Each node stores a plain JSON object — no encoding tricks needed.
-// The Realtime Database REST API accepts and returns native JSON directly.
+// All @bluearrowmail.com users read and write the SAME shared DynamoDB table.
+// No auth token needed — API Gateway is locked to the VPC/CloudFront origin
+// and the DynamoDB table is private (only accessible via Lambda).
 
 import 'dart:async';
 import 'dart:convert';
@@ -52,34 +46,26 @@ enum SyncStatus { notConfigured, idle, syncing, success, error }
 // ── CloudSyncService ─────────────────────────────────────────────────────────
 
 class CloudSyncService {
-  // ── Baked-in credentials — no user config required ────────────────────────
-  static const _kBuiltInDbUrl  = 'https://activations-tracker-81a99-default-rtdb.firebaseio.com';
-  static const _kBuiltInApiKey = 'AIzaSyCI-mK4fWARt7_iAF6uRULJBVGn3Ln2hKw';
+  // ── Baked-in AWS API endpoint — no user config required ───────────────────
+  // Set to the API Gateway URL output by CloudFormation after first deploy.
+  // Format: https://{apiId}.execute-api.us-east-1.amazonaws.com
+  // PLACEHOLDER — replace with real URL after running:
+  //   aws cloudformation deploy ... (see aws/cloudformation.yml)
+  static const _kApiEndpoint = 'PENDING_CLOUDFORMATION_DEPLOY';
 
-  // SharedPreferences keys (kept for auto-sync toggle + last-sync timestamp)
+  // SharedPreferences keys
   static const _kAutoSync      = 'cloud_sync_auto';
   static const _kLastSyncEpoch = 'cloud_sync_last_epoch';
-  // Legacy keys — read-only so old installs don't break
-  static const _kDbUrl         = 'rtdb_url';
-  static const _kApiKey        = 'firebase_api_key';
-  static const _kEnabled       = 'cloud_sync_enabled';
-  static const _kProjectId     = 'firebase_project_id';
-  static const _kAppId         = 'firebase_app_id';
-
-  // Shared path constant — all users access the same data node
-  static const _kSharedPath    = 'shared';
 
   // Runtime state
-  static String     _dbUrl          = _kBuiltInDbUrl;
-  static String     _apiKey         = _kBuiltInApiKey;
   static bool       _configured     = false;
   static SyncStatus _status         = SyncStatus.notConfigured;
   static String     _lastError      = '';
-  static Timer?     _periodicTimer;   // fires every 3 minutes — pull then silent-push
+  static Timer?     _periodicTimer;
   static DateTime?  _lastSyncAt;
   static bool       _autoSyncEnabled = false;
 
-  // How often to auto-pull from Firebase (keeps multiple users in sync)
+  // How often to auto-pull (keeps all users in sync)
   static const _kPullInterval = Duration(minutes: 3);
 
   // Callback invoked after a periodic pull so the UI can refresh live data
@@ -104,15 +90,15 @@ class CloudSyncService {
     return remaining.isNegative ? Duration.zero : remaining;
   }
 
-  // ── URL helpers ───────────────────────────────────────────────────────────
+  // ── URL helper ────────────────────────────────────────────────────────────
 
-  /// Full REST URL for a node, with optional auth key appended.
+  /// Full REST URL for a sync node.
+  /// GET/PUT https://{apiId}.execute-api.us-east-1.amazonaws.com/sync/{node}
   static String _nodeUrl(String node) {
-    final base = _dbUrl.endsWith('/')
-        ? _dbUrl.substring(0, _dbUrl.length - 1)
-        : _dbUrl;
-    final auth = _apiKey.isNotEmpty ? '?auth=$_apiKey' : '';
-    return '$base/activation_tracker/$_kSharedPath/$node.json$auth';
+    final base = _kApiEndpoint.endsWith('/')
+        ? _kApiEndpoint.substring(0, _kApiEndpoint.length - 1)
+        : _kApiEndpoint;
+    return '$base/sync/$node';
   }
 
   static Map<String, String> get _headers => {
@@ -124,9 +110,6 @@ class CloudSyncService {
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    // Always use built-in credentials — ignore any legacy saved values.
-    _dbUrl           = _kBuiltInDbUrl;
-    _apiKey          = _kBuiltInApiKey;
     _autoSyncEnabled = prefs.getBool(_kAutoSync) ?? true;
 
     final lastEpoch = prefs.getInt(_kLastSyncEpoch);
@@ -134,16 +117,16 @@ class CloudSyncService {
       _lastSyncAt = DateTime.fromMillisecondsSinceEpoch(lastEpoch);
     }
 
-    // Always configured — credentials are baked in.
+    // Always configured — endpoint is baked in.
     _configured = true;
     _setStatus(SyncStatus.idle);
     if (_autoSyncEnabled) _startTimer();
   }
 
   /// Update auto-sync preference and restart/stop timer accordingly.
-  /// Credentials are baked in and cannot be changed at runtime.
+  /// Endpoint is baked in and cannot be changed at runtime.
   static Future<String?> configure({
-    // All credential params ignored — kept so old call sites compile.
+    // All params ignored — kept so old call sites compile.
     String dbUrl     = '',
     String apiKey    = '',
     bool   enabled   = true,
@@ -155,8 +138,6 @@ class CloudSyncService {
     await prefs.setBool(_kAutoSync, autoSync);
     _autoSyncEnabled = autoSync;
     _configured      = true;
-    _dbUrl           = _kBuiltInDbUrl;
-    _apiKey          = _kBuiltInApiKey;
     _setStatus(SyncStatus.idle);
     if (autoSync) { _startTimer(); } else { _stopTimer(); }
     return null;
@@ -172,8 +153,7 @@ class CloudSyncService {
   static Future<Map<String, String>> readConfig() async {
     final prefs = await SharedPreferences.getInstance();
     return {
-      'dbUrl':    _kBuiltInDbUrl,
-      'apiKey':   _kBuiltInApiKey,
+      'endpoint': _kApiEndpoint,
       'enabled':  'true',
       'autoSync': (prefs.getBool(_kAutoSync) ?? true) ? 'true' : 'false',
     };
@@ -214,7 +194,7 @@ class CloudSyncService {
   // ── Push all — full sync (used by manual "Sync Now" button) ──────────────
 
   static Future<String?> pushAll() async {
-    if (!_configured) return 'Firebase not configured';
+    if (!_configured) return 'Sync not configured';
     _setStatus(SyncStatus.syncing);
 
     try {
@@ -403,7 +383,7 @@ class CloudSyncService {
   //          5=qb_customers         6=qb_ignore_keywords  7=item_price_list
 
   static Future<Map<String, dynamic>> pullAll() async {
-    if (!_configured) return {'error': 'Firebase not configured'};
+    if (!_configured) return {'error': 'Sync not configured'};
     _setStatus(SyncStatus.syncing);
 
     try {

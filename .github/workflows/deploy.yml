@@ -43,6 +43,15 @@ jobs:
             --exclude "*.map" \
             --exclude "*.zip"
 
+      - name: Deploy Lambda (sync API)
+        run: |
+          cd aws/lambda
+          zip -j function.zip index.mjs
+          aws lambda update-function-code \
+            --function-name billing-master-sync \
+            --zip-file fileb://function.zip \
+            --region us-east-1
+
       - name: Invalidate CloudFront cache
         run: |
           CREDS=$(aws sts assume-role \

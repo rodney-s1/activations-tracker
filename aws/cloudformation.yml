@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  BillingMaster Sync API — DynamoDB + Lambda + HTTP API Gateway.
+  Replaces Firebase Realtime Database as the shared settings backend
+  for all bluearrowmail.com users of the Billing Tracker app.
+
+Parameters:
+  LambdaRoleArn:
+    Type: String
+    Description: >
+      ARN of the BillingMasterLambdaRole you created manually in IAM.
+      e.g. arn:aws:iam::653895708519:role/BillingMasterLambdaRole
+
+Resources:
+
+  # ── DynamoDB table ─────────────────────────────────────────────────────────
+  # One item per sync node (9 items max). PK = nodeId (e.g. "rate_plan_overrides")
+  SyncTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: BillingMasterSync
+      BillingMode: PAY_PER_REQUEST   # no provisioned capacity needed — tiny traffic
+      TableClass: STANDARD
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: nodeId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nodeId
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: billing-master
+
+  # ── Lambda function ────────────────────────────────────────────────────────
+  SyncFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: billing-master-sync
+      Description: GET/PUT handler for BillingMaster shared settings sync
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !Ref LambdaRoleArn
+      Timeout: 15
+      MemorySize: 128
+      Architectures: [arm64]   # cheaper + faster for lightweight functions
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SyncTable
+      Code:
+        ZipFile: |
+          // Placeholder — real code is deployed by the deploy workflow.
+          // This stub satisfies CloudFormation's requirement for initial code.
+          export const handler = async () => ({
+            statusCode: 200,
+            body: JSON.stringify({ status: 'placeholder — deploy workflow will replace this' }),
+          });
+      Tags:
+        - Key: Project
+          Value: billing-master
+
+  # ── HTTP API Gateway ───────────────────────────────────────────────────────
+  SyncApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: billing-master-sync-api
+      ProtocolType: HTTP
+      Description: BillingMaster shared settings sync endpoint
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: [GET, PUT, OPTIONS]
+        AllowHeaders: [Content-Type]
+        MaxAge: 86400
+
+  SyncIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SyncApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub
+        - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+        - FunctionArn: !GetAtt SyncFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 15000
+
+  # GET /sync/{node}
+  RouteGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SyncApi
+      RouteKey: 'GET /sync/{node}'
+      Target: !Sub 'integrations/${SyncIntegration}'
+
+  # PUT /sync/{node}
+  RoutePut:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SyncApi
+      RouteKey: 'PUT /sync/{node}'
+      Target: !Sub 'integrations/${SyncIntegration}'
+
+  # OPTIONS /sync/{node}  (CORS preflight)
+  RouteOptions:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SyncApi
+      RouteKey: 'OPTIONS /sync/{node}'
+      Target: !Sub 'integrations/${SyncIntegration}'
+
+  # Auto-deploy stage
+  SyncApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SyncApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  # Lambda permission — allow API Gateway to invoke the function
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SyncFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SyncApi}/*/*/sync/*'
+
+Outputs:
+  ApiEndpoint:
+    Description: >
+      Base URL for the sync API. Paste this into cloud_sync_service.dart
+      as _kBuiltInApiEndpoint.
+    Value: !Sub 'https://${SyncApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref SyncTable
+
+  FunctionName:
+    Description: Lambda function name
+    Value: !Ref SyncFunction
+
+  FunctionArn:
+    Description: Lambda function ARN (needed for deploy workflow)
+    Value: !GetAtt SyncFunction.Arn
