@@ -117,12 +117,12 @@ _PcParseResult parsePredictiveCoachPdfText(String text) {
   //   group(1) = customer name (everything before the first standalone integer)
   //   group(2) = quantity
   final rowRe = RegExp(
-    r'^([A-Za-z][A-Za-z0-9 &\.,\'\-]+?)\s+(\d+)\s+\$?[\d,]+\.?\d*\s+\$?[\d,]+\.?\d*',
+    r"^([A-Za-z][A-Za-z0-9 &\.,'-]+?)\s+(\d+)\s+\$?[\d,]+\.?\d*\s+\$?[\d,]+\.?\d*",
   );
 
   // Fallback: lines where quantity appears as a standalone token after name
   final simpleRowRe = RegExp(
-    r'^([A-Za-z][A-Za-z0-9 &\.,\'\-]+?)\s{2,}(\d+)',
+    r"^([A-Za-z][A-Za-z0-9 &\.,'-]+?)\s{2,}(\d+)",
   );
 
   final counts = <String, int>{};

@@ -3236,10 +3236,14 @@ class _ImportBar extends StatefulWidget {
   final bool roscoLoaded;
   final String? roscoFileName;
   final bool roscoImporting;
+  final bool pcLoaded;
+  final String? pcFileName;
+  final bool pcImporting;
   final VoidCallback onImportMyAdmin;
   final VoidCallback onImportQb;
   final VoidCallback onImportFuel;
   final VoidCallback onImportRosco;
+  final VoidCallback onImportPc;
   final Future<void> Function(List<DropItem>) onDropFiles;
 
   const _ImportBar({
@@ -3253,10 +3257,14 @@ class _ImportBar extends StatefulWidget {
     required this.roscoLoaded,
     required this.roscoFileName,
     required this.roscoImporting,
+    required this.pcLoaded,
+    required this.pcFileName,
+    required this.pcImporting,
     required this.onImportMyAdmin,
     required this.onImportQb,
     required this.onImportFuel,
     required this.onImportRosco,
+    required this.onImportPc,
     required this.onDropFiles,
   });
 
@@ -3269,6 +3277,7 @@ class _ImportBarState extends State<_ImportBar> {
   bool _qbHover      = false;
   bool _fuelHover    = false;
   bool _roscoHover   = false;
+  bool _pcHover      = false;
   bool _allHover     = false;
 
   @override
